@@ -15,6 +15,8 @@ from kent.driver.persistent_driver.sql_manager._types import compute_cache_key
 if TYPE_CHECKING:
     import asyncio
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from kent.driver.persistent_driver.scoped_session import (
         ScopedSessionFactory,
     )
@@ -36,12 +38,10 @@ class RequestQueueMixin:
             True if the key exists, False otherwise.
         """
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Request.id).where(
-                    Request.deduplication_key == dedup_key
-                )
+            return (
+                await self._find_by_dedup_key_in_session(session, dedup_key)
+                is not None
             )
-            return result.scalar() is not None
 
     async def _find_by_dedup_key(self, dedup_key: str) -> int | None:
         """Find an existing request ID by deduplication key.
@@ -53,12 +53,23 @@ class RequestQueueMixin:
             The request ID if found, None otherwise.
         """
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(Request.id).where(
-                    Request.deduplication_key == dedup_key
-                )
-            )
-            return result.scalar()
+            return await self._find_by_dedup_key_in_session(session, dedup_key)
+
+    async def _find_by_dedup_key_in_session(
+        self, session: AsyncSession, dedup_key: str
+    ) -> int | None:
+        """Find a request ID by deduplication key inside an existing session."""
+        result = await session.execute(
+            select(Request.id).where(Request.deduplication_key == dedup_key)
+        )
+        return result.scalar()
+
+    async def _get_next_queue_counter_in_session(
+        self, session: AsyncSession
+    ) -> int:
+        """Get the next queue counter inside an existing session."""
+        result = await session.execute(select(func.max(Request.queue_counter)))
+        return (result.scalar() or 0) + 1
 
     async def find_parent_request_id(self, url: str) -> int | None:
         """Find the request ID for a given URL.
@@ -130,45 +141,100 @@ class RequestQueueMixin:
             The ID of the newly inserted request, or the existing ID if
             deduplicated.
         """
-        async with self._lock:
-            if dedup_key is not None:
-                existing = await self._find_by_dedup_key(dedup_key)
-                if existing is not None:
-                    return existing
+        async with self._lock, self._session_factory() as session:
+            req_id = await self.insert_request_in_session(
+                session,
+                priority=priority,
+                request_type=request_type,
+                method=method,
+                url=url,
+                headers_json=headers_json,
+                cookies_json=cookies_json,
+                body=body,
+                continuation=continuation,
+                current_location=current_location,
+                accumulated_data_json=accumulated_data_json,
+                permanent_json=permanent_json,
+                expected_type=expected_type,
+                dedup_key=dedup_key,
+                parent_id=parent_id,
+                is_speculative=is_speculative,
+                speculation_id=speculation_id,
+                verify=verify,
+                via_json=via_json,
+                bypass_rate_limit=bypass_rate_limit,
+            )
+            await session.commit()
+            return req_id
 
-            queue_counter = await self._get_next_queue_counter()  # type: ignore[attr-defined]
-            created_at_ns = time.monotonic_ns()
-            cache_key = compute_cache_key(method, url, body, headers_json)
+    async def insert_request_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        priority: int,
+        request_type: str,
+        method: str,
+        url: str,
+        headers_json: str | None,
+        cookies_json: str | None,
+        body: bytes | None,
+        continuation: str,
+        current_location: str,
+        accumulated_data_json: str | None,
+        permanent_json: str | None,
+        expected_type: str | None,
+        dedup_key: str | None,
+        parent_id: int | None,
+        is_speculative: bool = False,
+        speculation_id: str | None = None,
+        verify: str | None = None,
+        via_json: str | None = None,
+        bypass_rate_limit: bool = False,
+    ) -> int:
+        """Insert a request inside an existing session (no commit).
 
-            async with self._session_factory() as session:
-                req = Request(
-                    status="pending",
-                    priority=priority,
-                    queue_counter=queue_counter,
-                    request_type=request_type,
-                    method=method,
-                    url=url,
-                    headers_json=headers_json,
-                    cookies_json=cookies_json,
-                    body=body,
-                    continuation=continuation,
-                    current_location=current_location,
-                    accumulated_data_json=accumulated_data_json,
-                    permanent_json=permanent_json,
-                    expected_type=expected_type,
-                    deduplication_key=dedup_key,
-                    parent_request_id=parent_id,
-                    created_at_ns=created_at_ns,
-                    cache_key=cache_key,
-                    is_speculative=is_speculative,
-                    speculation_id=speculation_id,
-                    verify=verify,
-                    via_json=via_json,
-                    bypass_rate_limit=bypass_rate_limit,
-                )
-                session.add(req)
-                await session.commit()
-                return req.id  # type: ignore[return-value]
+        Performs the dedup check and INSERT in the same session so callers
+        can compose multiple writes into a single transaction.
+        """
+        if dedup_key is not None:
+            existing = await self._find_by_dedup_key_in_session(
+                session, dedup_key
+            )
+            if existing is not None:
+                return existing
+
+        queue_counter = await self._get_next_queue_counter_in_session(session)
+        created_at_ns = time.monotonic_ns()
+        cache_key = compute_cache_key(method, url, body, headers_json)
+
+        req = Request(
+            status="pending",
+            priority=priority,
+            queue_counter=queue_counter,
+            request_type=request_type,
+            method=method,
+            url=url,
+            headers_json=headers_json,
+            cookies_json=cookies_json,
+            body=body,
+            continuation=continuation,
+            current_location=current_location,
+            accumulated_data_json=accumulated_data_json,
+            permanent_json=permanent_json,
+            expected_type=expected_type,
+            deduplication_key=dedup_key,
+            parent_request_id=parent_id,
+            created_at_ns=created_at_ns,
+            cache_key=cache_key,
+            is_speculative=is_speculative,
+            speculation_id=speculation_id,
+            verify=verify,
+            via_json=via_json,
+            bypass_rate_limit=bypass_rate_limit,
+        )
+        session.add(req)
+        await session.flush()
+        return req.id  # type: ignore[return-value]
 
     async def insert_entry_request(
         self,
@@ -403,17 +469,23 @@ class RequestQueueMixin:
             request_id: The database ID of the request.
         """
         async with self._lock, self._session_factory() as session:
-            completed_at_ns = time.monotonic_ns()
-            await session.execute(
-                update(Request)
-                .where(Request.id == request_id)
-                .values(
-                    status="completed",
-                    completed_at=func.current_timestamp(),
-                    completed_at_ns=completed_at_ns,
-                )
-            )
+            await self.mark_request_completed_in_session(session, request_id)
             await session.commit()
+
+    async def mark_request_completed_in_session(
+        self, session: AsyncSession, request_id: int
+    ) -> None:
+        """Mark a request as completed inside an existing session (no commit)."""
+        completed_at_ns = time.monotonic_ns()
+        await session.execute(
+            update(Request)
+            .where(Request.id == request_id)
+            .values(
+                status="completed",
+                completed_at=func.current_timestamp(),
+                completed_at_ns=completed_at_ns,
+            )
+        )
 
     async def mark_request_failed(
         self, request_id: int, error_message: str

@@ -70,6 +70,7 @@ from kent.driver.interstitials import (
     INTERSTITIAL_HANDLERS,
     InterstitialHandler,
 )
+from kent.driver.persistent_driver._staging import StagedWrites
 from kent.driver.persistent_driver.compression import (
     compress,
 )
@@ -1501,6 +1502,7 @@ class PlaywrightDriver(
         request_id: int,
         auto_await_timeout: int,
         page: Page | None = None,
+        staged: StagedWrites | None = None,
     ) -> None:
         """Process generator with autowait retry logic.
 
@@ -1511,14 +1513,22 @@ class PlaywrightDriver(
             request_id: The database request ID.
             auto_await_timeout: Timeout in milliseconds for autowait retries.
             page: The Playwright page for re-snapshot (optional for non-Playwright).
+            staged: Buffer to collect deferred writes; reset on each retry so
+                only the successful attempt's yields land at flush time.
         """
         assert page is not None, "Page must be provided for autowait"
+        assert staged is not None, "StagedWrites buffer must be provided"
         start_time = time.time()
         timeout_seconds = auto_await_timeout / 1000.0
 
         while True:
             try:
-                # Try to process the generator
+                # Try to process the generator. Reset the staged buffer so a
+                # failed prior attempt's partial yields are discarded.
+                staged.results.clear()
+                staged.estimates.clear()
+                staged.requests.clear()
+                staged.seen_dedup_keys.clear()
                 gen = continuation(response)
                 await self._process_generator_with_storage(
                     gen,
@@ -1526,6 +1536,7 @@ class PlaywrightDriver(
                     parent_request,
                     continuation.__name__,
                     request_id,
+                    staged,
                 )
                 # Success - exit retry loop
                 break

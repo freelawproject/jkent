@@ -9,6 +9,8 @@ from kent.driver.persistent_driver.models import Estimate
 if TYPE_CHECKING:
     import asyncio
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from kent.driver.persistent_driver.scoped_session import (
         ScopedSessionFactory,
     )
@@ -39,12 +41,32 @@ class EstimateStorageMixin:
             The database ID of the stored estimate.
         """
         async with self._lock, self._session_factory() as session:
-            estimate = Estimate(
+            est_id = await self.store_estimate_in_session(
+                session,
                 request_id=request_id,
                 expected_types_json=expected_types_json,
                 min_count=min_count,
                 max_count=max_count,
             )
-            session.add(estimate)
             await session.commit()
-            return estimate.id  # type: ignore[return-value]
+            return est_id
+
+    async def store_estimate_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        request_id: int,
+        expected_types_json: str,
+        min_count: int,
+        max_count: int | None = None,
+    ) -> int:
+        """Stage an estimate row inside an existing session (no commit)."""
+        estimate = Estimate(
+            request_id=request_id,
+            expected_types_json=expected_types_json,
+            min_count=min_count,
+            max_count=max_count,
+        )
+        session.add(estimate)
+        await session.flush()
+        return estimate.id  # type: ignore[return-value]

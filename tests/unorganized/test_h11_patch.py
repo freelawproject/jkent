@@ -26,8 +26,7 @@ def _dup_te_headers() -> list[tuple[bytes, bytes]]:
 
 def test_patch_is_installed_globally() -> None:
     assert (
-        _h11_headers.normalize_and_validate
-        is _patched_normalize_and_validate
+        _h11_headers.normalize_and_validate is _patched_normalize_and_validate
     )
     # Response-parsing path resolves the symbol through _events' module
     # globals; both bindings must be patched or the response path bypasses us.
@@ -69,7 +68,9 @@ def _feed_response_with_dup_te() -> None:
 
 
 def test_response_parser_strict_by_default() -> None:
-    with pytest.raises(RemoteProtocolError, match="multiple Transfer-Encoding"):
+    with pytest.raises(
+        RemoteProtocolError, match="multiple Transfer-Encoding"
+    ):
         _feed_response_with_dup_te()
 
 
@@ -101,11 +102,11 @@ def test_outbound_request_headers_stay_strict_in_lenient_scope() -> None:
     Request smuggling protections rely on h11 rejecting our own
     duplicate Transfer-Encoding emissions.
     """
-    with lenient_te():
-        with pytest.raises(
-            LocalProtocolError, match="multiple Transfer-Encoding"
-        ):
-            _h11_headers.normalize_and_validate(_dup_te_headers(), False)
+    with (
+        lenient_te(),
+        pytest.raises(LocalProtocolError, match="multiple Transfer-Encoding"),
+    ):
+        _h11_headers.normalize_and_validate(_dup_te_headers(), False)
 
 
 def test_scope_resets_on_exit() -> None:

@@ -9,6 +9,8 @@ from kent.driver.persistent_driver.models import Result
 if TYPE_CHECKING:
     import asyncio
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from kent.driver.persistent_driver.scoped_session import (
         ScopedSessionFactory,
     )
@@ -41,13 +43,35 @@ class ResultStorageMixin:
             The database ID of the stored result.
         """
         async with self._lock, self._session_factory() as session:
-            res = Result(
+            res_id = await self.store_result_in_session(
+                session,
                 request_id=request_id,
                 result_type=result_type,
                 data_json=data_json,
                 is_valid=is_valid,
                 validation_errors_json=validation_errors_json,
             )
-            session.add(res)
             await session.commit()
-            return res.id  # type: ignore[return-value]
+            return res_id
+
+    async def store_result_in_session(
+        self,
+        session: AsyncSession,
+        *,
+        request_id: int,
+        result_type: str,
+        data_json: str,
+        is_valid: bool = True,
+        validation_errors_json: str | None = None,
+    ) -> int:
+        """Stage a result row inside an existing session (no commit)."""
+        res = Result(
+            request_id=request_id,
+            result_type=result_type,
+            data_json=data_json,
+            is_valid=is_valid,
+            validation_errors_json=validation_errors_json,
+        )
+        session.add(res)
+        await session.flush()
+        return res.id  # type: ignore[return-value]

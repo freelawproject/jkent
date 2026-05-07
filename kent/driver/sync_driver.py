@@ -294,7 +294,9 @@ class SyncDriver(SyncSpeculationSupport, Generic[ScraperReturnDatatype]):
                             )
 
                             continuation_method = (
-                                self.scraper.get_continuation(continuation_name)
+                                self.scraper.get_continuation(
+                                    continuation_name
+                                )
                             )
 
                             # Process the generator
@@ -503,28 +505,52 @@ class SyncDriver(SyncSpeculationSupport, Generic[ScraperReturnDatatype]):
     ) -> None:
         """Process generator yields, enqueueing requests and handling data.
 
+        Per-step atomicity: yields are buffered as deferred actions and only
+        drained on successful iteration. If the step raises an unhandled
+        exception mid-iteration, the buffer is dropped — no on_data /
+        on_invalid_data callbacks fire, no requests enqueue.
+
         Args:
             gen: The generator from the continuation method.
             response: The Response that triggered this continuation.
             parent_request: The request that initiated this continuation.
         """
+        import functools
+
+        deferred: list[Callable[[], None]] = []
+
         try:
             for item in gen:
                 match item:
                     case ParsedData():
-                        self.handle_data(item.unwrap())
+                        deferred.append(
+                            functools.partial(self.handle_data, item.unwrap())
+                        )
                     case EstimateData():
                         pass
                     case Request() if (
                         not item.nonnavigating and not item.archive
                     ):
-                        self.enqueue_request(item, response)
+                        deferred.append(
+                            functools.partial(
+                                self.enqueue_request, item, response
+                            )
+                        )
                     case Request():
-                        self.enqueue_request(item, parent_request)
+                        deferred.append(
+                            functools.partial(
+                                self.enqueue_request, item, parent_request
+                            )
+                        )
                     case None:
                         pass
                     case _:
                         assert_never(item)
+
+            # Drain inside the same try block so a DataFormatAssumptionException
+            # raised by handle_data still routes through on_structural_error.
+            for cb in deferred:
+                cb()
         except ScraperAssumptionException as e:
             # Step 8: Handle structural errors via callback
             if self.on_structural_error:

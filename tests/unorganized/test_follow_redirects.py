@@ -70,14 +70,18 @@ class TestSyncRequestManagerFollowRedirects:
 
     def test_resolve_request_follows_redirect(self) -> None:
         rm = SyncRequestManager(scraper=_RedirectingScraper)
-        rm._client = httpx.Client(transport=httpx.MockTransport(_redirect_handler))
+        rm._client = httpx.Client(
+            transport=httpx.MockTransport(_redirect_handler)
+        )
         response = rm.resolve_request(_make_request("http://test/start"))
         assert response.status_code == 200
         assert response.text == "final"
 
     def test_resolve_request_does_not_follow_when_off(self) -> None:
         rm = SyncRequestManager(scraper=_PlainScraper)
-        rm._client = httpx.Client(transport=httpx.MockTransport(_redirect_handler))
+        rm._client = httpx.Client(
+            transport=httpx.MockTransport(_redirect_handler)
+        )
         response = rm.resolve_request(_make_request("http://test/start"))
         assert response.status_code == 302
 
@@ -98,7 +102,9 @@ class TestAsyncRequestManagerFollowRedirects:
             transport=httpx.MockTransport(_redirect_handler)
         )
         try:
-            response = await rm.resolve_request(_make_request("http://test/start"))
+            response = await rm.resolve_request(
+                _make_request("http://test/start")
+            )
             assert response.status_code == 200
             assert response.text == "final"
         finally:
@@ -111,7 +117,9 @@ class TestAsyncRequestManagerFollowRedirects:
             transport=httpx.MockTransport(_redirect_handler)
         )
         try:
-            response = await rm.resolve_request(_make_request("http://test/start"))
+            response = await rm.resolve_request(
+                _make_request("http://test/start")
+            )
             assert response.status_code == 302
         finally:
             await rm.close()

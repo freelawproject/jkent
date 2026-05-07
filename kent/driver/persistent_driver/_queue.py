@@ -17,7 +17,7 @@ from kent.data_types import (
 from kent.driver.persistent_driver.sql_manager import SQLManager
 
 if TYPE_CHECKING:
-    pass
+    from kent.driver.persistent_driver._staging import StagedWrites
 
 
 def _json_default(obj: Any) -> Any:
@@ -120,6 +120,50 @@ class QueueMixin:
                 "continuation": request_data["continuation"],
                 "priority": resolved_request.priority,
             },
+        )
+
+    async def _stage_enqueue_request(
+        self,
+        new_request: BaseRequest,
+        context: Response | BaseRequest,
+        parent_request_id: int | None,
+        staged: StagedWrites,
+    ) -> None:
+        """Stage an enqueue for the parent step's flush.
+
+        Mirrors ``enqueue_request`` but defers the DB insert and progress
+        event until ``staged.flush()`` is called.
+        """
+        resolved_request: Request = new_request.resolve_from(context)  # type: ignore[arg-type, assignment]
+
+        dedup_key = resolved_request.deduplication_key
+        if dedup_key is not None and not isinstance(dedup_key, str):
+            dedup_key = None
+
+        request_data = self._serialize_request(resolved_request)
+        request_data["priority"] = resolved_request.priority
+
+        parent_id: int | None = parent_request_id
+        if (
+            parent_id is None
+            and isinstance(context, Response)
+            and context.request
+        ):
+            parent_id = await self.db.find_parent_request_id(
+                context.request.request.url
+            )
+
+        progress_event = {
+            "url": request_data["url"],
+            "continuation": request_data["continuation"],
+            "priority": resolved_request.priority,
+        }
+
+        staged.stage_request(
+            request_data=request_data,
+            dedup_key=dedup_key,
+            parent_id=parent_id,
+            progress_event=progress_event,
         )
 
     def _serialize_request(

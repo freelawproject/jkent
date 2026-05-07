@@ -577,28 +577,54 @@ class AsyncDriver(AsyncSpeculationSupport, Generic[ScraperReturnDatatype]):
     ) -> None:
         """Process generator yields, enqueueing requests and handling data.
 
+        Per-step atomicity: yields are buffered as deferred actions and only
+        drained on successful iteration. If the step raises an unhandled
+        exception mid-iteration, the buffer is dropped — no on_data /
+        on_invalid_data callbacks fire, no requests enqueue.
+
         Args:
             gen: The generator from the continuation method.
             response: The Response that triggered this continuation.
             parent_request: The request that initiated this continuation.
         """
+        import functools
+
+        deferred: list[Callable[[], Awaitable[None]]] = []
+
         try:
             for item in gen:
                 match item:
                     case ParsedData():
-                        await self.handle_data(item.unwrap())
+                        deferred.append(
+                            functools.partial(self.handle_data, item.unwrap())
+                        )
                     case EstimateData():
                         pass
                     case Request() if (
                         not item.nonnavigating and not item.archive
                     ):
-                        await self.enqueue_request(item, response)
+                        deferred.append(
+                            functools.partial(
+                                self.enqueue_request, item, response
+                            )
+                        )
                     case Request():
-                        await self.enqueue_request(item, parent_request)
+                        deferred.append(
+                            functools.partial(
+                                self.enqueue_request, item, parent_request
+                            )
+                        )
                     case None:
                         pass
                     case _:
                         assert_never(item)
+
+            # Step iterated to completion — drain the buffer. Drain happens
+            # inside the same try block so a DataFormatAssumptionException
+            # raised by handle_data still routes through on_structural_error,
+            # matching the pre-staging behavior.
+            for cb in deferred:
+                await cb()
         except ScraperAssumptionException as e:
             # Handle structural errors via callback. Catches the parent class
             # so that DataFormatAssumptionException re-raised from handle_data

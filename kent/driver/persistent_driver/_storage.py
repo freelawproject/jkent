@@ -230,44 +230,28 @@ class StorageMixin:
             content_hash=content_hash,
         )
 
-    async def _store_result(
-        self,
-        request_id: int,
+    @staticmethod
+    def _serialize_result_for_storage(
         data: Any,
-        is_valid: bool = True,
         validation_errors: list[dict[str, Any]] | None = None,
-    ) -> int:
-        """Store a scraped result in the database.
+    ) -> tuple[str, str, str | None]:
+        """Serialize result data + errors to (result_type, data_json, errors_json).
 
-        Args:
-            request_id: The database ID of the request that produced this result.
-            data: The scraped data to store.
-            is_valid: Whether the data passed validation.
-            validation_errors: List of validation errors if invalid.
-
-        Returns:
-            The database ID of the stored result.
+        Pulled out so the staging path can serialize without writing.
         """
-        # Get the type name
         result_type = type(data).__name__
 
-        # Serialize the data
         if hasattr(data, "model_dump"):
-            # Pydantic model - use mode='json' to serialize dates to ISO8601
             data_json = json.dumps(data.model_dump(mode="json"))
         elif hasattr(data, "dict"):
-            # Older Pydantic
             data_json = json.dumps(data.dict())
         else:
-            # Try direct serialization
             data_json = json.dumps(data)
 
-        # Serialize validation errors, handling non-serializable objects
-        validation_errors_json = None
+        validation_errors_json: str | None = None
         if validation_errors:
 
             def make_serializable(obj: Any) -> Any:
-                """Convert non-JSON-serializable objects to strings."""
                 if isinstance(obj, dict):
                     return {k: make_serializable(v) for k, v in obj.items()}
                 if isinstance(obj, list):
@@ -286,6 +270,29 @@ class StorageMixin:
                 make_serializable(validation_errors)
             )
 
+        return result_type, data_json, validation_errors_json
+
+    async def _store_result(
+        self,
+        request_id: int,
+        data: Any,
+        is_valid: bool = True,
+        validation_errors: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Store a scraped result in the database.
+
+        Args:
+            request_id: The database ID of the request that produced this result.
+            data: The scraped data to store.
+            is_valid: Whether the data passed validation.
+            validation_errors: List of validation errors if invalid.
+
+        Returns:
+            The database ID of the stored result.
+        """
+        result_type, data_json, validation_errors_json = (
+            self._serialize_result_for_storage(data, validation_errors)
+        )
         return await self.db.store_result(
             request_id=request_id,
             result_type=result_type,

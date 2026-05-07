@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ from kent.data_types import (
     Response,
     ScraperYield,
 )
+from kent.driver.persistent_driver._staging import StagedWrites
 from kent.driver.persistent_driver.sql_manager import SQLManager
 from kent.driver.sync_driver import SpeculationState
 
@@ -87,6 +89,14 @@ class WorkerMixin:
             parent_request_id: int | None = None,
         ) -> None: ...
 
+        async def _stage_enqueue_request(
+            self,
+            new_request: BaseRequest,
+            context: Response | BaseRequest,
+            parent_request_id: int | None,
+            staged: StagedWrites,
+        ) -> None: ...
+
         # Provided by StorageMixin
         async def _mark_request_completed(self, request_id: int) -> None: ...
 
@@ -114,6 +124,12 @@ class WorkerMixin:
             validation_errors: list[dict[str, Any]] | None = None,
         ) -> int: ...
 
+        @staticmethod
+        def _serialize_result_for_storage(
+            data: Any,
+            validation_errors: list[dict[str, Any]] | None = None,
+        ) -> tuple[str, str, str | None]: ...
+
         # Provided by SpeculationMixin
         async def _track_speculation_outcome(
             self, request: BaseRequest, response: Response
@@ -139,6 +155,7 @@ class WorkerMixin:
             request_id: int,
             auto_await_timeout: int,
             page: Any = None,
+            staged: StagedWrites | None = None,
         ) -> None: ...
 
     # --- Worker Management ---
@@ -734,47 +751,47 @@ class WorkerMixin:
                 request_id, response, continuation_name, speculation_outcome
             )
 
-        if continuation_name:
-            continuation = self.scraper.get_continuation(continuation_name)
+        if not continuation_name:
+            await self._mark_request_completed(request_id)
+            return
 
-            # Check for autowait (Playwright driver only)
-            if page is not None:
-                from kent.common.decorators import get_step_metadata
+        continuation = self.scraper.get_continuation(continuation_name)
+        staged = StagedWrites(request_id=request_id)
 
-                metadata = get_step_metadata(continuation)
-                auto_await_timeout = (
-                    metadata.auto_await_timeout if metadata else None
-                )
+        # Check for autowait (Playwright driver only)
+        auto_await_timeout: int | None = None
+        if page is not None:
+            from kent.common.decorators import get_step_metadata
 
-                if auto_await_timeout:
-                    await self._process_generator_with_autowait(
-                        continuation,
-                        response,
-                        request,
-                        request_id,
-                        auto_await_timeout,
-                        page=page,
-                    )
-                else:
-                    gen = continuation(response)
-                    await self._process_generator_with_storage(
-                        gen,
-                        response,
-                        request,
-                        continuation_name,
-                        request_id,
-                    )
-            else:
-                gen = continuation(response)
-                await self._process_generator_with_storage(
-                    gen,
-                    response,
-                    request,
-                    continuation_name,
-                    request_id,
-                )
+            metadata = get_step_metadata(continuation)
+            auto_await_timeout = (
+                metadata.auto_await_timeout if metadata else None
+            )
 
-        await self._mark_request_completed(request_id)
+        if page is not None and auto_await_timeout:
+            await self._process_generator_with_autowait(
+                continuation,
+                response,
+                request,
+                request_id,
+                auto_await_timeout,
+                page=page,
+                staged=staged,
+            )
+        else:
+            gen = continuation(response)
+            await self._process_generator_with_storage(
+                gen,
+                response,
+                request,
+                continuation_name,
+                request_id,
+                staged,
+            )
+
+        emitted_events = await staged.flush(self.db)
+        for event in emitted_events:
+            await self._emit_progress("request_enqueued", event)
 
     async def _process_regular_request(
         self,
@@ -832,10 +849,13 @@ class WorkerMixin:
         parent_request: BaseRequest,
         continuation_name: str,
         request_id: int,
+        staged: StagedWrites,
     ) -> None:
         """Process generator with DB storage.
 
-        Uses simple iteration (for item in gen).
+        Uses simple iteration (for item in gen). All DB writes derived from
+        yields are buffered in ``staged`` and flushed by the caller after
+        the generator finishes without exception.
 
         Args:
             gen: The generator from the continuation method.
@@ -843,6 +863,7 @@ class WorkerMixin:
             parent_request: The request that initiated this continuation.
             continuation_name: Name of the continuation method.
             request_id: Database ID for result storage.
+            staged: Buffer to receive staged writes for atomic flush.
         """
         from kent.common.deferred_validation import (
             DeferredValidation,
@@ -862,22 +883,53 @@ class WorkerMixin:
                         if isinstance(raw_data, DeferredValidation):
                             try:
                                 validated_data = raw_data.confirm()
-                                await self._store_result(
-                                    request_id, validated_data
+                                rt, dj, vej = (
+                                    self._serialize_result_for_storage(
+                                        validated_data
+                                    )
                                 )
-                                await self.handle_data(validated_data)
+                                staged.stage_result(
+                                    result_type=rt,
+                                    data_json=dj,
+                                    is_valid=True,
+                                    validation_errors_json=vej,
+                                )
+                                staged.stage_callback(
+                                    functools.partial(
+                                        self.handle_data, validated_data
+                                    )
+                                )
                             except DataFormatAssumptionException as e:
-                                await self._store_result(
-                                    request_id,
-                                    e.failed_doc,
+                                rt, dj, vej = (
+                                    self._serialize_result_for_storage(
+                                        e.failed_doc, e.errors
+                                    )
+                                )
+                                staged.stage_result(
+                                    result_type=rt,
+                                    data_json=dj,
                                     is_valid=False,
-                                    validation_errors=e.errors,
+                                    validation_errors_json=vej,
                                 )
                                 if self.on_invalid_data:
-                                    await self.on_invalid_data(raw_data)
+                                    staged.stage_callback(
+                                        functools.partial(
+                                            self.on_invalid_data, raw_data
+                                        )
+                                    )
                         else:
-                            await self._store_result(request_id, raw_data)
-                            await self.handle_data(raw_data)
+                            rt, dj, vej = self._serialize_result_for_storage(
+                                raw_data
+                            )
+                            staged.stage_result(
+                                result_type=rt,
+                                data_json=dj,
+                                is_valid=True,
+                                validation_errors_json=vej,
+                            )
+                            staged.stage_callback(
+                                functools.partial(self.handle_data, raw_data)
+                            )
 
                     case EstimateData():
                         import json as _json
@@ -885,8 +937,7 @@ class WorkerMixin:
                         types_json = _json.dumps(
                             [t.__name__ for t in item.expected_types]
                         )
-                        await self.db.store_estimate(
-                            request_id=request_id,
+                        staged.stage_estimate(
                             expected_types_json=types_json,
                             min_count=item.min_count,
                             max_count=item.max_count,
@@ -895,11 +946,13 @@ class WorkerMixin:
                     case Request() if (
                         not item.nonnavigating and not item.archive
                     ):
-                        await self.enqueue_request(item, response, request_id)
+                        await self._stage_enqueue_request(
+                            item, response, request_id, staged
+                        )
 
                     case Request():
-                        await self.enqueue_request(
-                            item, parent_request, request_id
+                        await self._stage_enqueue_request(
+                            item, parent_request, request_id, staged
                         )
 
                     case None:
