@@ -1,5 +1,5 @@
 {
-    "schema_version": 19,
+    "schema_version": 20,
     "description": "Count requests grouped by continuation (step) and status.",
     "query": "SELECT continuation, status, count(*) AS count FROM requests GROUP BY continuation, status ORDER BY continuation, status;",
     "params": []

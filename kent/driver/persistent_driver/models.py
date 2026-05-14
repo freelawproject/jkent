@@ -176,6 +176,30 @@ class Request(SQLModel, table=True):  # type: ignore[call-arg]
     # TLS verification override
     verify: str | None = None
 
+    # --- Remaining HTTPRequestParams fields (added in v20) ---
+    # The persistent queue originally only round-tripped a subset of
+    # HTTPRequestParams. Scrapers that set timeout / json / files / auth /
+    # allow_redirects / proxies / stream / cert had those values silently
+    # dropped on enqueue, which is how the Nevada Supreme Court archive
+    # downloads ended up hanging on the httpx client-level default timeout.
+    timeout_json: str | None = None
+    json_data: str | None = None
+    files_json: str | None = None
+    auth_json: str | None = None
+    allow_redirects: bool = Field(
+        default=True,
+        sa_column_kwargs={"server_default": sa.text("1")},
+    )
+    proxies_json: str | None = None
+    stream: bool = Field(
+        default=False,
+        sa_column_kwargs={"server_default": sa.text("0")},
+    )
+    cert_json: str | None = None
+
+    # Request-level (not HTTPRequestParams) but also dropped pre-v20.
+    archive_hash_header: str | None = None
+
 
 class CompressionDict(SQLModel, table=True):  # type: ignore[call-arg]
     """Versioned zstd compression dictionaries per-continuation."""

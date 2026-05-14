@@ -110,6 +110,15 @@ class QueueMixin:
             verify=request_data["verify"],
             via_json=request_data["via_json"],
             bypass_rate_limit=request_data["bypass_rate_limit"],
+            timeout_json=request_data["timeout_json"],
+            json_data=request_data["json_data"],
+            files_json=request_data["files_json"],
+            auth_json=request_data["auth_json"],
+            allow_redirects=request_data["allow_redirects"],
+            proxies_json=request_data["proxies_json"],
+            stream=request_data["stream"],
+            cert_json=request_data["cert_json"],
+            archive_hash_header=request_data["archive_hash_header"],
         )
 
         # Emit progress event
@@ -240,6 +249,32 @@ class QueueMixin:
                     }
                 )
 
+        # Serialize the remaining HTTPRequestParams fields. tuple values
+        # (timeout=(connect, read), auth=(user, pass), cert=(cert, key))
+        # are stored as JSON lists; the deserializer re-tuples them.
+        timeout_json: str | None = (
+            json.dumps(http_request.timeout)
+            if http_request.timeout is not None
+            else None
+        )
+        json_data: str | None = (
+            json.dumps(http_request.json)
+            if http_request.json is not None
+            else None
+        )
+        files_json: str | None = (
+            json.dumps(http_request.files) if http_request.files else None
+        )
+        auth_json: str | None = (
+            json.dumps(http_request.auth) if http_request.auth else None
+        )
+        proxies_json: str | None = (
+            json.dumps(http_request.proxies) if http_request.proxies else None
+        )
+        cert_json: str | None = (
+            json.dumps(http_request.cert) if http_request.cert else None
+        )
+
         return {
             "request_type": request_type,
             "method": http_request.method.value,
@@ -279,6 +314,15 @@ class QueueMixin:
             ),
             "via_json": via_json,
             "bypass_rate_limit": request.bypass_rate_limit,
+            "timeout_json": timeout_json,
+            "json_data": json_data,
+            "files_json": files_json,
+            "auth_json": auth_json,
+            "allow_redirects": http_request.allow_redirects,
+            "proxies_json": proxies_json,
+            "stream": http_request.stream,
+            "cert_json": cert_json,
+            "archive_hash_header": request.archive_hash_header,
         }
 
     async def _get_next_request(
@@ -305,10 +349,10 @@ class QueueMixin:
             return None
 
         request_id = row[0]
-        parent_request_id = row[19]  # Last column in RETURNING clause
+        parent_request_id = row[28]  # Last column in RETURNING clause
 
-        # Deserialize using the first 19 columns (excluding parent_request_id)
-        request = self._deserialize_request(row[:19])
+        # Deserialize using the first 28 columns (excluding parent_request_id)
+        request = self._deserialize_request(row[:28])
         return (request_id, request, parent_request_id)
 
     def _deserialize_request(self, row: tuple[Any, ...]) -> BaseRequest:
@@ -341,6 +385,15 @@ class QueueMixin:
             via_json_raw,
             bypass_rate_limit_raw,
             deduplication_key_raw,
+            timeout_json_raw,
+            json_data_raw,
+            files_json_raw,
+            auth_json_raw,
+            allow_redirects_raw,
+            proxies_json_raw,
+            stream_raw,
+            cert_json_raw,
+            archive_hash_header_raw,
         ) = row
 
         # Parse JSON fields
@@ -376,6 +429,52 @@ class QueueMixin:
         if verify_raw is not None:
             verify = False if verify_raw == "false" else verify_raw
 
+        # Deserialize the remaining HTTPRequestParams fields. JSON has no
+        # tuple type, so timeout / auth / cert come back as lists when
+        # the scraper supplied a tuple; re-tuple them so equality with
+        # the original HTTPRequestParams matches.
+        timeout: float | tuple[float, float] | None
+        if timeout_json_raw is None:
+            timeout = None
+        else:
+            parsed_timeout = json.loads(timeout_json_raw)
+            timeout = (
+                tuple(parsed_timeout)  # type: ignore[assignment]
+                if isinstance(parsed_timeout, list)
+                else parsed_timeout
+            )
+
+        json_field: Any = (
+            json.loads(json_data_raw) if json_data_raw is not None else None
+        )
+        files = json.loads(files_json_raw) if files_json_raw else None
+        auth: tuple[str, str] | None
+        if auth_json_raw:
+            parsed_auth = json.loads(auth_json_raw)
+            auth = (
+                tuple(parsed_auth)  # type: ignore[assignment]
+                if isinstance(parsed_auth, list)
+                else parsed_auth
+            )
+        else:
+            auth = None
+
+        allow_redirects = (
+            True if allow_redirects_raw is None else bool(allow_redirects_raw)
+        )
+        proxies = json.loads(proxies_json_raw) if proxies_json_raw else None
+        stream = False if stream_raw is None else bool(stream_raw)
+        cert: str | tuple[str, str] | None
+        if cert_json_raw:
+            parsed_cert = json.loads(cert_json_raw)
+            cert = (
+                tuple(parsed_cert)  # type: ignore[assignment]
+                if isinstance(parsed_cert, list)
+                else parsed_cert
+            )
+        else:
+            cert = None
+
         # Create HTTP request params
         http_params = HTTPRequestParams(
             method=HttpMethod(method),
@@ -383,7 +482,15 @@ class QueueMixin:
             headers=headers,
             cookies=cookies,
             data=decoded_body,
+            json=json_field,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
             verify=verify,
+            stream=stream,
+            cert=cert,
         )
 
         # Deserialize via (ViaFormSubmit / ViaLink)
@@ -419,6 +526,7 @@ class QueueMixin:
                 deduplication_key=deduplication_key_raw,
                 archive=True,
                 expected_type=expected_type,
+                archive_hash_header=archive_hash_header_raw,
                 via=via,
                 bypass_rate_limit=bypass_rate_limit,
             )

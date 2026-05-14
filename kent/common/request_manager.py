@@ -635,6 +635,14 @@ class AsyncRequestManager:
         headers = dict(http_params.headers) if http_params.headers else {}
         _merge_cookies_into_headers(http_params.cookies, headers)
 
+        logger.info(
+            "resolve_request: %s %s request_timeout=%r client_timeout=%r",
+            http_params.method.value,
+            http_params.url,
+            http_params.timeout,
+            client.timeout,
+        )
+
         # Make the HTTP request
         try:
             http_response = await client.request(
@@ -703,6 +711,15 @@ class AsyncRequestManager:
         headers = dict(http_params.headers) if http_params.headers else {}
         _merge_cookies_into_headers(http_params.cookies, headers)
 
+        logger.info(
+            "stream_request: opening stream %s %s "
+            "request_timeout=%r client_timeout=%r",
+            http_params.method.value,
+            http_params.url,
+            http_params.timeout,
+            client.timeout,
+        )
+
         try:
             async with client.stream(
                 method=http_params.method.value,
@@ -713,6 +730,11 @@ class AsyncRequestManager:
                 follow_redirects=self._follow_redirects,
                 timeout=_httpx_timeout(http_params.timeout),
             ) as http_response:
+                logger.info(
+                    "stream_request: headers received url=%s status=%s",
+                    http_params.url,
+                    http_response.status_code,
+                )
                 _classify_and_raise(
                     self._scraper,
                     http_response,
@@ -721,6 +743,9 @@ class AsyncRequestManager:
                     body=None,
                 )
                 yield AsyncStreamingResponse(http_response, http_params.url)
+                logger.info(
+                    "stream_request: stream closed url=%s", http_params.url
+                )
         except httpx.TimeoutException:
             raise RequestTimeoutException(
                 url=http_params.url,

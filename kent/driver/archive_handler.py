@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import tempfile
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from kent.data_types import ArchiveDecision
+
+logger = logging.getLogger(__name__)
 
 
 def _dedup_dir(storage_dir: Path, deduplication_key: str) -> Path:
@@ -431,12 +435,46 @@ class LocalAsyncStreamingArchiveHandler:
             prefix=".stream-",
             suffix=".tmp",
         )
+        logger.info(
+            "save_stream: starting url=%s dedup_key=%s",
+            url,
+            deduplication_key,
+        )
+        bytes_total = 0
+        chunk_count = 0
+        start = time.monotonic()
+        last_log = start
+        last_chunk = start
         try:
             try:
                 async for chunk in chunks:
+                    now = time.monotonic()
+                    gap = now - last_chunk
+                    bytes_total += len(chunk)
+                    chunk_count += 1
+                    last_chunk = now
+                    if now - last_log >= 30.0:
+                        logger.info(
+                            "save_stream: in flight url=%s elapsed=%.1fs "
+                            "chunks=%d bytes=%d last_gap=%.2fs",
+                            url,
+                            now - start,
+                            chunk_count,
+                            bytes_total,
+                            gap,
+                        )
+                        last_log = now
                     await asyncio.to_thread(_hash_and_write, sha, tmp, chunk)
             finally:
                 await asyncio.to_thread(tmp.close)
+            logger.info(
+                "save_stream: chunks done url=%s elapsed=%.1fs chunks=%d "
+                "bytes=%d",
+                url,
+                time.monotonic() - start,
+                chunk_count,
+                bytes_total,
+            )
             final_path = await asyncio.to_thread(
                 _streaming_target_path,
                 self.storage_dir,

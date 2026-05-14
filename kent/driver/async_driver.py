@@ -13,6 +13,7 @@ The AsyncDriver closely mirrors SyncDriver with three key differences:
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Generator
 from pathlib import Path
 from tempfile import gettempdir
@@ -62,6 +63,8 @@ from kent.driver.archive_handler import (
 from kent.driver.callbacks import log_and_validate_invalid_data
 
 __all__ = ["AsyncDriver", "log_and_validate_invalid_data"]
+
+logger = logging.getLogger(__name__)
 
 ScraperReturnDatatype = TypeVar("ScraperReturnDatatype")
 
@@ -498,6 +501,11 @@ class AsyncDriver(AsyncSpeculationSupport, Generic[ScraperReturnDatatype]):
             )
 
         if not archive_decision.download:
+            logger.info(
+                "resolve_archive_request: skip download url=%s file_url=%s",
+                request.request.url,
+                archive_decision.file_url,
+            )
             return ArchiveResponse(
                 status_code=200,
                 headers={},
@@ -509,6 +517,10 @@ class AsyncDriver(AsyncSpeculationSupport, Generic[ScraperReturnDatatype]):
             )
 
         if hasattr(self.archive_handler, "save_stream"):
+            logger.info(
+                "resolve_archive_request: streaming branch url=%s",
+                request.request.url,
+            )
             async with self.request_manager.stream_request(request) as stream:
                 file_url = await self.archive_handler.save_stream(
                     url=request.request.url,
@@ -516,6 +528,12 @@ class AsyncDriver(AsyncSpeculationSupport, Generic[ScraperReturnDatatype]):
                     expected_type=request.expected_type,
                     hash_header_value=None,
                     chunks=stream.aiter_bytes(),
+                )
+                logger.info(
+                    "resolve_archive_request: streaming done url=%s "
+                    "file_url=%s",
+                    request.request.url,
+                    file_url,
                 )
                 return ArchiveResponse(
                     status_code=stream.status_code,
@@ -527,6 +545,10 @@ class AsyncDriver(AsyncSpeculationSupport, Generic[ScraperReturnDatatype]):
                     file_url=file_url,
                 )
 
+        logger.info(
+            "resolve_archive_request: buffered branch url=%s",
+            request.request.url,
+        )
         http_response = await self.resolve_request(request)
 
         file_url = await self.archive_handler.save(

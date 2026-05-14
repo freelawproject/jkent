@@ -538,14 +538,44 @@ class WorkerMixin:
 
                 # Process the request
                 req_start = time_module.time()
-                await self._process_regular_request(
-                    request_id,
-                    request,  # type: ignore[arg-type]
-                    continuation_name,
-                    parent_request_id=parent_request_id,
-                    worker_id=worker_id,
-                    archive_decision=archive_decision,
-                )
+
+                async def _watchdog(
+                    wid: int = worker_id,
+                    rid: int = request_id,
+                    url: str = request.request.url,
+                    cont: str = continuation_name,
+                ) -> None:
+                    """Periodically log that a request is still in flight."""
+                    interval = 30.0
+                    elapsed = 0.0
+                    try:
+                        while True:
+                            await asyncio.sleep(interval)
+                            elapsed += interval
+                            logger.warning(
+                                f"[W{wid}] Request {rid} still in flight "
+                                f"after {elapsed:.0f}s "
+                                f"(continuation={cont}, url={url})"
+                            )
+                    except asyncio.CancelledError:
+                        return
+
+                watchdog_task = asyncio.create_task(_watchdog())
+                try:
+                    await self._process_regular_request(
+                        request_id,
+                        request,  # type: ignore[arg-type]
+                        continuation_name,
+                        parent_request_id=parent_request_id,
+                        worker_id=worker_id,
+                        archive_decision=archive_decision,
+                    )
+                finally:
+                    watchdog_task.cancel()
+                    try:
+                        await watchdog_task
+                    except asyncio.CancelledError:
+                        pass
                 req_time = time_module.time() - req_start
                 loop_time = time_module.time() - loop_start
                 requests_processed += 1

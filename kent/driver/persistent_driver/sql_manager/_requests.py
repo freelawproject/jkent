@@ -115,6 +115,15 @@ class RequestQueueMixin:
         verify: str | None = None,
         via_json: str | None = None,
         bypass_rate_limit: bool = False,
+        timeout_json: str | None = None,
+        json_data: str | None = None,
+        files_json: str | None = None,
+        auth_json: str | None = None,
+        allow_redirects: bool = True,
+        proxies_json: str | None = None,
+        stream: bool = False,
+        cert_json: str | None = None,
+        archive_hash_header: str | None = None,
     ) -> int:
         """Insert a new request into the queue.
 
@@ -163,6 +172,15 @@ class RequestQueueMixin:
                 verify=verify,
                 via_json=via_json,
                 bypass_rate_limit=bypass_rate_limit,
+                timeout_json=timeout_json,
+                json_data=json_data,
+                files_json=files_json,
+                auth_json=auth_json,
+                allow_redirects=allow_redirects,
+                proxies_json=proxies_json,
+                stream=stream,
+                cert_json=cert_json,
+                archive_hash_header=archive_hash_header,
             )
             await session.commit()
             return req_id
@@ -190,6 +208,15 @@ class RequestQueueMixin:
         verify: str | None = None,
         via_json: str | None = None,
         bypass_rate_limit: bool = False,
+        timeout_json: str | None = None,
+        json_data: str | None = None,
+        files_json: str | None = None,
+        auth_json: str | None = None,
+        allow_redirects: bool = True,
+        proxies_json: str | None = None,
+        stream: bool = False,
+        cert_json: str | None = None,
+        archive_hash_header: str | None = None,
     ) -> int:
         """Insert a request inside an existing session (no commit).
 
@@ -231,6 +258,15 @@ class RequestQueueMixin:
             verify=verify,
             via_json=via_json,
             bypass_rate_limit=bypass_rate_limit,
+            timeout_json=timeout_json,
+            json_data=json_data,
+            files_json=files_json,
+            auth_json=auth_json,
+            allow_redirects=allow_redirects,
+            proxies_json=proxies_json,
+            stream=stream,
+            cert_json=cert_json,
+            archive_hash_header=archive_hash_header,
         )
         session.add(req)
         await session.flush()
@@ -343,6 +379,15 @@ class RequestQueueMixin:
                     Request.via_json,
                     Request.bypass_rate_limit,
                     Request.deduplication_key,
+                    Request.timeout_json,
+                    Request.json_data,
+                    Request.files_json,
+                    Request.auth_json,
+                    Request.allow_redirects,
+                    Request.proxies_json,
+                    Request.stream,
+                    Request.cert_json,
+                    Request.archive_hash_header,
                 )
                 .where(
                     Request.status == "pending",
@@ -422,6 +467,15 @@ class RequestQueueMixin:
                     Request.via_json,
                     Request.bypass_rate_limit,
                     Request.deduplication_key,
+                    Request.timeout_json,
+                    Request.json_data,
+                    Request.files_json,
+                    Request.auth_json,
+                    Request.allow_redirects,
+                    Request.proxies_json,
+                    Request.stream,
+                    Request.cert_json,
+                    Request.archive_hash_header,
                     Request.parent_request_id,
                 )
             )

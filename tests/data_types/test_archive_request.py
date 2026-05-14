@@ -129,6 +129,82 @@ class TestArchive:
             == "http://bugcourt.example.com/cases/BCC-2024-001"
         )
 
+    def test_resolve_from_preserves_all_http_request_params_fields(self):
+        """resolve_from shall carry every HTTPRequestParams field through.
+
+        Regression test: prior to the fix in resolve_request_from, only
+        url/method/headers/params/data/cookies/verify were copied across,
+        which silently reset timeout (and json/files/auth/allow_redirects/
+        proxies/stream/cert) to their dataclass defaults. The Nevada
+        Supreme Court scraper hit this with a ``timeout=360.0`` on an
+        archive request that was reverted to ``None`` before the request
+        manager ever saw it, causing downloads to hang indefinitely.
+        """
+        original_params = HTTPRequestParams(
+            method=HttpMethod.POST,
+            url="/opinions/BCC-2024-001.pdf",
+            params={"q": "search"},
+            data={"form": "value"},
+            json={"k": "v"},
+            headers={"Accept": "application/pdf"},
+            cookies={"session": "abc"},
+            files={"upload": "file.txt"},
+            auth=("user", "pass"),
+            timeout=360.0,
+            allow_redirects=False,
+            proxies={"http": "http://proxy.example:3128"},
+            verify=False,
+            stream=True,
+            cert="/path/to/cert.pem",
+        )
+
+        base_request = Request(
+            request=HTTPRequestParams(
+                method=HttpMethod.GET,
+                url="http://bugcourt.example.com/cases/BCC-2024-001",
+            ),
+            continuation="parse_detail",
+        )
+        response = Response(
+            status_code=200,
+            headers={},
+            content=b"",
+            text="",
+            url="http://bugcourt.example.com/cases/BCC-2024-001",
+            request=base_request,
+        )
+        archive_request = Request(
+            request=original_params,
+            continuation="archive_opinion",
+            archive=True,
+            expected_type="pdf",
+        )
+
+        resolved = archive_request.resolve_from(response)
+
+        # URL is re-resolved against the response; everything else
+        # should be carried through unchanged.
+        assert (
+            resolved.request.url
+            == "http://bugcourt.example.com/opinions/BCC-2024-001.pdf"
+        )
+        assert resolved.request.method == original_params.method
+        assert resolved.request.params == original_params.params
+        assert resolved.request.data == original_params.data
+        assert resolved.request.json == original_params.json
+        assert resolved.request.headers == original_params.headers
+        assert resolved.request.cookies == original_params.cookies
+        assert resolved.request.files == original_params.files
+        assert resolved.request.auth == original_params.auth
+        assert resolved.request.timeout == original_params.timeout
+        assert (
+            resolved.request.allow_redirects == original_params.allow_redirects
+        )
+        assert resolved.request.proxies == original_params.proxies
+        assert resolved.request.verify == original_params.verify
+        assert resolved.request.stream == original_params.stream
+        assert resolved.request.cert == original_params.cert
+
 
 class TestArchiveResponse:
     """Tests for the ArchiveResponse data type."""

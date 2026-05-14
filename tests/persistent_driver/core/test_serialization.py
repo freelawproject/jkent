@@ -93,7 +93,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -204,7 +207,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -310,7 +316,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -412,7 +421,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -496,7 +508,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -586,7 +601,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -673,7 +691,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
@@ -682,6 +703,168 @@ class TestRequestTypeRoundTrip:
 
         deserialized = driver._deserialize_request(row)
         assert deserialized.bypass_rate_limit is True
+
+    async def test_all_http_request_params_fields_round_trip(
+        self, initialized_db
+    ) -> None:
+        """Every non-default HTTPRequestParams field must survive DB round-trip.
+
+        Regression test: the Nevada Supreme Court scraper set
+        ``timeout=360.0`` on archive HTTPRequestParams, but the persistent
+        queue silently dropped it (along with ``json``, ``files``, ``auth``,
+        ``allow_redirects``, ``proxies``, ``stream``, ``cert``,
+        ``archive_hash_header``) on serialize -> insert -> select ->
+        deserialize, causing downloads to hang because httpx fell back to
+        the client-level default timeout.
+
+        This is a complement to
+        tests/data_types/test_archive_request.py::
+        test_resolve_from_preserves_all_http_request_params_fields, which
+        only exercises the in-memory ``resolve_from`` path. The DB layer
+        in ``_serialize_request`` / ``_deserialize_request`` is a separate
+        place the same fields can be lost.
+        """
+        from kent.data_types import (
+            HttpMethod,
+            HTTPRequestParams,
+            Request,
+        )
+        from kent.driver.persistent_driver.persistent_driver import (
+            PersistentDriver,
+        )
+
+        original = Request(
+            archive=True,
+            request=HTTPRequestParams(
+                method=HttpMethod.POST,
+                url="https://example.com/files/document.pdf",
+                # `params` is encoded into the URL on serialize, so we
+                # don't assert it round-trips as a separate field below.
+                data={"form_field": "value"},
+                json={"json_field": "value"},
+                headers={"Accept": "application/pdf"},
+                cookies={"session": "abc123"},
+                files={"upload": "file.txt"},  # type: ignore[dict-item]
+                auth=("user", "pass"),
+                timeout=360.0,
+                allow_redirects=False,
+                proxies={"http": "http://proxy.example:3128"},
+                verify=False,
+                stream=True,
+                cert="/path/to/cert.pem",
+            ),
+            continuation="handle_download",
+            current_location="https://example.com/documents",
+            expected_type="pdf",
+            archive_hash_header="X-Content-SHA256",
+            priority=1,
+        )
+
+        driver = PersistentDriver.__new__(PersistentDriver)
+        serialized = driver._serialize_request(original)
+
+        engine, session_factory = initialized_db
+        async with session_factory() as session:
+            await session.execute(
+                sa.text("""
+                INSERT INTO requests (
+                    status, priority, queue_counter, request_type,
+                    method, url, headers_json, cookies_json, body,
+                    continuation, current_location,
+                    accumulated_data_json, permanent_json,
+                    expected_type, verify,
+                    timeout_json, json_data, files_json, auth_json,
+                    allow_redirects, proxies_json, stream, cert_json,
+                    archive_hash_header
+                ) VALUES (
+                    'pending', :priority, 1, :request_type,
+                    :method, :url, :headers_json, :cookies_json, :body,
+                    :continuation, :current_location,
+                    :accumulated_data_json, :permanent_json,
+                    :expected_type, :verify,
+                    :timeout_json, :json_data, :files_json, :auth_json,
+                    :allow_redirects, :proxies_json, :stream, :cert_json,
+                    :archive_hash_header
+                )
+                """),
+                {
+                    "priority": original.priority,
+                    "request_type": serialized["request_type"],
+                    "method": serialized["method"],
+                    "url": serialized["url"],
+                    "headers_json": serialized["headers_json"],
+                    "cookies_json": serialized["cookies_json"],
+                    "body": serialized["body"],
+                    "continuation": serialized["continuation"],
+                    "current_location": serialized["current_location"],
+                    "accumulated_data_json": serialized[
+                        "accumulated_data_json"
+                    ],
+                    "permanent_json": serialized["permanent_json"],
+                    "expected_type": serialized["expected_type"],
+                    "verify": serialized["verify"],
+                    "timeout_json": serialized["timeout_json"],
+                    "json_data": serialized["json_data"],
+                    "files_json": serialized["files_json"],
+                    "auth_json": serialized["auth_json"],
+                    "allow_redirects": serialized["allow_redirects"],
+                    "proxies_json": serialized["proxies_json"],
+                    "stream": serialized["stream"],
+                    "cert_json": serialized["cert_json"],
+                    "archive_hash_header": serialized["archive_hash_header"],
+                },
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            result = await session.execute(
+                sa.text("""
+                SELECT id, request_type, method, url, headers_json, cookies_json, body,
+                       continuation, current_location,
+                       accumulated_data_json, permanent_json,
+                       expected_type, priority,
+                       is_speculative, speculation_id, verify, via_json,
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
+                FROM requests WHERE id = 1
+                """)
+            )
+            row = result.first()
+        assert row is not None
+
+        deserialized = driver._deserialize_request(row)
+        assert isinstance(deserialized, Request)
+
+        # URL and method are stored as their own columns and are known
+        # to round-trip; check them so a future schema change can't make
+        # this test pass without actually exercising them.
+        assert deserialized.request.url == original.request.url
+        assert deserialized.request.method == original.request.method
+
+        # Every other HTTPRequestParams field that the scraper set
+        # should survive the round-trip.
+        assert deserialized.request.data == original.request.data
+        assert deserialized.request.json == original.request.json
+        assert deserialized.request.headers == original.request.headers
+        assert deserialized.request.cookies == original.request.cookies
+        assert deserialized.request.files == original.request.files
+        assert deserialized.request.auth == original.request.auth
+        assert deserialized.request.timeout == original.request.timeout
+        assert (
+            deserialized.request.allow_redirects
+            == original.request.allow_redirects
+        )
+        assert deserialized.request.proxies == original.request.proxies
+        assert deserialized.request.verify == original.request.verify
+        assert deserialized.request.stream == original.request.stream
+        assert deserialized.request.cert == original.request.cert
+
+        # archive_hash_header lives on the Request, not HTTPRequestParams,
+        # but it's another field the serializer silently drops, so guard
+        # it here too.
+        assert deserialized.archive_hash_header == original.archive_hash_header
 
     async def test_bypass_rate_limit_default_false(
         self, initialized_db
@@ -754,7 +937,10 @@ class TestRequestTypeRoundTrip:
                        accumulated_data_json, permanent_json,
                        expected_type, priority,
                        is_speculative, speculation_id, verify, via_json,
-                       bypass_rate_limit, deduplication_key
+                       bypass_rate_limit, deduplication_key,
+                       timeout_json, json_data, files_json, auth_json,
+                       allow_redirects, proxies_json, stream, cert_json,
+                       archive_hash_header
                 FROM requests WHERE id = 1
                 """)
             )
