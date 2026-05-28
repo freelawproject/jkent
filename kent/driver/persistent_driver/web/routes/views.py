@@ -30,7 +30,7 @@ async def index(request: Request) -> HTMLResponse:
     Returns:
         Rendered HTML dashboard.
     """
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -45,5 +45,5 @@ async def run_detail(request: Request, run_id: str) -> HTMLResponse:
         Rendered HTML run detail page.
     """
     return templates.TemplateResponse(
-        "run_detail.html", {"request": request, "run_id": run_id}
+        request, "run_detail.html", {"run_id": run_id}
     )
