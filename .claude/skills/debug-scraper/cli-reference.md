@@ -172,6 +172,7 @@ Commands:
   incidental              Inspect incidental requests (browser-initiated...
   info                    Show run metadata and statistics.
   query                   Run parameterized SQL queries against a scraper...
+  replay                  Replay a scraper from one or more source DBs...
   requests                Inspect and manipulate requests.
   responses               Inspect responses.
   results                 Inspect and export results.
@@ -730,6 +731,137 @@ Options:
   --db PATH                      Path to the database file
   --help                         Show this message and, if a query is
                                  specified, its description.
+```
+
+## pdd replay
+
+```
+Usage: pdd replay [OPTIONS] COMMAND [ARGS]...
+
+  Replay a scraper from one or more source DBs instead of the network. Choose
+  a subcommand: `strict` is conservative, `lenient` retries previously-errored
+  continuations, `error-stubs` re-seeds errored subtrees at HATEOAS-safe
+  ancestors (replaces seed-error-patch-rerun).
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  error-stubs  Re-seed errored subtrees at the nearest HATEOAS-safe...
+  lenient      Lenient replay: retry previously-errored continuations.
+  strict       Conservative replay: previously-errored rows fall through...
+```
+
+### pdd replay error-stubs
+
+```
+Usage: pdd replay error-stubs [OPTIONS]
+
+  Re-seed errored subtrees at the nearest HATEOAS-safe ancestor.
+
+  Mode: ``desc-error-free``. Pre-pass walks each errored row in the source(s)
+  up the parent chain to the nearest ``hateoas=True`` ancestor (or to the
+  root, if none is marked); that ancestor enters the output as a pending entry
+  request. The error-free portion of each source's request graph copies over
+  unchanged. Replaces ``pdd seed-error-patch-rerun``.
+
+  Miss policy is locked to ``stub`` — that's the whole point.
+
+Options:
+  --scraper TEXT     Dotted import path `module.path:ClassName`.  [required]
+  --source-db FILE   Source DB(s) to read responses from. May be repeated.
+                     [required]
+  --output FILE      Path to the output DB (created if missing).  [required]
+  --workers INTEGER  Number of concurrent worker tasks.  [default: 4]
+  --index-db FILE    Path for the on-disk source-routing index. Default is in-
+                     memory (:memory:); set this for very large
+                     consolidations.
+  --params TEXT      JSON list of entry-method invocations, identical to `kent
+                     run --params`. Used to seed the output DB on first run.
+  -v, --verbose      Verbose logging.
+  --help             Show this message and exit.
+```
+
+### pdd replay lenient
+
+```
+Usage: pdd replay lenient [OPTIONS]
+
+  Lenient replay: retry previously-errored continuations.
+
+  Mode: ``curr-error-free``. Previously-errored rows whose error type
+  indicates a parser break (HTMLStructuralAssumption / DataFormatAssumption)
+  are served from source and the current scraper code re-executes against
+  them. If the continuation now succeeds, the row is written completed in the
+  output; its yielded children become pending (unless ``--trust-subtree-after-
+  retry``).
+
+Options:
+  --scraper TEXT                  Dotted import path `module.path:ClassName`.
+                                  [required]
+  --source-db FILE                Source DB(s) to read responses from. May be
+                                  repeated.  [required]
+  --output FILE                   Path to the output DB (created if missing).
+                                  [required]
+  --workers INTEGER               Number of concurrent worker tasks.
+                                  [default: 4]
+  --index-db FILE                 Path for the on-disk source-routing index.
+                                  Default is in-memory (:memory:); set this
+                                  for very large consolidations.
+  --params TEXT                   JSON list of entry-method invocations,
+                                  identical to `kent run --params`. Used to
+                                  seed the output DB on first run.
+  -v, --verbose                   Verbose logging.
+  --miss [raise|skip|stub]        What to do when a yielded request has no
+                                  source match. `stub` writes the request to
+                                  the output as status='pending' for a
+                                  downstream `kent run` to fetch.  [default:
+                                  stub]
+  --trust-subtree-after-retry / --no-trust-subtree-after-retry
+                                  When a previously-errored continuation now
+                                  succeeds: with --trust-subtree-after-retry,
+                                  its yielded children go through the normal
+                                  source-DB lookup. Default (off): children
+                                  are unconditionally stubbed as pending for
+                                  re-fetch.  [default: no-trust-subtree-after-
+                                  retry]
+  --help                          Show this message and exit.
+```
+
+### pdd replay strict
+
+```
+Usage: pdd replay strict [OPTIONS]
+
+  Conservative replay: previously-errored rows fall through to --miss.
+
+  Mode: ``prev-error-free``. The source index excludes any row whose
+  unresolved error is parser-side (HTMLStructuralAssumption or
+  DataFormatAssumption). The scraper still re-executes against every
+  fulfillable response — only the previously-errored rows are skipped. Combine
+  with ``--miss stub`` (default) to stage those rows as pending for a
+  downstream ``kent run``.
+
+Options:
+  --scraper TEXT            Dotted import path `module.path:ClassName`.
+                            [required]
+  --source-db FILE          Source DB(s) to read responses from. May be
+                            repeated.  [required]
+  --output FILE             Path to the output DB (created if missing).
+                            [required]
+  --workers INTEGER         Number of concurrent worker tasks.  [default: 4]
+  --index-db FILE           Path for the on-disk source-routing index. Default
+                            is in-memory (:memory:); set this for very large
+                            consolidations.
+  --params TEXT             JSON list of entry-method invocations, identical
+                            to `kent run --params`. Used to seed the output DB
+                            on first run.
+  -v, --verbose             Verbose logging.
+  --miss [raise|skip|stub]  What to do when a yielded request has no source
+                            match. `stub` writes the request to the output as
+                            status='pending' for a downstream `kent run` to
+                            fetch.  [default: stub]
+  --help                    Show this message and exit.
 ```
 
 ## pdd requests

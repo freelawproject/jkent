@@ -950,6 +950,11 @@ class BaseRequest:
         bypass_rate_limit: If True, skip the rate limiter for this request.
              Useful for time-sensitive requests (e.g., file downloads) where
              stale server-side state expires quickly and delays cause failures.
+        hateoas: Tri-state marker for whether this request is safe to re-seed in isolation.
+             True = stateless; can be re-fetched standalone. False = depends on server-mirrored
+             client state (session, ViewState, CSRF token). None = unspecified.
+             Consumed by `pdd replay error-stubs` to choose how far up the parent chain
+             to walk when re-seeding errored subtrees.
     """
 
     request: HTTPRequestParams
@@ -964,6 +969,7 @@ class BaseRequest:
     speculation_id: tuple[str, int, int] | None = None
     via: Any = None  # ViaLink | ViaFormSubmit | None - using Any to avoid circular import
     bypass_rate_limit: bool = False
+    hateoas: bool | None = None
 
     def __post_init__(self) -> None:
         """Deep copy accumulated_data and permanent to prevent unintended sharing.
@@ -1201,6 +1207,7 @@ class Request(BaseRequest):
             expected_type=self.expected_type,
             archive_hash_header=self.archive_hash_header,
             bypass_rate_limit=self.bypass_rate_limit,
+            hateoas=self.hateoas,
         )
 
     def speculative(
@@ -1236,6 +1243,7 @@ class Request(BaseRequest):
             expected_type=self.expected_type,
             archive_hash_header=self.archive_hash_header,
             bypass_rate_limit=self.bypass_rate_limit,
+            hateoas=self.hateoas,
         )
 
 

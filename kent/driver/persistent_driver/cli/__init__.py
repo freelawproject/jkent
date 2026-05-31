@@ -441,6 +441,9 @@ from kent.driver.persistent_driver.cli import (
     query as _query_mod,
 )
 from kent.driver.persistent_driver.cli import (
+    replay as _replay_mod,
+)
+from kent.driver.persistent_driver.cli import (
     requests as _requests_mod,
 )
 from kent.driver.persistent_driver.cli import (

@@ -200,6 +200,13 @@ class Request(SQLModel, table=True):  # type: ignore[call-arg]
     # Request-level (not HTTPRequestParams) but also dropped pre-v20.
     archive_hash_header: str | None = None
 
+    # HATEOAS marker (added in v21): scraper-supplied hint for whether this
+    # request can be re-fetched standalone. True = stateless; False = depends
+    # on server-mirrored client state; NULL = unspecified. Used by
+    # `pdd replay error-stubs` to pick the seed level when re-running errored
+    # subtrees.
+    hateoas: bool | None = None
+
 
 class CompressionDict(SQLModel, table=True):  # type: ignore[call-arg]
     """Versioned zstd compression dictionaries per-continuation."""

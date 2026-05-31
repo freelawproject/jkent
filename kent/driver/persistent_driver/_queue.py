@@ -119,6 +119,7 @@ class QueueMixin:
             stream=request_data["stream"],
             cert_json=request_data["cert_json"],
             archive_hash_header=request_data["archive_hash_header"],
+            hateoas=request_data["hateoas"],
         )
 
         # Emit progress event
@@ -323,6 +324,7 @@ class QueueMixin:
             "stream": http_request.stream,
             "cert_json": cert_json,
             "archive_hash_header": request.archive_hash_header,
+            "hateoas": request.hateoas,
         }
 
     async def _get_next_request(

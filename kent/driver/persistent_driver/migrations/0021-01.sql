@@ -1,0 +1,12 @@
+-- v20 → v21: HATEOAS marker on requests.
+--
+-- Tri-state nullable boolean indicating whether a request is safe to
+-- re-fetch standalone. Consumed by `pdd replay error-stubs` (and the
+-- planned descendant-error-free mode) to choose how far up the parent
+-- chain to walk when re-seeding errored subtrees.
+--
+-- Values:
+--   1     -> stateless; OK to re-seed at this node.
+--   0     -> stateful; walk past (depends on server-mirrored client state).
+--   NULL  -> unspecified; walk past.
+ALTER TABLE requests ADD COLUMN hateoas BOOLEAN;

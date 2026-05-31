@@ -124,6 +124,7 @@ class RequestQueueMixin:
         stream: bool = False,
         cert_json: str | None = None,
         archive_hash_header: str | None = None,
+        hateoas: bool | None = None,
     ) -> int:
         """Insert a new request into the queue.
 
@@ -181,6 +182,7 @@ class RequestQueueMixin:
                 stream=stream,
                 cert_json=cert_json,
                 archive_hash_header=archive_hash_header,
+                hateoas=hateoas,
             )
             await session.commit()
             return req_id
@@ -217,6 +219,7 @@ class RequestQueueMixin:
         stream: bool = False,
         cert_json: str | None = None,
         archive_hash_header: str | None = None,
+        hateoas: bool | None = None,
     ) -> int:
         """Insert a request inside an existing session (no commit).
 
@@ -267,6 +270,7 @@ class RequestQueueMixin:
             stream=stream,
             cert_json=cert_json,
             archive_hash_header=archive_hash_header,
+            hateoas=hateoas,
         )
         session.add(req)
         await session.flush()
@@ -289,6 +293,7 @@ class RequestQueueMixin:
         bypass_rate_limit: bool = False,
         request_type: str = "navigating",
         expected_type: str | None = None,
+        hateoas: bool | None = None,
     ) -> int:
         """Insert an entry point request.
 
@@ -341,6 +346,7 @@ class RequestQueueMixin:
                     created_at_ns=created_at_ns,
                     verify=verify,
                     bypass_rate_limit=bypass_rate_limit,
+                    hateoas=hateoas,
                 )
                 session.add(req)
                 await session.commit()
