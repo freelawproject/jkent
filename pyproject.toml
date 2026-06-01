@@ -25,18 +25,14 @@ dependencies = [
     "click>=8.0.0",
     "jsondiff>=2.2.1",
     "jinja2>=3.1.6",
-]
-
-[project.optional-dependencies]
-playwright = [
     "playwright>=1.57.0",
-]
-persistent-driver = [
     "aiosqlite>=0.22.1",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
     "zstandard>=0.25.0",
 ]
+
+[project.optional-dependencies]
 web = [
     "fastapi>=0.128.0",
 ]
