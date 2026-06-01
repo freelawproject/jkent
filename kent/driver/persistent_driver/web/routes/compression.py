@@ -172,8 +172,8 @@ async def train_dictionary(
                 )
             )
             row = result.first()
-        response_count = row[0] or 0
-        total_original_bytes = row[1] or 0
+        response_count = row[0] or 0  # type: ignore[index]
+        total_original_bytes = row[1] or 0  # type: ignore[index]
 
         if dict_size is None:
             if total_original_bytes > LARGE_COLLECTION_THRESHOLD:
@@ -223,7 +223,7 @@ async def train_dictionary(
     return TrainDictResponse(
         dict_id=dict_id,
         continuation=request.continuation,
-        sample_count=sample_count,
+        sample_count=sample_count,  # type: ignore[arg-type]
         dict_size=dict_size,
         message=f"Trained dictionary {dict_id} from {sample_count} samples",
     )
@@ -350,7 +350,7 @@ async def get_compression_stats_by_continuation(
 
         # Query stats grouped by continuation and dictionary
         result = await session.execute(
-            select(
+            select(  # type: ignore[call-overload]
                 RequestModel.continuation,
                 RequestModel.compression_dict_id,
                 CompressionDict.version,

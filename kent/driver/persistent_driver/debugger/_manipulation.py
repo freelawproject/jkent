@@ -86,7 +86,7 @@ class ManipulationMixin:
         async with self._session_factory() as session:
             result = await session.execute(
                 sa.update(Error)
-                .where(Error.id == error_id, Error.is_resolved == sa.false())
+                .where(Error.id == error_id, Error.is_resolved == sa.false())  # type: ignore[arg-type]
                 .values(
                     is_resolved=True,
                     resolved_at=sa.func.current_timestamp(),
@@ -94,7 +94,7 @@ class ManipulationMixin:
                 )
             )
             await session.commit()
-            return result.rowcount > 0
+            return result.rowcount > 0  # type: ignore[attr-defined]
 
     # =========================================================================
     # Compression Manipulation

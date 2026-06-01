@@ -100,11 +100,11 @@ class InspectionMixin:
             Each dict has: id, parent_request_id, status, continuation, url.
             Empty list if request_id does not exist.
         """
-        req = Request.__table__
+        req = Request.__table__  # type: ignore[attr-defined]
 
         # Base case: the starting request
         base = (
-            select(
+            select(  # type: ignore[call-overload]
                 req.c.id,
                 req.c.parent_request_id,
                 req.c.status,
@@ -118,7 +118,7 @@ class InspectionMixin:
 
         # Recursive step: join parent
         parent = req.alias("parent")
-        recursive = select(
+        recursive = select(  # type: ignore[call-overload]
             parent.c.id,
             parent.c.parent_request_id,
             parent.c.status,
@@ -257,7 +257,7 @@ class InspectionMixin:
                 .select_from(IncidentalRequest)
                 .outerjoin(
                     IncidentalRequestStorage,
-                    IncidentalRequest.storage_id
+                    IncidentalRequest.storage_id  # type: ignore[arg-type]
                     == IncidentalRequestStorage.id,
                 )
             )
@@ -270,7 +270,7 @@ class InspectionMixin:
                 IncidentalRequest.created_at.desc()  # type: ignore[union-attr]
             )
             for cond in conditions:
-                query = query.where(cond)
+                query = query.where(cond)  # type: ignore[arg-type]
             query = query.limit(limit).offset(offset)
             result = await session.execute(query)
             rows = result.all()
@@ -429,7 +429,9 @@ class InspectionMixin:
                     select(sa.func.count())
                     .select_from(Error)
                     .join(
-                        Request, Error.request_id == Request.id, isouter=True
+                        Request,
+                        Error.request_id == Request.id,  # type: ignore[arg-type]
+                        isouter=True,
                     )
                 )
                 for cond in conditions:
@@ -440,9 +442,11 @@ class InspectionMixin:
 
                 # Data query with join
                 query = (
-                    select(*error_columns)
+                    select(*error_columns)  # type: ignore[type-var]
                     .join(
-                        Request, Error.request_id == Request.id, isouter=True
+                        Request,
+                        Error.request_id == Request.id,  # type: ignore[arg-type]
+                        isouter=True,
                     )
                     .order_by(Error.created_at.desc())  # type: ignore[union-attr]
                 )
@@ -461,7 +465,7 @@ class InspectionMixin:
                 count_result = await session.execute(count_stmt)
                 total = count_result.scalar() or 0
 
-                query = select(*error_columns).order_by(
+                query = select(*error_columns).order_by(  # type: ignore[type-var]
                     Error.created_at.desc()  # type: ignore[union-attr]
                 )
                 for cond in conditions:
@@ -492,7 +496,7 @@ class InspectionMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload,misc]
                     Error.id,
                     Error.request_id,
                     Error.error_type,
@@ -563,7 +567,7 @@ class InspectionMixin:
                     Error.error_type,
                     Error.is_resolved,
                     sa.func.count().label("count"),
-                ).group_by(Error.error_type, Error.is_resolved)
+                ).group_by(Error.error_type, Error.is_resolved)  # type: ignore[arg-type]
             )
             rows = result.all()
             for row in rows:
@@ -583,12 +587,12 @@ class InspectionMixin:
         by_continuation: dict[str, int] = {}
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[arg-type]
                     Request.continuation,
-                    sa.func.count(Error.id),
+                    sa.func.count(Error.id),  # type: ignore[arg-type]
                 )
                 .select_from(Error)
-                .join(Request, Error.request_id == Request.id)
+                .join(Request, Error.request_id == Request.id)  # type: ignore[arg-type]
                 .group_by(Request.continuation)
             )
             rows = result.all()
@@ -662,10 +666,10 @@ class InspectionMixin:
                 select(
                     Result.result_type,
                     sa.func.sum(
-                        sa.case((Result.is_valid == sa.true(), 1), else_=0)
+                        sa.case((Result.is_valid == sa.true(), 1), else_=0)  # type: ignore[arg-type]
                     ).label("valid_count"),
                     sa.func.sum(
-                        sa.case((Result.is_valid == sa.false(), 1), else_=0)
+                        sa.case((Result.is_valid == sa.false(), 1), else_=0)  # type: ignore[arg-type]
                     ).label("invalid_count"),
                     sa.func.count().label("total_count"),
                 )
@@ -789,7 +793,7 @@ class InspectionMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     CompressionDict.id,
                     CompressionDict.continuation,
                     CompressionDict.version,

@@ -10,11 +10,14 @@ Step: unified-page-interface
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import asdict, dataclass
+from typing import Any, Protocol
 
-if TYPE_CHECKING:
-    from kent.data_types import Request
+from kent.data_types import (
+    HttpMethod,
+    HTTPRequestParams,
+    Request,
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,7 @@ class Form:
         self,
         data: dict[str, str] | None = None,
         submit_selector: str | None = None,
+        request_params: dict[str, Any] | None = None,
         **request_kwargs: Any,
     ) -> Request:
         """Submit the form as a request.
@@ -114,6 +118,9 @@ class Form:
         Args:
             data: Optional field overrides (merged with defaults).
             submit_selector: Optional selector for submit element (relative to form).
+            request_params: Optional HTTPRequestParams field overrides (e.g.
+                {"timeout": 30}). Wins over the form-derived values, except for
+                url/method/params/data which are always set by the form.
             **request_kwargs: Additional kwargs passed to Request constructor.
                 Common ones: continuation, accumulated_data, archive, expected_type,
                 priority, deduplication_key, permanent.
@@ -122,11 +129,6 @@ class Form:
             Request with the form's action as URL, method as HTTP method,
             and via set to ViaFormSubmit for Playwright replay.
         """
-        from kent.data_types import (
-            HttpMethod,
-            HTTPRequestParams,
-            Request,
-        )
 
         # Merge field defaults with overrides
         field_data = {field.name: field.value or "" for field in self.fields}
@@ -155,7 +157,15 @@ class Form:
 
         # Set defaults for continuation if not provided
         request_kwargs.setdefault("continuation", "")
-
+        if request_params:
+            overrides = {
+                k: v
+                for k, v in request_params.items()
+                if k not in {"url", "method", "params", "data"}
+            }
+            http_params = HTTPRequestParams(
+                **(asdict(http_params) | overrides)
+            )
         return Request(
             request=http_params,
             via=ViaFormSubmit(
@@ -191,11 +201,6 @@ class Link:
             Request with the link's URL and via set to ViaLink
             for Playwright replay.
         """
-        from kent.data_types import (
-            HttpMethod,
-            HTTPRequestParams,
-            Request,
-        )
 
         return Request(
             request=HTTPRequestParams(url=self.url, method=HttpMethod.GET),

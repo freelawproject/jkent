@@ -42,7 +42,7 @@ class IntegrityMixin:
                     Request.status == "completed",
                     Request.response_status_code.is_(None),  # type: ignore[union-attr]
                 )
-                .order_by(Request.id)
+                .order_by(Request.id)  # type: ignore[arg-type]
             )
             orphaned_req_count_stmt = (
                 select(sa.func.count())
@@ -102,7 +102,7 @@ class IntegrityMixin:
                     Request.status == "completed",
                     Request.response_status_code.is_(None),  # type: ignore[union-attr]
                 )
-                .order_by(Request.id)
+                .order_by(Request.id)  # type: ignore[arg-type]
             )
             orphaned_requests = [
                 {
@@ -136,7 +136,7 @@ class IntegrityMixin:
                 - ghosts: List of dicts with {id, url, continuation, completed_at}
         """
         # Subqueries for NOT EXISTS
-        child = Request.__table__.alias("child")
+        child = Request.__table__.alias("child")  # type: ignore[attr-defined]
         child_exists = (
             select(sa.literal(1))
             .select_from(child)
@@ -161,7 +161,7 @@ class IntegrityMixin:
             # Get total count
             count_stmt = select(sa.func.count()).select_from(Request)
             for cond in ghost_conditions:
-                count_stmt = count_stmt.where(cond)
+                count_stmt = count_stmt.where(cond)  # type: ignore[arg-type]
             count_result = await session.execute(count_stmt)
             total_count = count_result.scalar() or 0
 
@@ -175,7 +175,7 @@ class IntegrityMixin:
                 .order_by(Request.continuation)
             )
             for cond in ghost_conditions:
-                by_cont_stmt = by_cont_stmt.where(cond)
+                by_cont_stmt = by_cont_stmt.where(cond)  # type: ignore[arg-type]
             by_cont_result = await session.execute(by_cont_stmt)
             by_continuation: dict[str, int] = {}
             for row in by_cont_result.all():
@@ -187,9 +187,9 @@ class IntegrityMixin:
                 Request.url,
                 Request.continuation,
                 Request.completed_at,
-            ).order_by(Request.continuation, Request.id)
+            ).order_by(Request.continuation, Request.id)  # type: ignore[arg-type]
             for cond in ghost_conditions:
-                ghost_stmt = ghost_stmt.where(cond)
+                ghost_stmt = ghost_stmt.where(cond)  # type: ignore[arg-type]
             ghost_result = await session.execute(ghost_stmt)
             ghosts = [
                 {
@@ -224,7 +224,7 @@ class IntegrityMixin:
         async with self._session_factory() as session:
             # Fetch all estimates
             estimate_rows = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Estimate.id,
                     Estimate.request_id,
                     Estimate.expected_types_json,
@@ -240,7 +240,7 @@ class IntegrityMixin:
 
             # Recursive CTE: find all descendant request IDs
             # Start with direct children of the estimate's request
-            req_table = Request.__table__
+            req_table = Request.__table__  # type: ignore[attr-defined]
             descendants = (
                 select(req_table.c.id)
                 .where(req_table.c.parent_request_id == request_id)

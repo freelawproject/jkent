@@ -12,19 +12,10 @@ Kent uses [uv](https://docs.astral.sh/uv/) for dependency management.
 uv sync
 ```
 
-For browser automation support, install the Playwright extra and its browser binaries:
+For web support (kent serve)
 
 ```bash
-uv sync --extra playwright
-uv run playwright install
-```
-
-Other optional extras:
-
-```bash
-uv sync --extra persistent-driver   # SQLite persistence
 uv sync --extra web                  # Web UI for inspecting runs
-uv sync --extra demo                 # BugCivilCourt demo server
 ```
 
 For development (includes all extras plus testing/linting tools):
@@ -70,7 +61,8 @@ pdd --db run.db doctor health        # Run health checks
 Kent ships with a demo scraper and a local mock court website called BugCivilCourt -- a whimsical court where insects file lawsuits. It demonstrates the full feature set (speculative requests, form submission, file archiving, JSON APIs, accumulated data) and serves as a reference for how to write scrapers.
 
 ```bash
-kent-demo                # Start the demo web server
+uv sync --group demo                      # installs uvicorn for the web server
+uv run kent/demorun_demo.py                # Start the demo web server
 kent run kent.demo.scraper:BugCourtDemoScraper   # Run the demo scraper
 ```
 

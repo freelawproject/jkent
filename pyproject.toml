@@ -31,6 +31,13 @@ dependencies = [
     "alembic>=1.13",
     "zstandard>=0.25.0",
 ]
+authors = [{ name = "Free Law Project" }]
+license = "BSD-2-Clause"
+classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.10" ]
+[project.urls]
+homepage = "https://github.com/freelawproject/kent"
+source = "https://github.com/freelawproject/kent"
+issues = "https://github.com/freelawproject/kent/issues"
 
 [project.optional-dependencies]
 web = [
@@ -44,11 +51,10 @@ demo = [
 [project.scripts]
 kent = "kent.cli:main"
 pdd = "kent.driver.persistent_driver.cli:main"
-kent-demo = "kent.demo.run_demo:main"
 
 [dependency-groups]
 dev = [
-    "kent[playwright,persistent-driver,web,demo]",
+    "kent[web,demo]",
     "pytest",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.0.0",
@@ -84,7 +90,7 @@ filterwarnings = [
 "kent" = ["**/*.jinja2", "**/*.html", "**/queries/*.json"]
 
 [tool.setuptools.packages.find]
-exclude = ["tests*"]
+include = ["kent*"]
 
 [tool.ruff]
 line-length = 79

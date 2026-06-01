@@ -85,14 +85,14 @@ class ListingMixin:
             # Count query
             count_stmt = select(func.count()).select_from(Request)
             for cond in conditions:
-                count_stmt = count_stmt.where(cond)
+                count_stmt = count_stmt.where(cond)  # type: ignore[arg-type]
             result = await session.execute(count_stmt)
             total = result.scalar() or 0
 
             # Data query
             data_stmt = select(*RequestRecord.select_columns(Request))
             for cond in conditions:
-                data_stmt = data_stmt.where(cond)
+                data_stmt = data_stmt.where(cond)  # type: ignore[arg-type]
 
             if sort == "id_asc":
                 data_stmt = data_stmt.order_by(Request.id.asc())  # type: ignore[union-attr]
@@ -156,7 +156,7 @@ class ListingMixin:
             result = await session.execute(count_stmt)
             total = result.scalar() or 0
 
-            data_stmt = select(
+            data_stmt = select(  # type: ignore[call-overload,misc]
                 Request.id,
                 Request.response_status_code,
                 Request.response_url,
@@ -231,11 +231,11 @@ class ListingMixin:
 
             count_stmt = select(func.count()).select_from(Result)
             for cond in conditions:
-                count_stmt = count_stmt.where(cond)
+                count_stmt = count_stmt.where(cond)  # type: ignore[arg-type]
             result = await session.execute(count_stmt)
             total = result.scalar() or 0
 
-            data_stmt = select(
+            data_stmt = select(  # type: ignore[call-overload]
                 Result.id,
                 Result.request_id,
                 Result.result_type,
@@ -287,7 +287,7 @@ class ListingMixin:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(*RequestRecord.select_columns(Request)).where(
-                    Request.id == request_id
+                    Request.id == request_id  # type: ignore[arg-type]
                 )
             )
             row = result.first()
@@ -306,7 +306,7 @@ class ListingMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload,misc]
                     Request.id,
                     Request.response_status_code,
                     Request.response_url,
@@ -347,7 +347,7 @@ class ListingMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Result.id,
                     Result.request_id,
                     Result.result_type,
@@ -383,7 +383,7 @@ class ListingMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(Request.permanent_json).where(Request.id == request_id)
+                select(Request.permanent_json).where(Request.id == request_id)  # type: ignore[call-overload]
             )
             return result.scalar()
 
@@ -459,7 +459,7 @@ class ListingMixin:
 
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Request.content_compressed,
                     Request.compression_dict_id,
                     Request.response_headers_json,

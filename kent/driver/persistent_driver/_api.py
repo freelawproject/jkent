@@ -210,7 +210,7 @@ class APIMixin:
         async with self.db._session_factory() as session:
             from sqlmodel import select
 
-            stmt = select(
+            stmt = select(  # type: ignore[call-overload,misc]
                 RequestModel.response_status_code,
                 RequestModel.response_url,
                 RequestModel.response_headers_json,

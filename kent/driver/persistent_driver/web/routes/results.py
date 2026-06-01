@@ -243,7 +243,7 @@ async def export_results_jsonl(
     debugger = await get_debugger(run_id, manager)
 
     # Build query
-    stmt = select(
+    stmt = select(  # type: ignore[call-overload]
         ResultModel.id,
         ResultModel.request_id,
         ResultModel.result_type,

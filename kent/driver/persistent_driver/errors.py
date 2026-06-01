@@ -363,7 +363,7 @@ async def list_errors(
         stmt = select(Error)
 
         if continuation:
-            stmt = stmt.join(Request, Error.request_id == Request.id)
+            stmt = stmt.join(Request, Error.request_id == Request.id)  # type: ignore[arg-type]
             stmt = stmt.where(Request.continuation == continuation)
 
         if error_type:
@@ -427,7 +427,7 @@ async def resolve_error(
     async with session_factory() as session:
         result = await session.execute(
             sa.update(Error)
-            .where(Error.id == error_id, Error.is_resolved == sa.false())
+            .where(Error.id == error_id, Error.is_resolved == sa.false())  # type: ignore[arg-type]
             .values(
                 is_resolved=True,
                 resolved_at=sa.text("CURRENT_TIMESTAMP"),
@@ -435,4 +435,4 @@ async def resolve_error(
             )
         )
         await session.commit()
-        return result.rowcount > 0
+        return result.rowcount > 0  # type: ignore[attr-defined]

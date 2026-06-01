@@ -60,7 +60,7 @@ class RequestQueueMixin:
     ) -> int | None:
         """Find a request ID by deduplication key inside an existing session."""
         result = await session.execute(
-            select(Request.id).where(Request.deduplication_key == dedup_key)
+            select(Request.id).where(Request.deduplication_key == dedup_key)  # type: ignore[call-overload]
         )
         return result.scalar()
 
@@ -84,7 +84,7 @@ class RequestQueueMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(Request.id)
+                select(Request.id)  # type: ignore[call-overload]
                 .where(
                     Request.url == url,
                     Request.status.in_(["completed", "in_progress"]),  # type: ignore[attr-defined]
@@ -365,7 +365,7 @@ class RequestQueueMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload,misc]
                     Request.id,
                     Request.request_type,
                     Request.method,
@@ -429,7 +429,7 @@ class RequestQueueMixin:
             started_at_ns = time.monotonic_ns()
 
             subq = (
-                select(Request.id)
+                select(Request.id)  # type: ignore[call-overload]
                 .where(
                     Request.status == "pending",
                     or_(
@@ -446,7 +446,7 @@ class RequestQueueMixin:
             )
 
             stmt = (
-                update(Request)
+                update(Request)  # type: ignore[call-overload,misc]
                 .where(Request.id == subq)
                 .values(
                     status="in_progress",
@@ -503,7 +503,7 @@ class RequestQueueMixin:
             started_at_ns = time.monotonic_ns()
             await session.execute(
                 update(Request)
-                .where(Request.id == request_id)
+                .where(Request.id == request_id)  # type: ignore[arg-type]
                 .values(
                     status="in_progress",
                     started_at=func.current_timestamp(),
@@ -517,7 +517,7 @@ class RequestQueueMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(Request)
-                .where(Request.id == request_id)
+                .where(Request.id == request_id)  # type: ignore[arg-type]
                 .values(started_at_ns=time.monotonic_ns())
             )
             await session.commit()
@@ -539,7 +539,7 @@ class RequestQueueMixin:
         completed_at_ns = time.monotonic_ns()
         await session.execute(
             update(Request)
-            .where(Request.id == request_id)
+            .where(Request.id == request_id)  # type: ignore[arg-type]
             .values(
                 status="completed",
                 completed_at=func.current_timestamp(),
@@ -560,7 +560,7 @@ class RequestQueueMixin:
             completed_at_ns = time.monotonic_ns()
             await session.execute(
                 update(Request)
-                .where(Request.id == request_id)
+                .where(Request.id == request_id)  # type: ignore[arg-type]
                 .values(
                     status="failed",
                     completed_at=func.current_timestamp(),
@@ -583,7 +583,7 @@ class RequestQueueMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(Request.retry_count, Request.cumulative_backoff).where(
+                select(Request.retry_count, Request.cumulative_backoff).where(  # type: ignore[call-overload]
                     Request.id == request_id
                 )
             )
@@ -610,7 +610,7 @@ class RequestQueueMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(Request)
-                .where(Request.id == request_id)
+                .where(Request.id == request_id)  # type: ignore[arg-type]
                 .values(
                     status="pending",
                     retry_count=Request.retry_count + 1,
@@ -631,7 +631,7 @@ class RequestQueueMixin:
             result = await session.execute(
                 select(func.count())
                 .select_from(Request)
-                .where(Request.status == "pending")
+                .where(Request.status == "pending")  # type: ignore[arg-type]
             )
             return result.scalar() or 0
 
@@ -651,7 +651,7 @@ class RequestQueueMixin:
             result = await session.execute(
                 select(func.count())
                 .select_from(Request)
-                .where(Request.status == "in_progress")
+                .where(Request.status == "in_progress")  # type: ignore[arg-type]
             )
             return result.scalar() or 0
 
@@ -682,7 +682,7 @@ class RequestQueueMixin:
                 )
             )
             .where(
-                Request.status == "completed",
+                Request.status == "completed",  # type: ignore[arg-type]
                 Request.started_at_ns.isnot(None),  # type: ignore[union-attr]
                 Request.completed_at_ns.isnot(None),  # type: ignore[union-attr]
             )
@@ -717,7 +717,7 @@ class RequestQueueMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(Request.continuation)
+                select(Request.continuation)  # type: ignore[call-overload]
                 .where(
                     Request.response_status_code.isnot(None),  # type: ignore[union-attr]
                     Request.content_compressed.isnot(None),  # type: ignore[union-attr]
@@ -756,7 +756,7 @@ class RequestQueueMixin:
                 )
                 .select_from(Request)
                 .where(
-                    Request.status == "pending",
+                    Request.status == "pending",  # type: ignore[arg-type]
                     Request.started_at > func.datetime("now"),
                 )
             )
@@ -770,7 +770,7 @@ class RequestQueueMixin:
                 select(func.count())
                 .select_from(Request)
                 .where(
-                    Request.status == "pending",
+                    Request.status == "pending",  # type: ignore[arg-type]
                     Request.started_at > func.datetime("now"),
                 )
             )
@@ -793,13 +793,13 @@ class RequestQueueMixin:
             result = await session.execute(
                 update(Request)
                 .where(
-                    Request.status == "pending",
-                    Request.continuation == continuation,
+                    Request.status == "pending",  # type: ignore[arg-type]
+                    Request.continuation == continuation,  # type: ignore[arg-type]
                 )
                 .values(status="held")
             )
             await session.commit()
-            return result.rowcount  # type: ignore[return-value]
+            return result.rowcount  # type: ignore[attr-defined,return-value]
 
     async def resume_step(self, continuation: str) -> int:
         """Resume processing of held requests.
@@ -814,13 +814,13 @@ class RequestQueueMixin:
             result = await session.execute(
                 update(Request)
                 .where(
-                    Request.status == "held",
-                    Request.continuation == continuation,
+                    Request.status == "held",  # type: ignore[arg-type]
+                    Request.continuation == continuation,  # type: ignore[arg-type]
                 )
                 .values(status="pending")
             )
             await session.commit()
-            return result.rowcount  # type: ignore[return-value]
+            return result.rowcount  # type: ignore[attr-defined,return-value]
 
     async def get_held_count(self, continuation: str | None = None) -> int:
         """Get count of held requests.
@@ -835,10 +835,10 @@ class RequestQueueMixin:
             stmt = (
                 select(func.count())
                 .select_from(Request)
-                .where(Request.status == "held")
+                .where(Request.status == "held")  # type: ignore[arg-type]
             )
             if continuation:
-                stmt = stmt.where(Request.continuation == continuation)
+                stmt = stmt.where(Request.continuation == continuation)  # type: ignore[arg-type]
             result = await session.execute(stmt)
             return result.scalar() or 0
 
@@ -900,7 +900,7 @@ class RequestQueueMixin:
             result = await session.execute(
                 update(Request)
                 .where(
-                    Request.id == request_id,
+                    Request.id == request_id,  # type: ignore[arg-type]
                     Request.status.in_(["pending", "held"]),  # type: ignore[attr-defined]
                 )
                 .values(
@@ -911,7 +911,7 @@ class RequestQueueMixin:
                 )
             )
             await session.commit()
-            return result.rowcount > 0  # type: ignore[return-value]
+            return result.rowcount > 0  # type: ignore[attr-defined,return-value]
 
     async def cancel_requests_by_continuation(self, continuation: str) -> int:
         """Cancel all pending/held requests for a continuation.
@@ -927,7 +927,7 @@ class RequestQueueMixin:
             result = await session.execute(
                 update(Request)
                 .where(
-                    Request.continuation == continuation,
+                    Request.continuation == continuation,  # type: ignore[arg-type]
                     Request.status.in_(["pending", "held"]),  # type: ignore[attr-defined]
                 )
                 .values(
@@ -938,4 +938,4 @@ class RequestQueueMixin:
                 )
             )
             await session.commit()
-            return result.rowcount  # type: ignore[return-value]
+            return result.rowcount  # type: ignore[attr-defined,return-value]

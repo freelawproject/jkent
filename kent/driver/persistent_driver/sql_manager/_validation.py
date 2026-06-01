@@ -41,7 +41,7 @@ class ValidationMixin:
 
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Request.id,
                     Request.content_compressed,
                     Request.compression_dict_id,

@@ -30,7 +30,7 @@ def incidental_record_select() -> Select[Any]:
 
     Column order must match :func:`row_to_incidental_record`.
     """
-    return select(
+    return select(  # type: ignore[call-overload,misc]
         IncidentalRequest.id,
         IncidentalRequest.parent_request_id,
         IncidentalRequest.url,
@@ -117,7 +117,7 @@ class IncidentalRequestStorageMixin:
             # Dedup: look for an existing storage row with the same MD5
             if content_md5 is not None:
                 result = await session.execute(
-                    select(IncidentalRequestStorage.id)
+                    select(IncidentalRequestStorage.id)  # type: ignore[call-overload]
                     .where(IncidentalRequestStorage.content_md5 == content_md5)
                     .limit(1)
                 )
@@ -168,7 +168,7 @@ class IncidentalRequestStorageMixin:
             result = await session.execute(
                 incidental_record_select()
                 .where(
-                    IncidentalRequest.parent_request_id == parent_request_id
+                    IncidentalRequest.parent_request_id == parent_request_id  # type: ignore[arg-type]
                 )
                 .order_by(IncidentalRequest.started_at_ns.asc())  # type: ignore[union-attr]
             )
@@ -181,7 +181,7 @@ class IncidentalRequestStorageMixin:
         async with self._session_factory() as session:
             result = await session.execute(
                 incidental_record_select().where(
-                    IncidentalRequest.id == incidental_id
+                    IncidentalRequest.id == incidental_id  # type: ignore[arg-type]
                 )
             )
             row = result.first()
@@ -194,7 +194,7 @@ class IncidentalRequestStorageMixin:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(IncidentalRequestStorage).where(
-                    IncidentalRequestStorage.id == storage_id
+                    IncidentalRequestStorage.id == storage_id  # type: ignore[arg-type]
                 )
             )
             s = result.scalar_one_or_none()

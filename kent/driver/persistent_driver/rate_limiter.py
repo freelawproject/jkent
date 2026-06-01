@@ -59,7 +59,7 @@ class AioSQLiteBucket(AbstractBucket):
         self._db_lock = db_lock
 
     @property
-    def rates(self) -> list[Rate]:
+    def rates(self) -> list[Rate]:  # type: ignore[override]
         """Get the rate limits for this bucket."""
         return self._rates
 
@@ -130,11 +130,11 @@ class AioSQLiteBucket(AbstractBucket):
         async with self._db_lock, self._session_factory() as session:
             result = await session.execute(
                 sa.delete(RateItemModel).where(
-                    RateItemModel.timestamp < cutoff
+                    RateItemModel.timestamp < cutoff  # type: ignore[arg-type]
                 )
             )
             await session.commit()
-            return result.rowcount
+            return result.rowcount  # type: ignore[attr-defined]
 
     async def flush(self) -> None:
         """Remove all items from the bucket."""

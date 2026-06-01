@@ -144,4 +144,4 @@ async def get_next_queue_counter(session: AsyncSession) -> int:
     """
     result = await session.execute(select(sa.func.max(Request.queue_counter)))
     row = result.first()
-    return (row[0] or 0) + 1
+    return (row[0] or 0) + 1  # type: ignore[index]

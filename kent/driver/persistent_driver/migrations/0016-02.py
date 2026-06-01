@@ -73,7 +73,7 @@ async def migrate(engine: AsyncEngine) -> bool:
         offset = 0
         while True:
             rows = await conn.run_sync(
-                lambda c, off=offset: c.execute(
+                lambda c, off=offset: c.execute(  # type: ignore[misc]
                     sa.text(
                         "SELECT id, resource_type, method, url, body, status_code, "
                         "response_headers_json, content_compressed, content_size_original, "
@@ -114,21 +114,23 @@ async def migrate(engine: AsyncEngine) -> bool:
 
                 if storage_id is None:
                     result = await conn.run_sync(
-                        lambda c, **kw: c.execute(
-                            sa.text(
-                                "INSERT INTO incidental_request_storage "
-                                "(resource_type, url, method, body, status_code, "
-                                "response_headers_json, content_compressed, "
-                                "content_size_original, content_size_compressed, "
-                                "compression_dict_id, failure_reason, content_md5) "
-                                "VALUES (:resource_type, :url, :method, :body, "
-                                ":status_code, :response_headers_json, "
-                                ":content_compressed, :content_size_original, "
-                                ":content_size_compressed, :compression_dict_id, "
-                                ":failure_reason, :content_md5)"
-                            ),
-                            kw,
-                        ).lastrowid,
+                        lambda c, **kw: (
+                            c.execute(
+                                sa.text(
+                                    "INSERT INTO incidental_request_storage "
+                                    "(resource_type, url, method, body, status_code, "
+                                    "response_headers_json, content_compressed, "
+                                    "content_size_original, content_size_compressed, "
+                                    "compression_dict_id, failure_reason, content_md5) "
+                                    "VALUES (:resource_type, :url, :method, :body, "
+                                    ":status_code, :response_headers_json, "
+                                    ":content_compressed, :content_size_original, "
+                                    ":content_size_compressed, :compression_dict_id, "
+                                    ":failure_reason, :content_md5)"
+                                ),
+                                kw,
+                            ).lastrowid
+                        ),
                         resource_type=resource_type or "",
                         url=url or "",
                         method=method or "GET",
@@ -150,7 +152,7 @@ async def migrate(engine: AsyncEngine) -> bool:
                     deduped += 1
 
                 await conn.run_sync(
-                    lambda c, sid=storage_id, iid=ir_id: c.execute(
+                    lambda c, sid=storage_id, iid=ir_id: c.execute(  # type: ignore[misc]
                         sa.text(
                             "UPDATE incidental_requests SET storage_id = :sid WHERE id = :id"
                         ),

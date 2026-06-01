@@ -55,7 +55,7 @@ class RunMetadataMixin:
         """
         async with self._lock, self._session_factory() as session:
             result = await session.execute(
-                select(RunMetadata.id).where(RunMetadata.id == 1)
+                select(RunMetadata.id).where(RunMetadata.id == 1)  # type: ignore[call-overload]
             )
             if result.scalar() is not None:
                 return
@@ -96,7 +96,7 @@ class RunMetadataMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(RunMetadata.speculation_config_json).where(
+                select(RunMetadata.speculation_config_json).where(  # type: ignore[call-overload]
                     RunMetadata.id == 1
                 )
             )
@@ -115,7 +115,7 @@ class RunMetadataMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(RunMetadata.seed_params_json).where(RunMetadata.id == 1)
+                select(RunMetadata.seed_params_json).where(RunMetadata.id == 1)  # type: ignore[call-overload]
             )
             val = result.scalar()
             if val:
@@ -133,7 +133,7 @@ class RunMetadataMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(RunMetadata)
-                .where(RunMetadata.id == 1)
+                .where(RunMetadata.id == 1)  # type: ignore[arg-type]
                 .values(speculation_config_json=json.dumps(config))
             )
             await session.commit()
@@ -151,7 +151,7 @@ class RunMetadataMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(RunMetadata)
-                .where(RunMetadata.id == 1)
+                .where(RunMetadata.id == 1)  # type: ignore[arg-type]
                 .values(seed_params_json=json.dumps(seed_params))
             )
             await session.commit()
@@ -167,13 +167,13 @@ class RunMetadataMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(Request)
-                .where(Request.status == "in_progress")
+                .where(Request.status == "in_progress")  # type: ignore[arg-type]
                 .values(status="pending")
             )
             result = await session.execute(
                 select(func.count())
                 .select_from(Request)
-                .where(Request.status == "pending")
+                .where(Request.status == "pending")  # type: ignore[arg-type]
             )
             count = result.scalar() or 0
             await session.commit()
@@ -189,15 +189,15 @@ class RunMetadataMixin:
                 async with self._session_factory() as session:
                     await session.execute(
                         update(Request)
-                        .where(Request.status == "in_progress")
+                        .where(Request.status == "in_progress")  # type: ignore[arg-type]
                         .values(status="pending")
                     )
                     await session.execute(
                         update(RunMetadata)
-                        .where(RunMetadata.id == 1)
+                        .where(RunMetadata.id == 1)  # type: ignore[arg-type]
                         .values(
                             status=sa.case(
-                                (
+                                (  # type: ignore[arg-type]
                                     RunMetadata.status == "running",
                                     "interrupted",
                                 ),
@@ -215,7 +215,7 @@ class RunMetadataMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(RunMetadata)
-                .where(RunMetadata.id == 1)
+                .where(RunMetadata.id == 1)  # type: ignore[arg-type]
                 .values(
                     status="running",
                     started_at=func.current_timestamp(),
@@ -235,7 +235,7 @@ class RunMetadataMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(RunMetadata)
-                .where(RunMetadata.id == 1)
+                .where(RunMetadata.id == 1)  # type: ignore[arg-type]
                 .values(
                     status=status,
                     ended_at=func.current_timestamp(),
@@ -273,7 +273,7 @@ class RunMetadataMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(RunMetadata)
-                .where(RunMetadata.id == 1)
+                .where(RunMetadata.id == 1)  # type: ignore[arg-type]
                 .values(browser_cookies_json=cookies_json)
             )
             await session.commit()
@@ -286,7 +286,7 @@ class RunMetadataMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(RunMetadata.browser_cookies_json).where(
+                select(RunMetadata.browser_cookies_json).where(  # type: ignore[call-overload]
                     RunMetadata.id == 1
                 )
             )
@@ -312,7 +312,7 @@ class RunMetadataMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(RunMetadata).where(RunMetadata.id == 1)
+                select(RunMetadata).where(RunMetadata.id == 1)  # type: ignore[arg-type]
             )
             row = result.scalar_one_or_none()
             if row is None:

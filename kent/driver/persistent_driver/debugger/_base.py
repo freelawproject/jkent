@@ -178,7 +178,7 @@ class DebuggerBase:
                     .select_from(Request)
                     .where(Request.status == "pending")
                 )
-                row = count_result.scalar()
+                row = count_result.scalar()  # type: ignore[assignment]
                 pending_count = row if row else 0
                 result_dict["pending_count"] = pending_count
 

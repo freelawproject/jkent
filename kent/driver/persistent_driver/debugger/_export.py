@@ -168,7 +168,7 @@ class ExportSearchMixin:
 
         count = 0
         async with self._session_factory() as session:
-            query = select(
+            query = select(  # type: ignore[call-overload]
                 Result.id,
                 Result.request_id,
                 Result.result_type,
@@ -274,7 +274,7 @@ class ExportSearchMixin:
             .where(
                 Request.response_status_code.isnot(None),  # type: ignore[union-attr]
             )
-            .order_by(Request.id)
+            .order_by(Request.id)  # type: ignore[arg-type]
         )
         if continuation:
             query = query.where(Request.continuation == continuation)

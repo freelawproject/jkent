@@ -71,7 +71,7 @@ async def _fetch_archived_file_row(
 
     async with debugger._session_factory() as session:
         stmt = (
-            select(
+            select(  # type: ignore[call-overload,misc]
                 ArchivedFile.id,
                 ArchivedFile.request_id,
                 ArchivedFile.file_path,
@@ -143,7 +143,8 @@ async def list_archived_files(
         count_stmt = select(sa.func.count()).select_from(ArchivedFile)
         if continuation:
             count_stmt = count_stmt.join(
-                RequestModel, ArchivedFile.request_id == RequestModel.id
+                RequestModel,
+                ArchivedFile.request_id == RequestModel.id,  # type: ignore[arg-type]
             )
         if expected_type:
             count_stmt = count_stmt.where(
@@ -159,7 +160,7 @@ async def list_archived_files(
 
         # Get paginated results
         stmt = (
-            select(
+            select(  # type: ignore[call-overload,misc]
                 ArchivedFile.id,
                 ArchivedFile.request_id,
                 ArchivedFile.file_path,

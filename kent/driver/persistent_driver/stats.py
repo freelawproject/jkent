@@ -345,7 +345,7 @@ async def get_compression_stats(
     """
     async with session_factory() as session:
         result = await session.execute(
-            select(
+            select(  # type: ignore[call-overload]
                 sa.func.count(),
                 sa.func.coalesce(
                     sa.func.sum(Request.content_size_original), 0
@@ -406,10 +406,10 @@ async def get_result_stats(
             select(
                 sa.func.count(),
                 sa.func.sum(
-                    sa.case((Result.is_valid == sa.true(), 1), else_=0)
+                    sa.case((Result.is_valid == sa.true(), 1), else_=0)  # type: ignore[arg-type]
                 ),
                 sa.func.sum(
-                    sa.case((Result.is_valid == sa.false(), 1), else_=0)
+                    sa.case((Result.is_valid == sa.false(), 1), else_=0)  # type: ignore[arg-type]
                 ),
             )
         )
@@ -450,10 +450,10 @@ async def get_error_stats(
             select(
                 sa.func.count(),
                 sa.func.sum(
-                    sa.case((Error.is_resolved == sa.false(), 1), else_=0)
+                    sa.case((Error.is_resolved == sa.false(), 1), else_=0)  # type: ignore[arg-type]
                 ),
                 sa.func.sum(
-                    sa.case((Error.is_resolved == sa.true(), 1), else_=0)
+                    sa.case((Error.is_resolved == sa.true(), 1), else_=0)  # type: ignore[arg-type]
                 ),
             )
         )
@@ -477,8 +477,8 @@ async def get_error_stats(
 
         # Get counts by continuation (via joined requests)
         result = await session.execute(
-            select(Request.continuation, sa.func.count(Error.id))
-            .join(Request, Error.request_id == Request.id)
+            select(Request.continuation, sa.func.count(Error.id))  # type: ignore[arg-type]
+            .join(Request, Error.request_id == Request.id)  # type: ignore[arg-type]
             .group_by(Request.continuation)
         )
         rows = result.all()

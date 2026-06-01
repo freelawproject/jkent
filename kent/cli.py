@@ -340,8 +340,8 @@ def serve(runs_dir: str, host: str, port: int, verbose: bool) -> None:
     except ImportError as e:
         raise click.ClickException(
             f"Missing dependency: {e}. "
-            "Install the 'web' and 'persistent-driver' extras: "
-            "pip install kent[web,persistent-driver]"
+            "Install the 'web' extra: "
+            "uv install kent[web]"
         ) from e
 
     runs_path = Path(runs_dir)
@@ -776,11 +776,7 @@ def _run_persistent(
     try:
         from kent.driver.persistent_driver import PersistentDriver
     except ImportError as e:
-        raise click.ClickException(
-            f"Missing dependency: {e}. "
-            "Install the 'persistent-driver' extra: "
-            "pip install kent[persistent-driver]"
-        ) from e
+        raise click.ClickException(f"Missing dependency: {e}. ") from e
 
     resolved_db = Path(db_path) if db_path else Path(f"{scraper_name}.db")
     click.echo(f"Database: {resolved_db}")
@@ -834,11 +830,7 @@ def _run_playwright(
     try:
         from kent.driver.playwright_driver import PlaywrightDriver
     except ImportError as e:
-        raise click.ClickException(
-            f"Missing dependency: {e}. "
-            "Install the 'playwright' and 'persistent-driver' extras: "
-            "pip install kent[playwright,persistent-driver]"
-        ) from e
+        raise click.ClickException(f"Missing dependency: {e}. ") from e
 
     # Load browser profile if provided
     browser_profile = None

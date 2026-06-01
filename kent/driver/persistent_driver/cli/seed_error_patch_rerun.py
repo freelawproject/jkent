@@ -228,7 +228,7 @@ async def _build_plan(debugger: LocalDevDriverDebugger) -> _Plan:
         res = await session.execute(
             sa.select(sa.func.count())
             .select_from(Error)
-            .where(Error.is_resolved == False)  # noqa: E712
+            .where(Error.is_resolved == False)  # type: ignore[arg-type]  # noqa: E712
         )
         plan.unresolved_errors = res.scalar() or 0
 
@@ -249,12 +249,12 @@ async def _build_plan(debugger: LocalDevDriverDebugger) -> _Plan:
                 Error.id.label("error_id"),  # type: ignore[union-attr]
             )
             .select_from(Request)
-            .join(Error, Error.request_id == Request.id)
-            .where(Error.is_resolved == False)  # noqa: E712
+            .join(Error, Error.request_id == Request.id)  # type: ignore[arg-type]
+            .where(Error.is_resolved == False)  # type: ignore[arg-type]  # noqa: E712
         )
         ancestors_cte = anchor.cte(name="ancestors", recursive=True)
         recursive = (
-            sa.select(
+            sa.select(  # type: ignore[call-overload]
                 Request.id,
                 Request.parent_request_id,
                 ancestors_cte.c.error_request_id,
@@ -291,7 +291,7 @@ async def _build_plan(debugger: LocalDevDriverDebugger) -> _Plan:
 
         # Fetch full row data for each unique root (order by id for determinism).
         res = await session.execute(
-            sa.select(
+            sa.select(  # type: ignore[call-overload,misc]
                 Request.id,
                 Request.priority,
                 Request.request_type,
@@ -316,11 +316,11 @@ async def _build_plan(debugger: LocalDevDriverDebugger) -> _Plan:
 
         # Downward CTE: count total and errored descendants under each root.
         root_ids_tuple = tuple(plan.root_ids)
-        down_anchor = sa.select(Request.id).where(
+        down_anchor = sa.select(Request.id).where(  # type: ignore[call-overload]
             Request.id.in_(root_ids_tuple)  # type: ignore[union-attr]
         )
         down_cte = down_anchor.cte(name="descendants", recursive=True)
-        down_recursive = sa.select(Request.id).where(
+        down_recursive = sa.select(Request.id).where(  # type: ignore[call-overload]
             Request.parent_request_id == down_cte.c.id
         )
         down_cte = down_cte.union_all(down_recursive)
@@ -331,12 +331,12 @@ async def _build_plan(debugger: LocalDevDriverDebugger) -> _Plan:
         plan.total_descendants = res.scalar() or 0
 
         res = await session.execute(
-            sa.select(sa.func.count(sa.distinct(Request.id)))
+            sa.select(sa.func.count(sa.distinct(Request.id)))  # type: ignore[arg-type]
             .select_from(Request)
-            .join(Error, Error.request_id == Request.id)
+            .join(Error, Error.request_id == Request.id)  # type: ignore[arg-type]
             .where(
                 Request.id.in_(sa.select(down_cte.c.id)),  # type: ignore[union-attr]
-                Error.is_resolved == False,  # noqa: E712
+                Error.is_resolved == False,  # type: ignore[arg-type]  # noqa: E712
             )
         )
         plan.errored_descendants = res.scalar() or 0
@@ -349,7 +349,7 @@ async def _get_run_metadata_row(
 ) -> RunMetadata | None:
     async with debugger._session_factory() as session:
         res = await session.execute(
-            sa.select(RunMetadata).where(RunMetadata.id == 1)
+            sa.select(RunMetadata).where(RunMetadata.id == 1)  # type: ignore[arg-type]
         )
         return res.scalar_one_or_none()
 
@@ -423,7 +423,7 @@ async def _mark_covered_errors_resolved(
             sa.update(Error)
             .where(
                 Error.id.in_(error_ids),  # type: ignore[union-attr]
-                Error.is_resolved == False,  # noqa: E712
+                Error.is_resolved == False,  # type: ignore[arg-type]  # noqa: E712
             )
             .values(
                 is_resolved=True,
@@ -433,7 +433,7 @@ async def _mark_covered_errors_resolved(
             )
         )
         await session.commit()
-        return result.rowcount or 0
+        return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 def _pct(num: int, denom: int) -> float | None:

@@ -63,7 +63,7 @@ class ResponseStorageMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 update(Request)
-                .where(Request.id == request_id)
+                .where(Request.id == request_id)  # type: ignore[arg-type]
                 .values(
                     response_status_code=status_code,
                     response_headers_json=headers_json,
@@ -127,7 +127,7 @@ class ResponseStorageMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Request.content_compressed,
                     Request.compression_dict_id,
                 ).where(Request.id == request_id)
@@ -151,7 +151,7 @@ class ResponseStorageMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload,misc]
                     Request.id,
                     Request.response_status_code,
                     Request.response_headers_json,
@@ -199,7 +199,7 @@ class ResponseStorageMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload,misc]
                     Request.response_url,
                     Request.content_compressed,
                     Request.compression_dict_id,
@@ -224,7 +224,7 @@ class ResponseStorageMixin:
         """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(CompressionDict.dictionary_data).where(
+                select(CompressionDict.dictionary_data).where(  # type: ignore[call-overload]
                     CompressionDict.id == dict_id
                 )
             )

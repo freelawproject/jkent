@@ -158,9 +158,9 @@ class ScraperRegistry:
         full_path = f"{module_path}:{class_name}"
 
         # Extract class-level metadata
-        court_ids = getattr(scraper_class, "court_ids", set()) or set()
+        court_ids = getattr(scraper_class, "court_ids", set()) or set()  # type: ignore[var-annotated]
         court_url = getattr(scraper_class, "court_url", "") or ""
-        data_types = getattr(scraper_class, "data_types", set()) or set()
+        data_types = getattr(scraper_class, "data_types", set()) or set()  # type: ignore[var-annotated]
         status_enum = getattr(scraper_class, "status", None)
         status = status_enum.value if status_enum else "unknown"
         version = getattr(scraper_class, "version", "") or ""

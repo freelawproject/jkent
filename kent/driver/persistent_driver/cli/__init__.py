@@ -57,7 +57,7 @@ def _format_data_diff(orig: dict[str, Any], new: dict[str, Any]) -> str:
     Aggregates list item changes to show field-level summary.
     Handles type changes (e.g., ConnTrialCourtDocket -> ConnTrialCaseUnavailable).
     """
-    import jsondiff
+    import jsondiff  # type: ignore[import-untyped]
 
     # Detect type change by checking if the sets of keys are fundamentally different
     # This catches cases like ConnTrialCourtDocket -> ConnTrialCaseUnavailable
@@ -388,17 +388,19 @@ def info(
 
 
 def _print_help_recursive(
-    group: click.MultiCommand, ctx: click.Context, prefix: str = ""
+    group: click.MultiCommand,  # type: ignore[valid-type]
+    ctx: click.Context,
+    prefix: str = "",
 ) -> None:
     """Recursively print help for all commands in a group."""
-    for name in group.list_commands(ctx):
-        cmd = group.get_command(ctx, name)
+    for name in group.list_commands(ctx):  # type: ignore[attr-defined]
+        cmd = group.get_command(ctx, name)  # type: ignore[attr-defined]
         if cmd is None:
             continue
         sub_ctx = click.Context(cmd, info_name=f"{prefix}{name}", parent=ctx)
         click.echo(cmd.get_help(sub_ctx))
         click.echo("\n")
-        if isinstance(cmd, click.MultiCommand):
+        if isinstance(cmd, click.MultiCommand):  # type: ignore[arg-type]
             _print_help_recursive(cmd, sub_ctx, prefix=f"{prefix}{name} ")
 
 

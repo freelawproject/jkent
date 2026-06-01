@@ -99,7 +99,7 @@ class SpeculationMixin:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(SpeculationTracking).where(
-                    SpeculationTracking.func_name == func_name
+                    SpeculationTracking.func_name == func_name  # type: ignore[arg-type]
                 )
             )
             row = result.scalar_one_or_none()
@@ -162,7 +162,7 @@ class SpeculationMixin:
         async with self._lock, self._session_factory() as session:
             await session.execute(
                 delete(SpeculationTracking).where(
-                    SpeculationTracking.func_name == func_name
+                    SpeculationTracking.func_name == func_name  # type: ignore[arg-type]
                 )
             )
             await session.commit()

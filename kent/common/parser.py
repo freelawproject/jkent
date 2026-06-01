@@ -53,7 +53,7 @@ class KentParser(ABC, Generic[T]):
         """
         element = lxml_html.fromstring(html)
         page = LxmlPageElement(CheckedHtmlElement(element, url), url=url)
-        return cls()(page)
+        return cls()(page)  # type: ignore[arg-type]
 
     @classmethod
     def from_file(

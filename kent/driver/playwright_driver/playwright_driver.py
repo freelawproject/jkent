@@ -1541,13 +1541,14 @@ class PlaywrightDriver(
                 if isinstance(condition, WaitForSelector):
                     await page.wait_for_selector(
                         condition.selector,
-                        state=condition.state,
+                        state=condition.state,  # type: ignore[arg-type]
                         timeout=condition.timeout,
                     )
 
                 elif isinstance(condition, WaitForLoadState):
                     await page.wait_for_load_state(
-                        condition.state, timeout=condition.timeout
+                        condition.state,  # type: ignore[arg-type]
+                        timeout=condition.timeout,
                     )
 
                 elif isinstance(condition, WaitForURL):
@@ -1588,12 +1589,13 @@ class PlaywrightDriver(
                 if isinstance(condition, WaitForSelector):
                     await page.wait_for_selector(
                         condition.selector,
-                        state=condition.state,
+                        state=condition.state,  # type: ignore[arg-type]
                         timeout=condition.timeout,
                     )
                 elif isinstance(condition, WaitForLoadState):
                     await page.wait_for_load_state(
-                        condition.state, timeout=condition.timeout
+                        condition.state,  # type: ignore[arg-type]
+                        timeout=condition.timeout,
                     )
                 elif isinstance(condition, WaitForURL):
                     await page.wait_for_url(

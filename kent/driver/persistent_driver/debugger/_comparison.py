@@ -61,7 +61,7 @@ class ComparisonMixin:
             .cte(name="children", recursive=True)
         )
 
-        req_alias = Request.__table__.alias("r")
+        req_alias = Request.__table__.alias("r")  # type: ignore[attr-defined]
         recursive = select(*RequestRecord.select_columns(req_alias.c)).where(
             req_alias.c.parent_request_id == base.c.id
         )
@@ -104,7 +104,7 @@ class ComparisonMixin:
         Returns:
             List of request IDs for sampled terminal requests.
         """
-        child_alias = Request.__table__.alias("child")
+        child_alias = Request.__table__.alias("child")  # type: ignore[attr-defined]
         child_exists = (
             select(sa.literal(1))
             .select_from(child_alias)
@@ -182,7 +182,7 @@ class ComparisonMixin:
         # Get the full request data
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Request.id,
                     Request.url,
                     Request.method,
@@ -208,7 +208,7 @@ class ComparisonMixin:
         # Get the response data from the request row (merged table)
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload,misc]
                     Request.id,
                     Request.response_status_code,
                     Request.response_headers_json,
@@ -259,7 +259,7 @@ class ComparisonMixin:
 
         # Load original stored results using recursive CTE
         base_children = (
-            select(
+            select(  # type: ignore[call-overload,misc]
                 Request.id,
                 Request.request_type,
                 Request.url,
@@ -276,8 +276,8 @@ class ComparisonMixin:
             .cte(name="children", recursive=True)
         )
 
-        req_alias = Request.__table__.alias("r")
-        recursive_children = select(
+        req_alias = Request.__table__.alias("r")  # type: ignore[attr-defined]
+        recursive_children = select(  # type: ignore[call-overload]
             req_alias.c.id,
             req_alias.c.request_type,
             req_alias.c.url,
@@ -408,7 +408,7 @@ class ComparisonMixin:
         # Get request data
         async with self._session_factory() as session:
             result = await session.execute(
-                select(
+                select(  # type: ignore[call-overload]
                     Request.url,
                     Request.method,
                     Request.continuation,

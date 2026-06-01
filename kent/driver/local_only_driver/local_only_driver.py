@@ -668,7 +668,7 @@ class LocalOnlyDriver(
         async with self.db._lock, self.db._session_factory() as session:
             await session.execute(
                 update(RequestModel)
-                .where(RequestModel.id == request_id)
+                .where(RequestModel.id == request_id)  # type: ignore[arg-type]
                 .values(
                     status="stubbed",
                     started_at=None,
