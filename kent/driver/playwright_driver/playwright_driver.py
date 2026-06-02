@@ -1033,6 +1033,14 @@ class PlaywrightDriver(
                             await self._execute_via_navigation(request, page)
                         except HTMLStructuralAssumptionException as e:
                             nav_error = e
+                        except PlaywrightTimeoutError as e:
+                            # Stash the timeout so DOM capture downstream still
+                            # runs — failed requests retain whatever HTML the
+                            # page reached, for debugging.
+                            nav_error = TransientException(
+                                f"Playwright timeout: {e}"
+                            )
+                            nav_error.__cause__ = e
                         except PlaywrightError as e:
                             if "NS_ERROR_ABORT" in str(e):
                                 nav_error = TransientException(
