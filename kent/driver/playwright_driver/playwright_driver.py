@@ -1222,9 +1222,7 @@ class PlaywrightDriver(
             # await_list_error re-raise after DOM capture, or explicit raises
             # like archive-download timeouts). Log without traceback noise —
             # the retry mechanism will handle it.
-            logger.warning(
-                f"Transient error for request {request_id}: {e}"
-            )
+            logger.warning(f"Transient error for request {request_id}: {e}")
             raise
 
         except Exception as e:
@@ -1487,7 +1485,9 @@ class PlaywrightDriver(
                         actual_count=0,
                         request_url=request.request.url,
                     )
-                async with page.expect_download(**expect_kwargs) as download_info:
+                async with page.expect_download(
+                    **expect_kwargs
+                ) as download_info:
                     await submit_element.click(**click_kwargs)
                 return await download_info.value
             else:
@@ -1505,7 +1505,9 @@ class PlaywrightDriver(
                         actual_count=0,
                         request_url=request.request.url,
                     )
-                async with page.expect_download(**expect_kwargs) as download_info:
+                async with page.expect_download(
+                    **expect_kwargs
+                ) as download_info:
                     await submit_element.click(**click_kwargs)
                 return await download_info.value
 

@@ -1,8 +1,13 @@
 """Tests that rate limits declared on scrapers are respected by all drivers.
 
-Each test creates a simple scraper with a known rate limit, sends multiple
-requests through the driver against a local aiohttp server, and asserts
-that the elapsed wall-clock time is consistent with the declared rate.
+Each driver test injects a :class:`LimiterSpy` that replaces
+``pyrate_limiter.Limiter.try_acquire`` / ``try_acquire_async`` with no-op
+counters, then asserts on how many times the limiter was consulted.
+
+Earlier versions of these tests asserted on wall-clock elapsed time to
+infer rate-limiter behavior, which proved flaky on slow CI runners --
+PlaywrightDriver browser startup alone could eat a 4 s budget.  Asserting
+on the call count is deterministic and independent of runner speed.
 """
 
 from __future__ import annotations
@@ -10,10 +15,11 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Generator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from pyrate_limiter import Duration, Rate, RateItem
+from pyrate_limiter import Duration, Limiter, Rate, RateItem
 
 from kent.data_types import (
     ArchiveDecision,
@@ -34,10 +40,9 @@ from tests.utils import collect_results, collect_results_async
 # ---------------------------------------------------------------------------
 
 NUM_REQUESTS = 4
-# 1 request per second → 4 requests needs ≥ 3 s
-# (first fires immediately, then 1 s gap before each subsequent request)
+# Rate value is documentation-only now -- the spy fixture stubs out
+# actual delays, so tests assert on call counts rather than elapsed time.
 RATE = Rate(1, Duration.SECOND)
-MINIMUM_SECONDS = NUM_REQUESTS - 1  # 3.0 s
 
 
 def _make_scraper_class(
@@ -67,34 +72,88 @@ def _make_scraper_class(
 
 
 # ---------------------------------------------------------------------------
+# Limiter spy fixture
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LimiterSpy:
+    """Records every ``Limiter.try_acquire(_async)`` call across drivers."""
+
+    sync_calls: list[tuple[str, int]] = field(default_factory=list)
+    async_calls: list[tuple[str, int]] = field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.sync_calls) + len(self.async_calls)
+
+
+@pytest.fixture
+def limiter_spy(monkeypatch: pytest.MonkeyPatch) -> LimiterSpy:
+    """Replace ``Limiter.try_acquire(_async)`` with no-op counters.
+
+    Catches calls from both the persistent-driver workers (which call
+    ``try_acquire_async`` directly on ``driver.rate_limiter``) and from
+    ``RateLimiterTransport`` inside the httpx-based sync/async drivers
+    (which call it once per HTTP request).
+    """
+    spy = LimiterSpy()
+
+    def fake_try_acquire(
+        self: Limiter,
+        name: str = "pyrate",
+        weight: int = 1,
+        blocking: bool = True,
+        timeout: int | float = -1,
+    ) -> bool:
+        spy.sync_calls.append((name, weight))
+        return True
+
+    async def fake_try_acquire_async(
+        self: Limiter,
+        name: str = "pyrate",
+        weight: int = 1,
+        blocking: bool = True,
+        timeout: int | float = -1,
+    ) -> bool:
+        spy.async_calls.append((name, weight))
+        return True
+
+    monkeypatch.setattr(Limiter, "try_acquire", fake_try_acquire)
+    monkeypatch.setattr(Limiter, "try_acquire_async", fake_try_acquire_async)
+    return spy
+
+
+# ---------------------------------------------------------------------------
 # SyncDriver
 # ---------------------------------------------------------------------------
 
 
 class TestSyncDriverRateLimiting:
     def test_rate_limit_respected(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
-        """SyncDriver should throttle requests per scraper.rate_limits."""
+        """SyncDriver consults the limiter once per non-bypass request."""
         from kent.driver.sync_driver import SyncDriver
 
         Scraper = _make_scraper_class(server_url)
         scraper = Scraper()
         callback, results = collect_results()
 
-        start = time.monotonic()
         driver = SyncDriver(
             scraper=scraper,
             storage_dir=tmp_path,
             on_data=callback,
         )
         driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == NUM_REQUESTS
-        assert elapsed >= MINIMUM_SECONDS, (
-            f"SyncDriver completed {NUM_REQUESTS} requests in {elapsed:.2f}s, "
-            f"expected >= {MINIMUM_SECONDS:.1f}s with rate limit {RATE}"
+        assert limiter_spy.count == NUM_REQUESTS, (
+            f"SyncDriver consulted limiter {limiter_spy.count} times, "
+            f"expected {NUM_REQUESTS}"
         )
 
 
@@ -105,16 +164,18 @@ class TestSyncDriverRateLimiting:
 
 class TestAsyncDriverRateLimiting:
     async def test_rate_limit_respected(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
-        """AsyncDriver should throttle requests per scraper.rate_limits."""
+        """AsyncDriver consults the limiter once per non-bypass request."""
         from kent.driver.async_driver import AsyncDriver
 
         Scraper = _make_scraper_class(server_url)
         scraper = Scraper()
         callback, results = collect_results_async()
 
-        start = time.monotonic()
         driver = AsyncDriver(
             scraper=scraper,
             storage_dir=tmp_path,
@@ -122,12 +183,11 @@ class TestAsyncDriverRateLimiting:
             num_workers=1,
         )
         await driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == NUM_REQUESTS
-        assert elapsed >= MINIMUM_SECONDS, (
-            f"AsyncDriver completed {NUM_REQUESTS} requests in {elapsed:.2f}s, "
-            f"expected >= {MINIMUM_SECONDS:.1f}s with rate limit {RATE}"
+        assert limiter_spy.count == NUM_REQUESTS, (
+            f"AsyncDriver consulted limiter {limiter_spy.count} times, "
+            f"expected {NUM_REQUESTS}"
         )
 
 
@@ -138,9 +198,12 @@ class TestAsyncDriverRateLimiting:
 
 class TestPersistentDriverRateLimiting:
     async def test_rate_limit_respected(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
-        """PersistentDriver should throttle requests per scraper.rate_limits."""
+        """PersistentDriver consults the limiter once per non-bypass request."""
         from kent.driver.persistent_driver import PersistentDriver
 
         Scraper = _make_scraper_class(server_url)
@@ -149,7 +212,6 @@ class TestPersistentDriverRateLimiting:
 
         db_path = tmp_path / "rate_limit_test.db"
 
-        start = time.monotonic()
         async with PersistentDriver.open(
             scraper,
             db_path,
@@ -159,12 +221,11 @@ class TestPersistentDriverRateLimiting:
         ) as driver:
             driver.on_data = callback
             await driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == NUM_REQUESTS
-        assert elapsed >= MINIMUM_SECONDS, (
-            f"PersistentDriver completed {NUM_REQUESTS} requests in {elapsed:.2f}s, "
-            f"expected >= {MINIMUM_SECONDS:.1f}s with rate limit {RATE}"
+        assert limiter_spy.count == NUM_REQUESTS, (
+            f"PersistentDriver consulted limiter {limiter_spy.count} times, "
+            f"expected {NUM_REQUESTS}"
         )
 
 
@@ -176,9 +237,12 @@ class TestPersistentDriverRateLimiting:
 class TestPlaywrightDriverRateLimiting:
     @pytest.mark.slow
     async def test_rate_limit_respected(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
-        """PlaywrightDriver should throttle navigations per scraper.rate_limits."""
+        """PlaywrightDriver consults the limiter once per non-bypass request."""
         pw = pytest.importorskip("playwright")  # noqa: F841
         from kent.driver.playwright_driver import PlaywrightDriver
 
@@ -188,7 +252,6 @@ class TestPlaywrightDriverRateLimiting:
 
         db_path = tmp_path / "rate_limit_pw_test.db"
 
-        start = time.monotonic()
         async with PlaywrightDriver.open(
             scraper,
             db_path,
@@ -199,12 +262,11 @@ class TestPlaywrightDriverRateLimiting:
         ) as driver:
             driver.on_data = callback
             await driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == NUM_REQUESTS
-        assert elapsed >= MINIMUM_SECONDS, (
-            f"PlaywrightDriver completed {NUM_REQUESTS} requests in {elapsed:.2f}s, "
-            f"expected >= {MINIMUM_SECONDS:.1f}s with rate limit {RATE}"
+        assert limiter_spy.count == NUM_REQUESTS, (
+            f"PlaywrightDriver consulted limiter {limiter_spy.count} times, "
+            f"expected {NUM_REQUESTS}"
         )
 
 
@@ -281,10 +343,7 @@ class TestAioSQLiteBucketPut:
 # ---------------------------------------------------------------------------
 
 BYPASS_NUM_REQUESTS = 4
-# 1 request per 2 seconds → without bypass, 4 requests needs ≥ 6 s
 BYPASS_RATE = Rate(1, 2 * Duration.SECOND)
-# With bypass, all requests should complete in well under 6 s
-BYPASS_MAX_SECONDS = 4.0
 
 
 def _make_bypass_scraper_class(
@@ -316,7 +375,10 @@ def _make_bypass_scraper_class(
 
 class TestSyncDriverBypassRateLimit:
     def test_bypass_skips_rate_limit(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
         """SyncDriver bypass_rate_limit requests skip rate limiting."""
         from kent.driver.sync_driver import SyncDriver
@@ -325,25 +387,26 @@ class TestSyncDriverBypassRateLimit:
         scraper = Scraper()
         callback, results = collect_results()
 
-        start = time.monotonic()
         driver = SyncDriver(
             scraper=scraper,
             storage_dir=tmp_path,
             on_data=callback,
         )
         driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == BYPASS_NUM_REQUESTS
-        assert elapsed < BYPASS_MAX_SECONDS, (
-            f"SyncDriver bypass requests took {elapsed:.2f}s, "
-            f"expected < {BYPASS_MAX_SECONDS:.1f}s (rate limit should be skipped)"
+        assert limiter_spy.count == 0, (
+            f"SyncDriver consulted limiter {limiter_spy.count} times for "
+            f"bypass requests, expected 0"
         )
 
 
 class TestAsyncDriverBypassRateLimit:
     async def test_bypass_skips_rate_limit(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
         """AsyncDriver bypass_rate_limit requests skip rate limiting."""
         from kent.driver.async_driver import AsyncDriver
@@ -352,7 +415,6 @@ class TestAsyncDriverBypassRateLimit:
         scraper = Scraper()
         callback, results = collect_results_async()
 
-        start = time.monotonic()
         driver = AsyncDriver(
             scraper=scraper,
             storage_dir=tmp_path,
@@ -360,18 +422,20 @@ class TestAsyncDriverBypassRateLimit:
             num_workers=1,
         )
         await driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == BYPASS_NUM_REQUESTS
-        assert elapsed < BYPASS_MAX_SECONDS, (
-            f"AsyncDriver bypass requests took {elapsed:.2f}s, "
-            f"expected < {BYPASS_MAX_SECONDS:.1f}s (rate limit should be skipped)"
+        assert limiter_spy.count == 0, (
+            f"AsyncDriver consulted limiter {limiter_spy.count} times for "
+            f"bypass requests, expected 0"
         )
 
 
 class TestPersistentDriverBypassRateLimit:
     async def test_bypass_skips_rate_limit(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
         """PersistentDriver bypass_rate_limit requests skip rate limiting."""
         from kent.driver.persistent_driver import PersistentDriver
@@ -382,7 +446,6 @@ class TestPersistentDriverBypassRateLimit:
 
         db_path = tmp_path / "bypass_test.db"
 
-        start = time.monotonic()
         async with PersistentDriver.open(
             scraper,
             db_path,
@@ -392,19 +455,21 @@ class TestPersistentDriverBypassRateLimit:
         ) as driver:
             driver.on_data = callback
             await driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == BYPASS_NUM_REQUESTS
-        assert elapsed < BYPASS_MAX_SECONDS, (
-            f"PersistentDriver bypass requests took {elapsed:.2f}s, "
-            f"expected < {BYPASS_MAX_SECONDS:.1f}s (rate limit should be skipped)"
+        assert limiter_spy.count == 0, (
+            f"PersistentDriver consulted limiter {limiter_spy.count} times "
+            f"for bypass requests, expected 0"
         )
 
 
 class TestPlaywrightDriverBypassRateLimit:
     @pytest.mark.slow
     async def test_bypass_skips_rate_limit(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
         """PlaywrightDriver bypass_rate_limit requests skip rate limiting."""
         pw = pytest.importorskip("playwright")  # noqa: F841
@@ -416,7 +481,6 @@ class TestPlaywrightDriverBypassRateLimit:
 
         db_path = tmp_path / "bypass_pw_test.db"
 
-        start = time.monotonic()
         async with PlaywrightDriver.open(
             scraper,
             db_path,
@@ -427,12 +491,11 @@ class TestPlaywrightDriverBypassRateLimit:
         ) as driver:
             driver.on_data = callback
             await driver.run()
-        elapsed = time.monotonic() - start
 
         assert len(results) == BYPASS_NUM_REQUESTS
-        assert elapsed < BYPASS_MAX_SECONDS, (
-            f"PlaywrightDriver bypass requests took {elapsed:.2f}s, "
-            f"expected < {BYPASS_MAX_SECONDS:.1f}s (rate limit should be skipped)"
+        assert limiter_spy.count == 0, (
+            f"PlaywrightDriver consulted limiter {limiter_spy.count} times "
+            f"for bypass requests, expected 0"
         )
 
 
@@ -441,12 +504,7 @@ class TestPlaywrightDriverBypassRateLimit:
 # ---------------------------------------------------------------------------
 
 ARCHIVE_SKIP_NUM_ARCHIVES = 4
-# 1 request per 2 seconds → the 1 entry request is rate-limited, then the
-# 4 archive requests should all be skipped instantly.  Without bypass the
-# 5 total requests would need ≥ 8 s.
 ARCHIVE_SKIP_RATE = Rate(1, 2 * Duration.SECOND)
-# With archive skip bypass, only the 1 entry request is rate-limited.
-ARCHIVE_SKIP_MAX_SECONDS = 4.0
 
 
 class _SkipAllDownloadsAsync:
@@ -506,7 +564,10 @@ def _make_archive_skip_scraper_class(
 
 class TestPersistentDriverArchiveSkipBypassesRateLimiter:
     async def test_archive_skip_bypasses_rate_limiter(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
         """Skipped archive downloads should not consume rate limiter tokens."""
         from kent.driver.persistent_driver import PersistentDriver
@@ -517,7 +578,6 @@ class TestPersistentDriverArchiveSkipBypassesRateLimiter:
 
         db_path = tmp_path / "archive_skip_test.db"
 
-        start = time.monotonic()
         async with PersistentDriver.open(
             scraper,
             db_path,
@@ -528,20 +588,23 @@ class TestPersistentDriverArchiveSkipBypassesRateLimiter:
             driver.archive_handler = _SkipAllDownloadsAsync()
             driver.on_data = callback
             await driver.run()
-        elapsed = time.monotonic() - start
 
+        # Only the entry request consults the limiter; the 4 archive
+        # requests are bypassed because should_download() returned False.
         assert len(results) == ARCHIVE_SKIP_NUM_ARCHIVES
-        assert elapsed < ARCHIVE_SKIP_MAX_SECONDS, (
-            f"PersistentDriver archive skip took {elapsed:.2f}s, "
-            f"expected < {ARCHIVE_SKIP_MAX_SECONDS:.1f}s "
-            f"(skipped downloads should bypass rate limiter)"
+        assert limiter_spy.count == 1, (
+            f"PersistentDriver consulted limiter {limiter_spy.count} times, "
+            f"expected 1 (entry only; skipped archives must not consume tokens)"
         )
 
 
 class TestPlaywrightDriverArchiveSkipBypassesRateLimiter:
     @pytest.mark.slow
     async def test_archive_skip_bypasses_rate_limiter(
-        self, server_url: str, tmp_path: Path
+        self,
+        server_url: str,
+        tmp_path: Path,
+        limiter_spy: LimiterSpy,
     ) -> None:
         """Skipped archive downloads should not consume rate limiter tokens."""
         pw = pytest.importorskip("playwright")  # noqa: F841
@@ -553,7 +616,6 @@ class TestPlaywrightDriverArchiveSkipBypassesRateLimiter:
 
         db_path = tmp_path / "archive_skip_pw_test.db"
 
-        start = time.monotonic()
         async with PlaywrightDriver.open(
             scraper,
             db_path,
@@ -565,11 +627,11 @@ class TestPlaywrightDriverArchiveSkipBypassesRateLimiter:
             driver.archive_handler = _SkipAllDownloadsAsync()
             driver.on_data = callback
             await driver.run()
-        elapsed = time.monotonic() - start
 
+        # Only the entry request consults the limiter; the 4 archive
+        # requests are bypassed because should_download() returned False.
         assert len(results) == ARCHIVE_SKIP_NUM_ARCHIVES
-        assert elapsed < ARCHIVE_SKIP_MAX_SECONDS, (
-            f"PlaywrightDriver archive skip took {elapsed:.2f}s, "
-            f"expected < {ARCHIVE_SKIP_MAX_SECONDS:.1f}s "
-            f"(skipped downloads should bypass rate limiter)"
+        assert limiter_spy.count == 1, (
+            f"PlaywrightDriver consulted limiter {limiter_spy.count} times, "
+            f"expected 1 (entry only; skipped archives must not consume tokens)"
         )
