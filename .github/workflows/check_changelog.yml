@@ -1,0 +1,58 @@
+name: Check Changelog
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require CHANGES.md update for changelog-worthy commits
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          SUBJECTS=$(git log --no-merges --pretty=format:%s "$BASE..$HEAD")
+          if [ -z "$SUBJECTS" ]; then
+            echo "No commits in range; skipping"
+            exit 0
+          fi
+
+          # Commit types that warrant a CHANGES.md entry.
+          TRIGGERING=$(printf '%s\n' "$SUBJECTS" \
+            | grep -E '^(feat|fix|perf|refactor)(\([^)]+\))?!?:?[[:space:]]' \
+            || true)
+
+          # Any `type!` form is a breaking change and always requires an entry.
+          BREAKING=$(printf '%s\n' "$SUBJECTS" \
+            | grep -E '^[a-z]+(\([^)]+\))?![[:space:]:]' \
+            || true)
+
+          WORTHY=$(printf '%s\n%s\n' "$TRIGGERING" "$BREAKING" \
+            | awk 'NF && !seen[$0]++')
+
+          if [ -z "$WORTHY" ]; then
+            echo "No changelog-worthy commits in this PR; skipping"
+            exit 0
+          fi
+
+          if git diff --name-only "$BASE..$HEAD" | grep -qx 'CHANGES.md'; then
+            echo "CHANGES.md was updated; OK"
+            exit 0
+          fi
+
+          {
+            echo "::error::PR contains commits that warrant a CHANGES.md entry, but CHANGES.md was not updated."
+            echo "Add a bullet to the '## Coming up' section of CHANGES.md."
+            echo ""
+            echo "Commits that triggered this check:"
+            printf '%s\n' "$WORTHY" | sed 's/^/  /'
+          } >&2
+          exit 1

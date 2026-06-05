@@ -1,0 +1,54 @@
+name: Release Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    if: startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          version: "0.7.x"
+
+      - name: Verify release artifacts
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          BRANCH="${{ github.head_ref }}"
+          EXPECTED="release/$VERSION"
+          if [ "$BRANCH" != "$EXPECTED" ]; then
+            echo "::error::branch '$BRANCH' does not match pyproject.toml version: expected '$EXPECTED'"
+            exit 1
+          fi
+          if ! grep -qE "^## $VERSION - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGES.md; then
+            echo "::error::CHANGES.md missing entry for $VERSION (format '## $VERSION - YYYY-MM-DD')"
+            exit 1
+          fi
+          # The 'Coming up' section must be reset (template, no bullets).
+          awk '
+            /^## Coming up/ { in_section = 1; next }
+            /^## / && in_section { exit }
+            in_section { print }
+          ' CHANGES.md > /tmp/coming_up.txt
+          if grep -qE "^- [^[:space:]]" /tmp/coming_up.txt; then
+            echo "::error::'## Coming up' section in CHANGES.md still has bullets (should be empty after release)"
+            cat /tmp/coming_up.txt
+            exit 1
+          fi
+
+      - name: Build
+        run: uv build
+
+      - name: Verify wheel installs and imports
+        run: |
+          set -euo pipefail
+          WHEEL=$(ls dist/*.whl | head -1)
+          uv run --isolated --no-project --with "$WHEEL" python -c "import kent"

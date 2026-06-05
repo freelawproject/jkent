@@ -1,0 +1,62 @@
+name: PyPI
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: tag
+        run: |
+          if git rev-parse --verify --quiet "refs/tags/v${{ steps.version.outputs.version }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Tag release
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Install uv
+        if: steps.tag.outputs.exists == 'false'
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          version: "0.7.x"
+
+      - name: Build
+        if: steps.tag.outputs.exists == 'false'
+        run: uv build
+
+      - name: Publish to PyPI
+        if: steps.tag.outputs.exists == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.pypi_token }}
