@@ -1,0 +1,59 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # The local `pyre` hook shells out to `uv sync` / `uvx`, so uv must be
+      # on PATH for pre-commit to invoke it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # `pytest` runs as its own job in tests.yml with proper matrix and
+      # reporting; skip it here to avoid running the suite twice.
+      - uses: pre-commit/action@v3.0.1
+        env:
+          SKIP: pytest
+
+  # Compiles every .py file under each supported Python version. Catches
+  # version-specific syntax (e.g. `except*` on 3.10) that ruff's parser
+  # accepts regardless of target-version. No deps installed — just the
+  # stdlib parser.
+  syntax-check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile all sources
+        run: python -m compileall -q jkent tests
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
