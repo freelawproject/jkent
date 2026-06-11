@@ -19,7 +19,6 @@ from aiohttp import web
 from hypothesis import settings as _hyp_settings
 
 from tests.mock_server import (
-    CASES,
     create_app,
     generate_cases_html,
 )
@@ -43,16 +42,6 @@ def cases_html() -> str:
         HTML string containing all Bug Civil Court cases.
     """
     return generate_cases_html()
-
-
-@pytest.fixture
-def expected_case_count() -> int:
-    """The expected number of cases in the mock data.
-
-    Returns:
-        The number of cases defined in CASES.
-    """
-    return len(CASES)
 
 
 # =============================================================================

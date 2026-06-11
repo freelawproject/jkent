@@ -20,6 +20,7 @@ dependencies = [
     # used via lxml's .cssselect()
     "cssselect",
     "pyrate-limiter>=3.9.0",
+    "typing-extensions>=4.15.0",
 ]
 authors = [{ name = "Free Law Project" }]
 license = "BSD-2-Clause"
@@ -41,7 +42,7 @@ operational = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.22.1",
     "alembic>=1.13",
-    "httpx[socks,http2]>=0.28.1",
+    "httpx[socks,http2,brotli]>=0.28.1",
     # Pinned: jkent monkey-patches h11._headers.normalize_and_validate
     # (gated on the H11_HEADER_FIXES driver requirement) and relies on
     # h11's internal API. Bumps must re-verify the patch.
@@ -126,13 +127,11 @@ lint.select = [
   "W",
 ]
 lint.mccabe.max-complexity = 39
-
 lint.per-file-ignores = { "tests/conftest.py" = [
   # module-import-not-at-top: JKENT_ENFORCE_CONTRACTS must be set before
   # any jkent import (contracts gate at decoration time)
   "E402",
 ] }
-
 lint.ignore = [
   # flake8-bugbear opinionated rules
   "B9",
