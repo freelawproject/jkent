@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from jkent.common.exceptions import (
     PersistentHTTPResponseException,
@@ -41,15 +43,18 @@ from jkent.driver.unified_driver.transport.playwright_transport import (
 )
 from jkent.driver.unified_driver.worker import PoolWorker
 from tests.driver.unified.test_worker_conformance import (
+    _SCRIPT,
     WorkerConformance,
     WorkerHarness,
+    _halt_scenarios,
+    _stop_scenarios,
 )
 
 
 def _make_request(
     url: str = "https://example.com/p", *, archive: bool = False
 ):
-    """A minimal BaseRequest with the ``parse`` continuation."""
+    """A minimal Request with the ``parse`` continuation."""
     return Request(
         request=HTTPRequestParams(method=HttpMethod.GET, url=url),
         continuation="parse",
@@ -77,8 +82,9 @@ def _make_response(request: Any) -> Response:
 class AdapterQueue:
     """Real-interface queue keyed by request id, with the harness surface.
 
-    ``put``/``__len__`` are the harness observable surface; the worker pulls
-    via ``_get_next_request`` which maps each id to a simple BaseRequest.
+    ``put``/``pending_ids``/``__len__`` are the harness observable surface;
+    the worker pulls via ``_get_next_request`` which maps each id to a simple
+    Request.
     """
 
     _items: deque[int] = field(default_factory=deque)
@@ -93,6 +99,10 @@ class AdapterQueue:
             return None
         request_id = self._items.popleft()
         return (request_id, self._requests[request_id], None)
+
+    def pending_ids(self) -> list[int]:
+        """The ids still queued, in dequeue order (harness observability)."""
+        return list(self._items)
 
     def __len__(self) -> int:
         return len(self._items)
@@ -109,13 +119,17 @@ class AdapterTransport:
     failures: dict[int, Exception] = field(default_factory=dict)
     acquired: set[int] = field(default_factory=set)
     released: set[int] = field(default_factory=set)
+    acquire_count: int = 0
+    release_count: int = 0
 
     async def acquire(self, worker_id: int) -> object:
         self.acquired.add(worker_id)
+        self.acquire_count += 1
         return object()
 
     async def release(self, worker_id: int) -> None:
         self.released.add(worker_id)
+        self.release_count += 1
 
     async def resolve(self, handle, queued, await_conditions=()) -> Response:
         exc = self.failures.get(queued.request_id)
@@ -190,8 +204,32 @@ class StubScraper:
 class TestPoolWorkerConformance(WorkerConformance):
     """Runs the shared conformance suite against the real ``PoolWorker``."""
 
-    @pytest.fixture
-    def subject(self) -> WorkerHarness:
+    # Thin @given wrappers over the base's check_* bodies: each binding owns
+    # its own function objects so hypothesis's ``differing_executors`` health
+    # check doesn't see one test shared across subclasses.
+
+    @pytest.mark.generative
+    @given(scripts=st.lists(_SCRIPT, max_size=10))
+    def test_failure_soup_partitions_the_queue(
+        self, scripts: list[str]
+    ) -> None:
+        self.check_failure_soup_partitions_the_queue(scripts)
+
+    @pytest.mark.generative
+    @given(scenario=_halt_scenarios())
+    def test_halt_accounts_for_every_request(
+        self, scenario: tuple[list[str], int]
+    ) -> None:
+        self.check_halt_accounts_for_every_request(scenario)
+
+    @pytest.mark.generative
+    @given(scenario=_stop_scenarios())
+    def test_stop_never_loses_or_duplicates_work(
+        self, scenario: tuple[int, int]
+    ) -> None:
+        self.check_stop_never_loses_or_duplicates_work(scenario)
+
+    def make_harness(self) -> WorkerHarness:
         queue = AdapterQueue()
         transport = AdapterTransport()
         stop_event = asyncio.Event()
@@ -694,7 +732,10 @@ async def test_strictly_serial_idles_until_retry_ready(
     async def fake_wait_for(awaitable: Any, timeout: float) -> None:
         waits.append(timeout)
         awaitable.close()  # the stop_event.wait() coroutine; don't leave it pending
-        raise TimeoutError  # mimic "delay elapsed, no stop"
+        # Real asyncio.wait_for raises asyncio.TimeoutError on timeout. On 3.10
+        # that's a distinct class from the builtin TimeoutError, and the worker
+        # suppresses asyncio.TimeoutError specifically, so mimic it faithfully.
+        raise asyncio.TimeoutError  # mimic "delay elapsed, no stop"
 
     monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
 
