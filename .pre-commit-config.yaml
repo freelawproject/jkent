@@ -32,9 +32,30 @@ repos:
 
   - repo: local
     hooks:
+      - id: pyre
+        name: pyre
+        # Run via uvx in an isolated env: pyre-check pins an older click, so
+        # adding it to the project venv/uv.lock would downgrade click and break
+        # the CLI tests. uvx keeps it out of the project environment entirely.
+        # `uv sync` first because .pyre_configuration's search_path points at
+        # the project venv's site-packages, which must exist for import
+        # resolution (matters on a fresh CI checkout).
+        entry: bash -c 'uv sync --quiet && uvx --with pyre-check==0.9.25 pyre check'
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: zuban
+        name: zuban
+        # Same isolation rationale as pyre: uvx keeps zuban out of the
+        # project venv, and `uv sync` guarantees the venv's site-packages
+        # exist for third-party import resolution on a fresh checkout.
+        entry: bash -c 'uv sync --quiet && uvx zuban@0.8.2 check'
+        language: system
+        pass_filenames: false
+        types: [python]
       - id: pytest
         name: pytest
-        entry: uv run pytest -x -q
+        entry: uv run pytest -x -q -n auto
         language: system
         pass_filenames: false
         always_run: true

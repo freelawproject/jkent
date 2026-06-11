@@ -126,11 +126,13 @@ lint.select = [
   "W",
 ]
 lint.mccabe.max-complexity = 39
+
 lint.per-file-ignores = { "tests/conftest.py" = [
   # module-import-not-at-top: JKENT_ENFORCE_CONTRACTS must be set before
   # any jkent import (contracts gate at decoration time)
   "E402",
 ] }
+
 lint.ignore = [
   # flake8-bugbear opinionated rules
   "B9",

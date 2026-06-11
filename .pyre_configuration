@@ -1,0 +1,8 @@
+{
+  "source_directories": ["jkent", "tests"],
+  "search_path": [
+    ".venv/lib/python3.13/site-packages",
+    "."
+  ],
+  "python_version": "3.10"
+}
