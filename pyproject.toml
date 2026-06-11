@@ -50,6 +50,10 @@ operational = [
     "zstandard>=0.25.0",
     "playwright>=1.57.0",
     "camoufox[geoip]>=0.4.0",
+    # API only, never the SDK: jkent.observability records against the global
+    # providers and emits nothing until the host installs an SDK (see
+    # jkent/observability/METRICS.md and EN_BANC_OTEL.md).
+    "opentelemetry-api>=1.43.0",
 ]
 
 [dependency-groups]
@@ -127,11 +131,13 @@ lint.select = [
   "W",
 ]
 lint.mccabe.max-complexity = 39
+
 lint.per-file-ignores = { "tests/conftest.py" = [
   # module-import-not-at-top: JKENT_ENFORCE_CONTRACTS must be set before
   # any jkent import (contracts gate at decoration time)
   "E402",
 ] }
+
 lint.ignore = [
   # flake8-bugbear opinionated rules
   "B9",
