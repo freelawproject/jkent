@@ -19,6 +19,7 @@ from jkent.data_types import (
     HTTPRequestParams,
     Request,
     Response,
+    XPath,
 )
 
 # One non-default value per Request field. Fields the copy methods
@@ -47,7 +48,7 @@ FIELD_VALUES: dict[str, Any] = {
     "is_speculative": True,
     "speculation_id": ("by_id", 0, 7),
     "via": ViaLink(
-        selector="//a[1]", selector_type="xpath", description="link: Case"
+        XPath(selector="//a[1]"), description="link: Case"
     ),
     "bypass_rate_limit": True,
     "reseedable": True,
