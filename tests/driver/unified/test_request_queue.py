@@ -1,0 +1,211 @@
+"""Dequeue-ordering contract for the unified driver's RequestQueue.
+
+``dequeue_next_request`` orders pending rows by ``priority`` ascending, then by
+``queue_counter`` ascending — so lower priority values come out first, and ties
+within a priority come out FIFO (insertion order). These tests enqueue via
+``RequestQueue.enqueue_request`` and drain with ``get_next_request``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+
+from jkent.data_types import (
+    HttpMethod,
+    HTTPRequestParams,
+    Request,
+    Response,
+)
+from jkent.driver.database_engine.sql_manager import SQLManager
+from jkent.driver.unified_driver.persistence import RequestQueue
+from tests.db_queries import get_request_row
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from pathlib import Path
+
+
+@pytest.fixture
+async def sql_manager(tmp_path: Path) -> AsyncIterator[SQLManager]:
+    """A fully-migrated SQLManager backed by a temp-file SQLite DB."""
+    async with SQLManager.open(tmp_path / "test.db") as manager:
+        yield manager
+
+
+def _context() -> Response:
+    """A parent Response used as enqueue context for URL resolution."""
+    parent = Request(
+        request=HTTPRequestParams(
+            method=HttpMethod.GET, url="https://example.com/listing"
+        ),
+        continuation="parse_listing",
+        current_location="https://example.com",
+    )
+    return Response(
+        request=parent,
+        status_code=200,
+        headers={},
+        content=b"<html></html>",
+        text="<html></html>",
+        url="https://example.com/listing",
+    )
+
+
+def _request(url: str, priority: int) -> Request:
+    """A distinct-URL navigating request at ``priority``."""
+    return Request(
+        request=HTTPRequestParams(method=HttpMethod.GET, url=url),
+        continuation="parse_detail",
+        current_location=url,
+        priority=priority,
+    )
+
+
+async def _drain_urls(queue: RequestQueue) -> list[str]:
+    """Dequeue everything and return the URLs in dequeue order."""
+    urls: list[str] = []
+    while (dequeued := await queue.get_next_request()) is not None:
+        _request_id, restored, _parent_id, _preresolved = dequeued
+        urls.append(restored.request.url)
+    return urls
+
+
+async def test_seconds_until_next_pending_reports_readiness(
+    sql_manager: SQLManager,
+) -> None:
+    """Empty -> None; a ready row -> 0.0; all-in-progress -> None."""
+    queue = RequestQueue(sql_manager)
+    assert await queue.seconds_until_next_pending() is None  # empty
+
+    await queue.enqueue_request(
+        _request("https://example.com/a", 1), _context()
+    )
+    assert await queue.seconds_until_next_pending() == 0.0  # ready now
+
+    dequeued = await queue.get_next_request()  # -> in_progress
+    assert dequeued is not None
+    assert await queue.seconds_until_next_pending() is None  # none pending
+
+
+async def test_seconds_until_next_pending_reflects_retry_backoff(
+    sql_manager: SQLManager,
+) -> None:
+    """A request scheduled for a future retry yields a positive delay."""
+    queue = RequestQueue(sql_manager)
+    await queue.enqueue_request(
+        _request("https://example.com/a", 1), _context()
+    )
+    dequeued = await queue.get_next_request()
+    assert dequeued is not None
+    request_id = dequeued[0]
+
+    # Schedule a retry ~30s out: a pending row with a future started_at,
+    # which the dequeue skips but seconds_until_next_pending must surface.
+    await sql_manager.schedule_retry(request_id, 30.0, 30.0, "boom")
+
+    delay = await queue.seconds_until_next_pending()
+    assert delay is not None
+    assert 0.0 < delay <= 31.0
+
+
+async def test_restamp_request_start_moves_started_at(
+    sql_manager: SQLManager,
+) -> None:
+    """restamp_request_start advances a request's persisted start timestamp."""
+    queue = RequestQueue(sql_manager)
+    await queue.enqueue_request(
+        _request("https://example.com/a", 1), _context()
+    )
+    dequeued = await queue.get_next_request()
+    assert dequeued is not None
+    request_id = dequeued[0]
+
+    before = await get_request_row(sql_manager, request_id)
+    await queue.restamp_request_start(request_id)
+    after = await get_request_row(sql_manager, request_id)
+
+    assert before is not None and after is not None
+    assert after.started_at_ns is not None
+    assert after.started_at_ns >= (before.started_at_ns or 0)
+
+
+async def test_dequeues_in_ascending_priority_order(
+    sql_manager: SQLManager,
+) -> None:
+    """Requests dequeue lowest-priority-value first, regardless of insert order."""
+    queue = RequestQueue(sql_manager)
+    context = _context()
+
+    await queue.enqueue_request(_request("https://example.com/p9", 9), context)
+    await queue.enqueue_request(_request("https://example.com/p1", 1), context)
+    await queue.enqueue_request(_request("https://example.com/p5", 5), context)
+
+    assert await _drain_urls(queue) == [
+        "https://example.com/p1",
+        "https://example.com/p5",
+        "https://example.com/p9",
+    ]
+
+
+async def test_same_priority_dequeues_fifo(sql_manager: SQLManager) -> None:
+    """Requests at the same priority dequeue FIFO (by queue_counter)."""
+    queue = RequestQueue(sql_manager)
+    context = _context()
+
+    urls = [f"https://example.com/same/{i}" for i in range(5)]
+    for url in urls:
+        await queue.enqueue_request(_request(url, 5), context)
+
+    assert await _drain_urls(queue) == urls
+
+
+async def test_priority_then_fifo_within_priority(
+    sql_manager: SQLManager,
+) -> None:
+    """Across mixed priorities, FIFO is preserved within each priority band."""
+    queue = RequestQueue(sql_manager)
+    context = _context()
+
+    # Interleave priorities; insertion order recorded per priority band.
+    await queue.enqueue_request(_request("https://example.com/a", 5), context)
+    await queue.enqueue_request(_request("https://example.com/b", 1), context)
+    await queue.enqueue_request(_request("https://example.com/c", 5), context)
+    await queue.enqueue_request(_request("https://example.com/d", 1), context)
+    await queue.enqueue_request(_request("https://example.com/e", 5), context)
+
+    assert await _drain_urls(queue) == [
+        "https://example.com/b",  # priority 1, enqueued first
+        "https://example.com/d",  # priority 1, enqueued second
+        "https://example.com/a",  # priority 5, enqueued first
+        "https://example.com/c",  # priority 5, enqueued second
+        "https://example.com/e",  # priority 5, enqueued third
+    ]
+
+
+async def test_in_flight_count_tracks_claims(
+    sql_manager: SQLManager,
+) -> None:
+    """The claim discipline: dequeue raises the count, request_done lowers it.
+
+    The pinned worker pool retires on ``in_flight_count == 0`` with an empty
+    queue, so the invariants are: a successful dequeue holds a claim until
+    the caller's ``request_done``; an empty dequeue is claim-neutral.
+    """
+    queue = RequestQueue(sql_manager)
+    assert queue.in_flight_count == 0
+
+    await queue.enqueue_request(
+        _request("https://example.com/one", 5), _context()
+    )
+    dequeued = await queue.get_next_request()
+    assert dequeued is not None
+    assert queue.in_flight_count == 1
+
+    # An empty dequeue must not leak a claim.
+    assert await queue.get_next_request() is None
+    assert queue.in_flight_count == 1
+
+    queue.request_done()
+    assert queue.in_flight_count == 0
