@@ -827,7 +827,7 @@ class HTTPRequestParams:
     cookies: CookiesType = None
     files: FilesType = None
     auth: AuthType = None
-    timeout: TimeoutType = None
+    timeout: TimeoutType = 60
     allow_redirects: bool = True
     proxies: ProxiesType = None
     verify: VerifyType = True
