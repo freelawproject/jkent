@@ -18,6 +18,8 @@ from __future__ import annotations
 from jkent.observability.instrumented_lock import InstrumentedLock
 from jkent.observability.loop_monitor import LoopLagMonitor
 from jkent.observability.metrics import (
+    Outcome,
+    Phase,
     current_labels,
     instruments,
     labeled,
@@ -46,6 +48,8 @@ def reset() -> None:
 __all__ = [
     "InstrumentedLock",
     "LoopLagMonitor",
+    "Outcome",
+    "Phase",
     "current_labels",
     "run_inst_id",
     "instruments",

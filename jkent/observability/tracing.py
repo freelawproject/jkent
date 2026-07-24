@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import baggage, trace
 
-from jkent.observability.metrics import current_labels, instruments
+from jkent.observability.metrics import Phase, current_labels, instruments
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -66,12 +66,12 @@ def request_span(*, scraper: str, step: str | None = None) -> Iterator[Span]:
             yield span
         finally:
             instruments().request_duration.record(
-                time.monotonic() - start, {**labels, "phase": "total"}
+                time.monotonic() - start, {**labels, "phase": Phase.TOTAL}
             )
 
 
 @contextlib.contextmanager
-def phase(name: str) -> Iterator[Span]:
+def phase(name: Phase) -> Iterator[Span]:
     """Time one request phase: a child span plus a ``request.duration`` record.
 
     Attributes come from the ambient label context (``scraper`` / ``step``)

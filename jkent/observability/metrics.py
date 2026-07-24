@@ -27,15 +27,54 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import enum
+from collections.abc import Generator
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from opentelemetry.metrics import get_meter, get_meter_provider
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    pass
 
 _METER_NAME = "jkent.driver"
+
+
+class Phase(str, enum.Enum):
+    """The ``phase`` attribute vocabulary (see ``METRICS.md``).
+
+    A ``str`` subclass, so members pass straight through as OTel attribute
+    values and interpolate into span names. ``__str__`` is pinned to the
+    value because plain ``str, Enum`` renders ``Phase.TOTAL`` on 3.10
+    (:class:`enum.StrEnum` does this for us from 3.11).
+    """
+
+    __str__ = str.__str__
+
+    TOTAL = "total"
+    CIRCUIT_BREAKER_GATE = "circuit_breaker.gate"
+    RATE_LIMITER_GATE = "rate_limiter.gate"
+    TRANSPORT_RESOLVE = "transport.resolve"
+    CONTINUATION = "continuation"
+    COMPRESS = "compress"
+
+
+class Outcome(str, enum.Enum):
+    """The ``jkent.outcome`` span attribute vocabulary (see ``METRICS.md``).
+
+    A ``str`` subclass with ``__str__`` pinned, for the same reasons as
+    :class:`Phase`.
+    """
+
+    __str__ = str.__str__
+
+    OK = "ok"
+    HALT = "halt"
+    SKIP = "skip"
+    TRANSIENT = "transient"
+    SPECULATION_HTTP = "speculation_http"
+    PERSISTENT_HTTP = "persistent_http"
+    ERROR = "error"
 
 
 class _Instruments:
@@ -166,26 +205,22 @@ def sdk_active() -> bool:
 
 # Default None (not {}) so the ContextVar holds no shared mutable; readers
 # coalesce None to an empty dict.
-_labels: contextvars.ContextVar[dict[str, str] | None] = (  # type: ignore
-    contextvars.ContextVar["dict[str, str] | None"](  # type: ignore
+_labels: contextvars.ContextVar[dict[str, str] | None] = (
+    contextvars.ContextVar[dict[str, str] | None](
         "jkent_metric_labels", default=None
     )
 )
 
 
 @contextlib.contextmanager
-def labeled(**new: str | None) -> Iterator[None]:
-    """Merge ``new`` (dropping ``None`` values) into the label context.
+def labeled(**new: str) -> Generator[None, None, None]:
+    """Add ``new`` to the label context.
 
     Nestable: an inner scope adds to the outer one and restores it on exit.
     Used to carry ``scraper`` / ``step`` to instrumentation sites that cannot
     otherwise see them.
     """
-    additions = {k: v for k, v in new.items() if v is not None}
-    if not additions:
-        yield
-        return
-    token = _labels.set({**(_labels.get() or {}), **additions})
+    token = _labels.set({**(_labels.get() or {}), **new})
     try:
         yield
     finally:

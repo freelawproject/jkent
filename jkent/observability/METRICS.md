@@ -142,11 +142,13 @@ host enables those instrumentors.
 
 ### Phases
 
-Values of the `phase` attribute (on `request.duration` / `request.cpu_time`):
+Values of the `phase` attribute (on `request.duration` / `request.cpu_time`),
+defined by the `Phase` enum in `metrics.py`:
 
 | `phase` | Meaning |
 |---|---|
 | `total` | whole request, dequeue-to-done (duration only) |
+| `circuit_breaker.gate` | waiting for an open circuit breaker to close |
 | `rate_limiter.gate` | waiting for a rate-limiter token |
 | `transport.resolve` | fetching the response (network / browser) |
 | `continuation` | storing the response + running the scraper continuation |
@@ -154,7 +156,8 @@ Values of the `phase` attribute (on `request.duration` / `request.cpu_time`):
 
 ### Outcomes
 
-Values of `jkent.outcome` on the request span:
+Values of `jkent.outcome` on the request span, defined by the `Outcome` enum
+in `metrics.py`:
 
 | `outcome` | Meaning |
 |---|---|
