@@ -93,7 +93,7 @@ climbs when we add workers, we should read it as server backpressure.
 the pool saw `failure_threshold` *consecutive* transient failures and paused
 all request traffic for the breaker's recovery window. This is a strong signal
 of server backpressure, and a steady increase can be used to help disambiguate between
-a range of requests that are slow for ther server to reply to, and general worker
+a range of requests that are slow for the server to reply to, and general worker
 driven server contention.
 
 ### Compression

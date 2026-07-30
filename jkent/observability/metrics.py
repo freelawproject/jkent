@@ -30,12 +30,8 @@ import contextvars
 import enum
 from collections.abc import Generator
 from functools import lru_cache
-from typing import TYPE_CHECKING
 
 from opentelemetry.metrics import get_meter, get_meter_provider
-
-if TYPE_CHECKING:
-    pass
 
 _METER_NAME = "jkent.driver"
 

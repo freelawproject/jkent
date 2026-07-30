@@ -36,16 +36,15 @@ class InstrumentedLock(asyncio.Lock):
         start = time.monotonic()
         acquired = await super().acquire()
         inst = instruments()
-        labels = current_labels()
-        inst.lock_wait.record(time.monotonic() - start, labels)
         self._held_since = time.monotonic()
+        inst.lock_wait.record(self._held_since - start, current_labels())
         return acquired
 
     def release(self) -> None:
         held_since = self._held_since
         self._held_since = None
+        super().release()
         if held_since is not None:
             instruments().lock_hold.record(
                 time.monotonic() - held_since, current_labels()
             )
-        super().release()
