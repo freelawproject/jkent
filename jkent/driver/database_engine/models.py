@@ -13,16 +13,6 @@ Tables:
 - incidental_requests: Browser-initiated network requests (Playwright)
 - schema_info: Schema version tracking
 
-Every column is written as an explicit ``mapped_column()`` call rather than a
-bare ``Mapped[...]`` annotation: pyre reports a bare annotation as an
-uninitialized attribute.
-
-Every column also carries ``doc=``, which is what the reader of a row needs
-and is the only place that documentation can live: SQLite has no column
-comments, so ``comment=`` would be dropped on the floor, whereas ``doc=``
-becomes the mapped attribute's docstring and shows up in editors and in
-``help()``.
-
 Columns whose values come from a fixed vocabulary are
 :class:`~jkent.driver.database_engine.enums.CodedEnumType`: an ``INTEGER``
 column holding the member's ``.code``, mapped back to the member on load. Each
@@ -31,9 +21,7 @@ column otherwise records nothing at all about its vocabulary — not even how
 many values it has. Reading these columns outside the ORM means decoding with
 ``<Enum>.from_code()``; a raw ``SELECT status FROM requests`` yields ``1``.
 
-Columns typed as a bare ``str`` are open vocabularies by design — a Python
-class name, a Playwright resource type, a caller-supplied hint — and their
-``doc=`` says where the value comes from.
+Columns typed as a bare ``str`` are open vocabularies.
 
 Every ``*_json`` column carries a ``json_valid`` ``CHECK`` (see
 :func:`json_checks`). They hold serialized text rather than SQLAlchemy's
@@ -50,9 +38,9 @@ friends would stop being populated.
 
 Timestamp columns are ``Mapped[datetime | None]``, mapped to SQLAlchemy's
 ``DateTime`` by ``Base.type_annotation_map`` and so read back as ``datetime``
-rather than as text needing ``fromisoformat``. The stored bytes are unchanged:
-the value still comes from ``timestamps.now_sql()`` and is still the
-millisecond text format documented there. Durations are still computed with
+rather than as text needing ``fromisoformat``.
+The value still comes from ``timestamps.now_sql()`` and is the
+millisecond text format documented there. Durations are computed with
 ``timestamps.epoch_seconds`` — subtracting two ``DateTime`` columns directly
 compiles to a SQL ``-`` between two TEXT values, which SQLite coerces to 0
 rather than rejecting, so the ORM-native spelling silently returns 0.0.
@@ -384,8 +372,7 @@ class Request(Base):
     )
 
     # Parent tracking. ON DELETE CASCADE makes deleting a request drop its whole
-    # subtree (self-referential) in one statement — relied on by jent's replay
-    # stub/skip pruning (ReplayStorage).
+    # subtree (self-referential) in one statement.
     parent_request_id: Mapped[int | None] = mapped_column(
         ForeignKey("requests.id", ondelete="CASCADE"),
         doc=(
@@ -824,19 +811,6 @@ class RunMetadata(Base):
             "existing run."
         )
     )
-    # ``base_delay`` is vestigial: always 0.0, never read for behaviour.
-    # Request spacing is the rate limiter's job
-    # (``unified_driver.rate_limiter``, driven by the scraper's
-    # ``rate_limits``), and retry backoff reads its base from
-    # ``ResponseStorage.retry_base_delay``, a constructor argument that is not
-    # persisted. The column is NOT NULL so it cannot be dropped without a
-    # table rebuild; documented as dead rather than left looking meaningful.
-    base_delay: Mapped[float] = mapped_column(
-        doc=(
-            "Unused. Always 0.0 — request spacing comes from the rate "
-            "limiter, not from this column."
-        )
-    )
     jitter: Mapped[float] = mapped_column(
         doc=(
             "Fraction of a retry's backoff drawn as jitter, applied "
@@ -896,7 +870,6 @@ class Error(Base):
     __table_args__ = (
         sa.Index("idx_errors_request", "request_id"),
         sa.Index("idx_errors_type", "error_type"),
-        sa.Index("idx_errors_unresolved", "is_resolved"),
         *json_checks(
             "errors",
             "context_json",
@@ -988,28 +961,6 @@ class Error(Base):
     # Stack trace
     traceback: Mapped[str | None] = mapped_column(
         doc="Formatted traceback, when one was captured."
-    )
-
-    # Resolution tracking
-    is_resolved: Mapped[bool] = mapped_column(
-        default=False,
-        server_default=sa.text("0"),
-        doc=(
-            "Triage marker for whether this error has been dealt with. "
-            "Indexed by the partial index ``idx_errors_unresolved``."
-        ),
-    )
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        doc="When ``is_resolved`` was set."
-    )
-    resolution_notes: Mapped[str | None] = mapped_column(
-        doc="Free-text note about how the error was resolved."
-    )
-    resolution_type: Mapped[str | None] = mapped_column(
-        doc=(
-            "Free-text label for the kind of resolution. No writer sets this "
-            "yet; it exists for triage tooling to fill in."
-        )
     )
 
     # Timestamps
