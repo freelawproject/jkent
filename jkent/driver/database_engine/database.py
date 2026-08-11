@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
-from sqlmodel import SQLModel
+from sqlalchemy.pool import AsyncAdaptedQueuePool, QueuePool
 
-from jkent.driver.database_engine.models import *  # noqa: F403
+from jkent.driver.database_engine.models import Base
+from jkent.driver.database_engine.timestamps import require_subsec_support
 
 # For future migrations if they should become necessary
 BASELINE_VERSION = 1
@@ -35,33 +35,61 @@ async def create_engine_and_init(
         db_path: Path to the SQLite database file.
         echo: Whether to echo SQL statements (for debugging).
         **engine_kwargs: Overrides merged over the defaults and passed to
-            :func:`create_async_engine` — e.g. ``poolclass``/``pool_size``
-            for hosts that want a connection pool instead of the default
-            ``NullPool`` (with aiosqlite every pooled connection is a
-            dedicated OS thread kept alive for the engine's lifetime).
+            :func:`create_async_engine` — e.g. ``poolclass=NullPool`` for
+            hosts that want connection-per-session semantics instead of the
+            default persistent pool (the pool-sizing defaults are dropped
+            automatically for pool classes that don't take them).
 
     Returns:
         An initialized AsyncEngine.
     """
+    # Checked here rather than at import so the failure names the moment a
+    # database is actually opened. Cached after the first call.
+    require_subsec_support()
+
     url = f"sqlite+aiosqlite:///{db_path}"
     kwargs: dict[str, Any] = {
         "echo": echo,
         "connect_args": {"check_same_thread": False},
-        "poolclass": NullPool,
+        # A persistent pool, not NullPool: with aiosqlite every connection is
+        # a dedicated OS thread, so connection-per-session made each session
+        # checkout a thread spawn + sqlite3.connect + PRAGMA setup — profiled
+        # as dominating wall time on DB-chatty runs (jent replay). A few
+        # long-lived threads are the cheaper trade.
+        #
+        # max_overflow=-1 (unbounded, overflow closed on release) preserves
+        # NullPool's never-wait semantics: SQLManager methods can open a
+        # session while their caller already holds one, so a bounded pool
+        # could deadlock at exhaustion.
+        "poolclass": AsyncAdaptedQueuePool,
+        "pool_size": 5,
+        "max_overflow": -1,
         **engine_kwargs,
     }
+    # The sizing defaults only apply to queue pools; a host that overrides
+    # poolclass (e.g. NullPool) must not inherit kwargs its pool rejects.
+    if not issubclass(kwargs["poolclass"], QueuePool):
+        for key in ("pool_size", "max_overflow"):
+            if key not in engine_kwargs:
+                kwargs.pop(key, None)
     engine = create_async_engine(url, **kwargs)
 
     @event.listens_for(engine.sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_conn: Any, connection_record: Any) -> None:
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
+        # WAL's default synchronous is FULL — an fsync on every commit, and
+        # the request lifecycle commits several times per request. NORMAL in
+        # WAL mode syncs only at checkpoint: an app crash loses nothing, a
+        # power loss can lose the last few commits — fine for a resumable
+        # run database.
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all)
 
         current = (
             await conn.execute(sa.text("SELECT MAX(version) FROM schema_info"))

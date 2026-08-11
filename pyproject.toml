@@ -38,7 +38,6 @@ issues = "https://github.com/freelawproject/kent/issues"
 # Everything needed to actually run drivers (database engine, transports,
 # browsers). CourtListener installs jkent[operational]; juriscraper doesn't.
 operational = [
-    "sqlmodel>=0.0.32",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.22.1",
     "alembic>=1.13",
