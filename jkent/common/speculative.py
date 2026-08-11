@@ -11,8 +11,8 @@ The base class has four members:
   the driver attempts to push the speculation ceiling past ``seed_range``
   on success.
 - ``seed_range()``: returns the integer IDs to seed immediately. Every
-  resulting request is enqueued as ``is_speculative=True`` with its own
-  ``speculation_id``.
+  resulting request is enqueued as ``is_speculative=True``, carrying its
+  ``speculative_index`` and a reference to the template's tracking row.
 - ``from_int(n)``: builds a new template for a specific integer ID,
   preserving all non-range configuration.
 - ``max_gap()``: the consecutive-failure ceiling (and initial window

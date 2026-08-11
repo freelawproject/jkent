@@ -183,6 +183,7 @@ class Request(Base):
         sa.Index("idx_requests_parent", "parent_request_id"),
         sa.Index("idx_requests_response_status_code", "response_status_code"),
         sa.Index("idx_requests_compression_dict", "compression_dict_id"),
+        sa.Index("idx_requests_speculation", "speculation_tracking_id"),
         # The vocabulary of each coded column, as the schema's only record of
         # it now that the values are integers.
         code_check("status", RequestStatus, "ck_requests_status"),
@@ -403,12 +404,19 @@ class Request(Base):
             "is not an error."
         ),
     )
-    speculation_id: Mapped[str | None] = mapped_column(
+    speculation_tracking_id: Mapped[int | None] = mapped_column(
+        ForeignKey("speculation_tracking.id"),
         doc=(
-            "JSON array ``[func_name, param_index, spec_id]`` identifying "
-            "which speculation template produced this request and where in "
-            "its sequence it sits. Joins to ``speculation_tracking`` by "
-            "``func_name``. NULL on non-speculative requests."
+            "Speculation template that produced this request. The tracking "
+            "row is upserted before its probes are enqueued, so this FK is "
+            "always resolvable. NULL on non-speculative requests."
+        ),
+    )
+    speculative_index: Mapped[int | None] = mapped_column(
+        doc=(
+            "Where in its template's sequence this probe sits — the integer "
+            "passed to ``Speculative.from_int()``. NULL on non-speculative "
+            "requests."
         )
     )
 
@@ -1031,9 +1039,10 @@ class SpeculationTracking(Base):
     func_name: Mapped[str] = mapped_column(
         unique=True,
         doc=(
-            "Name of the ``Speculative`` entry point this state belongs to. "
-            "Unique — one row per template. Matches the first element of a "
-            "request's ``speculation_id``."
+            "State key of the ``Speculative`` entry point this state belongs "
+            "to, ``{entry_name}:{param_index}``. Unique — one row per "
+            "template. Requests point back here via "
+            "``requests.speculation_tracking_id``."
         ),
     )
     highest_successful_id: Mapped[int] = mapped_column(
@@ -1077,9 +1086,10 @@ class SpeculationTracking(Base):
         server_default=now_sql(),
         onupdate=now_sql(),
         doc=(
-            "Last mutation time (UTC, millisecond resolution). Maintained by "
-            "``onupdate``, so any UPDATE to this row re-stamps it without the "
-            "writer having to say so."
+            "Last mutation time (UTC, millisecond resolution). ``onupdate`` "
+            "re-stamps this on any ordinary UPDATE, but SQLAlchemy does not "
+            "apply it to an ON CONFLICT DO UPDATE SET clause — the upsert in "
+            "``_speculation.py`` therefore sets it explicitly."
         ),
     )
     # The raw (pre-validation) seed value this template came from, as JSON —
