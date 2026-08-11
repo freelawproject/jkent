@@ -28,7 +28,9 @@ The @entry decorator marks scraper methods as entry points with typed
 parameters, replacing the old get_entry()/ScraperParams system.
 """
 
+import codecs
 import inspect
+import re
 from collections.abc import Callable, Generator
 from functools import wraps
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
@@ -88,6 +90,77 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
         ) from e
 
 
+# A sign the *document* speaks for itself about its encoding: an XML
+# declaration's ``encoding=``, a ``<meta charset>``, or a
+# ``<meta http-equiv="Content-Type">`` carrying one. Searched over the whole
+# document rather than a leading window, because a false positive is harmless
+# (it just leaves the bytes to lxml, the long-standing behaviour) while a miss
+# would override a real declaration.
+#
+# The two are honoured differently by libxml2's HTML parser, which is why both
+# still count as "declared": a meta charset is obeyed as written, while an XML
+# declaration's stated encoding is *ignored* -- its mere presence switches the
+# default from ISO-8859-1 to UTF-8. Deferring on the latter is therefore a bet
+# that an XHTML-ish document is UTF-8, which in practice it is; overriding it
+# with the header would flip well-formed pages to whatever a stale
+# ``Content-Type`` happened to say.
+_DOC_DECLARED_ENCODING = re.compile(
+    rb"<\?xml[^>]*\bencoding\s*=|<meta[^>]*\bcharset\s*=", re.IGNORECASE
+)
+_BOMS = (codecs.BOM_UTF8, codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+
+_HEADER_CHARSET = re.compile(
+    r"""charset\s*=\s*["']?([\w.:+-]+)""", re.IGNORECASE
+)
+
+
+def _header_charset(response: Response) -> str | None:
+    """Read the charset out of the response's ``Content-Type``, if it states one."""
+    for name, value in response.headers.items():
+        if name.lower() == "content-type":
+            match = _HEADER_CHARSET.search(value or "")
+            return match.group(1) if match else None
+    return None
+
+
+def _decode_by_header_charset(response: Response, raw: bytes) -> str | None:
+    """Decode ``raw`` with the HTTP charset when only the header declares one.
+
+    Returns None to leave the bytes for lxml to sniff — which is the right
+    answer whenever the document speaks for itself, and the safe answer
+    whenever the header cannot be trusted to decode.
+
+    This exists because lxml sniffs *bytes* only: BOM, XML declaration, meta
+    charset. A server that declares its charset solely in the HTTP header
+    (``Content-Type: text/html; charset=utf-8``) and emits no in-document
+    declaration therefore fell through to libxml2's HTML4 default of
+    ISO-8859-1, and every non-ASCII character came back mojibake --
+    ``Acción`` stored as ``AcciÃ³n`` -- on a page whose bytes and header were
+    both correct. appellatecases.courtinfo.ca.gov is one such site.
+
+    Note this deliberately inverts the WHATWG precedence, which puts the HTTP
+    charset *above* a meta declaration. Here the document wins: a server
+    sending a blanket default (``charset=iso-8859-1``) over a page that
+    correctly declares UTF-8 in a meta tag is the more common
+    misconfiguration, and spec order would corrupt it. A scraper that needs to
+    force a specific encoding regardless should use the @step ``preprocess``
+    hook, whose text is decoded with the @step ``encoding``.
+    """
+    if not raw:
+        return None
+    if raw.startswith(_BOMS) or _DOC_DECLARED_ENCODING.search(raw):
+        return None
+    charset = _header_charset(response)
+    if charset is None:
+        return None
+    try:
+        return raw.decode(charset)
+    except (LookupError, UnicodeDecodeError, ValueError):
+        # Unknown codec, or the header misdescribes the bytes. Fall back to
+        # lxml's sniffing rather than failing the parse outright.
+        return None
+
+
 def _parse_html(
     response: Response, encoding: str = "utf-8", *, text: str | None = None
 ) -> LxmlPageElement:
@@ -95,13 +168,16 @@ def _parse_html(
 
     Passes raw bytes to lxml so it can auto-detect encoding from the HTML
     meta charset tag (e.g., <meta charset="windows-1252">). This handles
-    pages that declare non-UTF-8 encodings correctly.
+    pages that declare non-UTF-8 encodings correctly. When the document
+    declares nothing but the HTTP ``Content-Type`` does, that charset is used
+    instead of letting lxml fall back to ISO-8859-1 — see
+    :func:`_decode_by_header_charset`.
 
     Args:
         response: The HTTP response.
-        encoding: NOT used for parsing — lxml auto-detects from the raw
-            bytes (BOM, XML declaration, meta charset). Only recorded in
-            the exception context for debugging. The @step encoding
+        encoding: NOT used for parsing — the encoding comes from the document,
+            else the HTTP ``Content-Type`` charset, else lxml's sniffing. Only
+            recorded in the exception context for debugging. The @step encoding
             governs ``text`` injection, not ``lxml_tree``/``page``.
         text: Already-decoded (typically ``preprocess``-repaired) document
             text to parse instead of the response bytes. When set, lxml's
@@ -119,8 +195,11 @@ def _parse_html(
         # 1. BOM
         # 2. XML declaration
         # 3. <meta charset="..."> or <meta http-equiv="Content-Type" content="...">
-        # 4. Falls back to default if nothing found
+        # 4. The HTTP Content-Type charset, when the document declared none
+        # 5. Falls back to default if nothing found
         source = text if text is not None else response.content
+        if isinstance(source, bytes):
+            source = _decode_by_header_charset(response, source) or source
         return LxmlPageElement(lxml_html.fromstring(source), response.url)
     except Exception as e:
         raise ScraperAssumptionException(
