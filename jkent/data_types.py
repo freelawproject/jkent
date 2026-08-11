@@ -37,6 +37,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from pydantic import TypeAdapter
 from pyrate_limiter import Rate
 
+from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import (
     DEFAULT_PRIORITY,
     EntryMetadata,
@@ -745,16 +746,25 @@ class ParsedData(Generic[T]):
         return self.data
 
 
-class HttpMethod(Enum):
-    """HTTP methods supported by scrapers."""
+class HttpMethod(CodedEnum):
+    """HTTP methods supported by scrapers.
 
-    GET = "GET"
-    OPTIONS = "OPTIONS"
-    POST = "POST"
-    PUT = "PUT"
-    DELETE = "DELETE"
-    PATCH = "PATCH"
-    HEAD = "HEAD"
+    A :class:`~jkent.common.coded_enum.CodedEnum`: handled in Python as the
+    method name (so it still hashes, encodes, and compares against a literal
+    the way the transports and cache-key hasher expect) and stored in the
+    ``requests.method`` column as the integer in ``.code``.
+
+    The codes are jkent's own, not anything the HTTP spec assigns — they are a
+    storage detail and must not be renumbered. Nothing puts them on the wire.
+    """
+
+    GET = (1, "GET")
+    OPTIONS = (2, "OPTIONS")
+    POST = (3, "POST")
+    PUT = (4, "PUT")
+    DELETE = (5, "DELETE")
+    PATCH = (6, "PATCH")
+    HEAD = (7, "HEAD")
 
 
 # Type aliases for complex parameter types
