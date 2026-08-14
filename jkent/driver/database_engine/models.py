@@ -23,19 +23,6 @@ many values it has. Reading these columns outside the ORM means decoding with
 
 Columns typed as a bare ``str`` are open vocabularies.
 
-Every ``*_json`` column carries a ``json_valid`` ``CHECK`` (see
-:func:`json_checks`). They hold serialized text rather than SQLAlchemy's
-``JSON`` type deliberately: the query layer owns (de)serialization today, and
-``JSON`` would silently double-encode the already-serialized strings that
-jent's replay seeding and the queue's own round-trip pass back in. The
-constraint is what that choice was missing — it costs nothing and catches a
-malformed value at the INSERT instead of a corpus later.
-
-Nullable columns that carry a ``server_default`` deliberately do *not* set
-``default=None``. A Python-side default of ``None`` would make the INSERT send
-an explicit NULL and suppress the server default, so ``created_at`` and
-friends would stop being populated.
-
 Timestamp columns are ``Mapped[datetime | None]``, mapped to SQLAlchemy's
 ``DateTime`` by ``Base.type_annotation_map`` and so read back as ``datetime``
 rather than as text needing ``fromisoformat``.
@@ -57,9 +44,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.enums import (
     CodedEnumType,
+    ErrorType,
     RequestStatus,
     RequestType,
     RunStatus,
+    SelectorType,
     SpeculationOutcome,
     code_check,
 )
@@ -70,6 +59,7 @@ __all__ = [
     "Base",
     "CompressionDict",
     "Error",
+    "ErrorType",
     "IncidentalRequest",
     "IncidentalRequestStorage",
     "Request",
@@ -79,6 +69,7 @@ __all__ = [
     "RunMetadata",
     "RunStatus",
     "SchemaInfo",
+    "SelectorType",
     "SpeculationOutcome",
     "SpeculationTracking",
 ]
@@ -269,9 +260,7 @@ class Request(Base):
         default="",
         server_default=sa.text("''"),
         doc=(
-            "The scraper's browsing location when this request was enqueued, "
-            "for restoring browser state on a resumed or replayed run. Empty "
-            "string when unset."
+            "The scraper's browsing location when this request was enqueued."
         ),
     )
     accumulated_data_json: Mapped[str | None] = mapped_column(
@@ -294,14 +283,20 @@ class Request(Base):
             "an error. NULL opts out of deduplication."
         )
     )
-    cache_key: Mapped[str | None] = mapped_column(
+    cache_key: Mapped[bytes | None] = mapped_column(
+        LargeBinary,
         doc=(
-            "Hex SHA256 over (method, url, body, headers_json) — see "
-            "``sql_manager.compute_cache_key``. Identifies requests whose "
+            "Raw 16-byte MD5 digest over (method, url, body, headers_json) — "
+            "see ``sql_manager.compute_cache_key``. Identifies requests whose "
             "stored response can be reused. Distinct from "
             "``deduplication_key``: this one is derived from the wire "
-            "request, that one is the scraper's declared intent."
-        )
+            "request, that one is the scraper's declared intent. Stored as a "
+            "BLOB digest rather than hex text: the column is indexed and "
+            "written on every request, and hex doubles both the row and the "
+            "index entry to record nothing extra. MD5 is chosen for width, "
+            "not strength — it is a lookup key within one run's database, "
+            "never a trust boundary."
+        ),
     )
 
     # Archive-specific
@@ -542,18 +537,11 @@ class Request(Base):
         )
     )
 
-    # reseedable marker: scraper-supplied hint for whether this
-    # request can be re-fetched standalone. True = stateless; False = depends
-    # on server-mirrored client state; NULL = unspecified. Used by
-    # `pdd replay error-stubs` to pick the seed level when re-running errored
-    # subtrees.
     reseedable: Mapped[bool | None] = mapped_column(
         doc=(
             "Scraper hint for whether this request can be re-fetched "
             "standalone: true = stateless, false = depends on "
-            "server-mirrored client state, NULL = unspecified. Read by "
-            "``pdd replay error-stubs`` to pick a seed level when re-running "
-            "errored subtrees."
+            "server-mirrored client state, NULL = unspecified."
         )
     )
 
@@ -859,17 +847,14 @@ class Error(Base):
     lifted into columns so failures are queryable — "which selector broke, on
     how many pages" — rather than only greppable. Type-specific columns are
     NULL for error types that do not carry them.
-
-    This is a scraper-development record, not a substitute for application
-    error reporting: it is scoped to one run's database, is read by ``jent``
-    alongside the responses that produced it, and outlives the process only
-    as part of that corpus.
     """
 
     __tablename__ = "errors"
     __table_args__ = (
         sa.Index("idx_errors_request", "request_id"),
         sa.Index("idx_errors_type", "error_type"),
+        code_check("error_type", ErrorType, "ck_errors_error_type"),
+        code_check("selector_type", SelectorType, "ck_errors_selector_type"),
         *json_checks(
             "errors",
             "context_json",
@@ -888,12 +873,12 @@ class Error(Base):
     )
 
     # Error classification
-    error_type: Mapped[str] = mapped_column(
+    error_type: Mapped[ErrorType] = mapped_column(
+        CodedEnumType(ErrorType),
         doc=(
-            "Bucket from ``errors.classify_error``: ``structural``, "
-            "``validation``, ``transient``, ``persistent``, or ``unknown``. "
+            "Bucket from ``errors.classify_error``; see :class:`ErrorType`. "
             "Decides which of the type-specific columns below are populated."
-        )
+        ),
     )
     error_class: Mapped[str] = mapped_column(
         doc="``type(exc).__name__`` — the concrete exception class."
@@ -918,8 +903,12 @@ class Error(Base):
     selector: Mapped[str | None] = mapped_column(
         doc="Structural errors: the selector whose match count was wrong."
     )
-    selector_type: Mapped[str | None] = mapped_column(
-        doc="Structural errors: the selector dialect (CSS, XPath, ...)."
+    selector_type: Mapped[SelectorType | None] = mapped_column(
+        CodedEnumType(SelectorType),
+        doc=(
+            "Structural errors: the grammar ``selector`` is written in; see "
+            ":class:`SelectorType`. NULL on every other error type."
+        ),
     )
     expected_min: Mapped[int | None] = mapped_column(
         doc="Structural errors: minimum matches the scraper asserted."
@@ -1113,11 +1102,15 @@ class IncidentalRequestStorage(Base):
             "completed. NULL on success."
         )
     )
-    content_md5: Mapped[str | None] = mapped_column(
+    content_md5: Mapped[bytes | None] = mapped_column(
+        LargeBinary,
         doc=(
-            "MD5 of the uncompressed body. Indexed, and used to find an "
-            "existing row to reuse instead of storing the payload again."
-        )
+            "Raw 16-byte MD5 digest of the uncompressed body. Indexed, and "
+            "used to find an existing row to reuse instead of storing the "
+            "payload again. A BLOB digest rather than hex text: this table "
+            "has one row per distinct payload in a crawl, and hex spends 33 "
+            "bytes a row plus the same again in the index to say nothing new."
+        ),
     )
 
 

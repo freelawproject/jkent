@@ -40,9 +40,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CodedEnumType",
+    "ErrorType",
     "RequestStatus",
     "RequestType",
     "RunStatus",
+    "SelectorType",
     "SpeculationOutcome",
     "code_check",
 ]
@@ -64,11 +66,7 @@ class RequestStatus(CodedEnum):
     #: Parked without being dropped: the circuit breaker holds pending work
     #: here so a tripped run can be resumed rather than restarted.
     HELD = (5, "held")
-    #: Replay-only. ``jent``'s ``ReplayStorage`` marks a request whose
-    #: response was missing from the corpus so a downstream ``jkent run``
-    #: re-fetches it. No live run ever writes this value, but the vocabulary
-    #: has to admit it or the column's ``CHECK`` constraint would reject
-    #: replay's own writes.
+    #: Replay-only.
     STUBBED = (6, "stubbed")
 
 
@@ -115,6 +113,43 @@ class RunStatus(CodedEnum):
     ERROR = (4, "error")
     #: Stopped short on purpose — stop event, or a budget cutoff.
     INTERRUPTED = (5, "interrupted")
+
+
+class ErrorType(CodedEnum):
+    """Bucket a raised exception was classified into.
+
+    The labels are exactly what ``errors.classify_error`` returns, since that
+    function's result is bound straight into ``errors.error_type``.
+    """
+
+    #: ``HTMLStructuralAssumptionException`` — a selector matched the wrong
+    #: number of elements. Populates the ``selector*``/``expected_*``/
+    #: ``actual_count`` columns.
+    STRUCTURAL = (1, "structural")
+    #: ``DataFormatAssumptionException`` — a record failed its model's
+    #: validation. Populates ``model_name`` and the validation columns.
+    VALIDATION = (2, "validation")
+    #: ``TransientException`` — worth retrying (HTTP 5xx, timeouts).
+    TRANSIENT = (3, "transient")
+    #: ``PersistentException`` — retrying will not help.
+    PERSISTENT = (4, "persistent")
+    #: Anything ``classify_error`` did not recognize. Not a category so much
+    #: as an admission, but the column is NOT NULL and a stored error with no
+    #: bucket at all would be worse.
+    UNKNOWN = (5, "unknown")
+
+
+class SelectorType(CodedEnum):
+    """Grammar a selector recorded on a structural error was written in.
+
+    The labels are :attr:`jkent.data_types.Selector.grammar`, so a writer can
+    keep passing ``selector.grammar`` straight through.
+    """
+
+    #: :class:`jkent.data_types.CSS`.
+    CSS = (1, "css")
+    #: :class:`jkent.data_types.XPath`.
+    XPATH = (2, "xpath")
 
 
 class CodedEnumType(TypeDecorator):
@@ -189,5 +224,5 @@ def code_check(
     Returns:
         The constraint, for inclusion in ``__table_args__``.
     """
-    codes = ", ".join(str(c) for c in enum_class.codes())
+    codes = ", ".join(map(str, enum_class.codes()))
     return sa.CheckConstraint(f"{column} IN ({codes})", name=name)

@@ -7,20 +7,20 @@ the database holds.
 
 Declare members as ``NAME = (code, "label")``::
 
-    class Colour(CodedEnum):
+    class Color(CodedEnum):
         RED = (1, "red")
         BLUE = (2, "blue")
 
-    Colour.RED.code       # 1  -- what the database stores
-    Colour.RED.value      # "red"
-    Colour.RED == "red"   # True
-    f"{Colour.RED}"       # "red"
-    Colour.from_code(1)   # <Colour.RED>
+    Color.RED.code       # 1  -- what the database stores
+    Color.RED.value      # "red"
+    Color.RED == "red"   # True
+    f"{Color.RED}"       # "red"
+    Color.from_code(1)   # <Color.RED>
 
 Members are ``str`` subclasses so they drop into string contexts unchanged —
 comparisons against literals, dict keys, JSON payloads, log lines, and the
 progress/callback surfaces the driver hands to hosts. ``__str__`` is pinned to
-the value because plain ``str, Enum`` renders ``Colour.RED`` on 3.10
+the value because plain ``str, Enum`` renders ``Color.RED`` on 3.10
 (:class:`enum.StrEnum` does this for us from 3.11).
 
 **Codes are a storage format.** A member's code is written into databases that
@@ -88,6 +88,31 @@ class CodedEnum(str, enum.Enum):
     __str__ = str.__str__
 
     @classmethod
+    def _code_index(cls) -> dict[int, Any]:
+        """Cached ``{code: member}`` for this enum, verifying codes are unique.
+
+        Built on first use rather than at class creation: ``__new__`` runs per
+        member, so there is no point during class body execution at which the
+        whole set is known.
+        """
+        # Read off ``__dict__`` rather than with ``getattr`` so a subclass
+        # builds its own index instead of inheriting the base's.
+        cached = cls.__dict__.get("_code_index_cache")
+        if cached is not None:
+            return cached
+        index: dict[int, Any] = {}
+        for member in cls:
+            if member.code in index:
+                raise ValueError(
+                    f"{cls.__name__}: code {member.code} is used by both "
+                    f"{index[member.code].name} and {member.name}; codes "
+                    "identify stored rows and must be unique"
+                )
+            index[member.code] = member
+        cls._code_index_cache = index
+        return index
+
+    @classmethod
     def from_code(cls, code: int) -> Self:
         """Return the member stored as *code*.
 
@@ -98,39 +123,14 @@ class CodedEnum(str, enum.Enum):
             LookupError: If no member carries that code.
         """
         try:
-            return _code_index(cls)[code]
+            return cls._code_index()[code]
         except KeyError:
             raise LookupError(
                 f"{cls.__name__} has no member with code {code!r}; "
-                f"known codes: {sorted(_code_index(cls))}"
+                f"known codes: {cls.codes()}"
             ) from None
 
     @classmethod
     def codes(cls) -> list[int]:
         """Every code this enum defines, ascending."""
-        return sorted(_code_index(cls))
-
-
-def _code_index(cls: type[CodedEnum]) -> dict[int, Any]:
-    """Cached ``{code: member}`` for *cls*, verifying codes are unique.
-
-    Built on first use rather than at class creation: ``__new__`` runs per
-    member, so there is no point during class body execution at which the
-    whole set is known.
-    """
-    # Read off ``__dict__`` rather than with ``getattr`` so a subclass builds
-    # its own index instead of inheriting the base's.
-    cached = cls.__dict__.get("_code_index_cache")
-    if cached is not None:
-        return cached
-    index: dict[int, Any] = {}
-    for member in cls:
-        if member.code in index:
-            raise ValueError(
-                f"{cls.__name__}: code {member.code} is used by both "
-                f"{index[member.code].name} and {member.name}; codes "
-                "identify stored rows and must be unique"
-            )
-        index[member.code] = member
-    cls._code_index_cache = index
-    return index
+        return sorted(cls._code_index())
