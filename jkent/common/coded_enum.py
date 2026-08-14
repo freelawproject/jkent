@@ -53,11 +53,10 @@ class CodedEnum(str, enum.Enum):
     already has members cannot be).
     """
 
-    # Both are set after the fact — ``code`` per member in ``__new__``, the
-    # cache on first ``_code_index`` call — which pyre reports as an
-    # uninitialized attribute.
+    # Both are populated in ``__new__`` as members are constructed, which pyre
+    # reports as an uninitialized attribute.
     code: int  # pyre-ignore[13]
-    _code_index_cache: ClassVar[dict[int, Any]]  # pyre-ignore[13]
+    _code_index: ClassVar[dict[int, Any]]  # pyre-ignore[13]
 
     if TYPE_CHECKING:
         # Type checkers resolve a *functional* call — ``RequestStatus("pending")``,
@@ -83,34 +82,20 @@ class CodedEnum(str, enum.Enum):
             obj = str.__new__(cls, label)
             obj._value_ = label
             obj.code = code
+            # Checked off ``__dict__`` rather than with ``getattr`` so a
+            # subclass starts its own index instead of extending the base's.
+            if "_code_index" not in cls.__dict__:
+                cls._code_index = {}
+            if code in cls._code_index:
+                raise ValueError(
+                    f"{cls.__name__}: code {code} is used by both "
+                    f"{cls._code_index[code]._value_!r} and {label!r}; codes "
+                    "identify stored rows and must be unique"
+                )
+            cls._code_index[code] = obj
             return obj
 
     __str__ = str.__str__
-
-    @classmethod
-    def _code_index(cls) -> dict[int, Any]:
-        """Cached ``{code: member}`` for this enum, verifying codes are unique.
-
-        Built on first use rather than at class creation: ``__new__`` runs per
-        member, so there is no point during class body execution at which the
-        whole set is known.
-        """
-        # Read off ``__dict__`` rather than with ``getattr`` so a subclass
-        # builds its own index instead of inheriting the base's.
-        cached = cls.__dict__.get("_code_index_cache")
-        if cached is not None:
-            return cached
-        index: dict[int, Any] = {}
-        for member in cls:
-            if member.code in index:
-                raise ValueError(
-                    f"{cls.__name__}: code {member.code} is used by both "
-                    f"{index[member.code].name} and {member.name}; codes "
-                    "identify stored rows and must be unique"
-                )
-            index[member.code] = member
-        cls._code_index_cache = index
-        return index
 
     @classmethod
     def from_code(cls, code: int) -> Self:
@@ -123,7 +108,7 @@ class CodedEnum(str, enum.Enum):
             LookupError: If no member carries that code.
         """
         try:
-            return cls._code_index()[code]
+            return cls.__dict__["_code_index"][code]
         except KeyError:
             raise LookupError(
                 f"{cls.__name__} has no member with code {code!r}; "
@@ -133,4 +118,6 @@ class CodedEnum(str, enum.Enum):
     @classmethod
     def codes(cls) -> list[int]:
         """Every code this enum defines, ascending."""
-        return sorted(cls._code_index())
+        # ``__dict__`` rather than attribute access so a memberless enum — the
+        # base class itself — reports nothing rather than raising.
+        return sorted(cls.__dict__.get("_code_index", {}))
