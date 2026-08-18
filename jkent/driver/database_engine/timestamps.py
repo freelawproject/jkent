@@ -10,9 +10,10 @@ milliseconds — ``2026-08-06 22:58:11.250``, UTC. That format is deliberate:
 - It is wall clock, which is what makes a timestamp comparable against one
   written by a different process, run, or machine.
 
-Columns are mapped to SQLAlchemy's ``DateTime`` (see
-``models.Base.type_annotation_map``), so they are read as ``datetime`` even
-though what is stored is this text. Values written by ``server_default`` carry
+Columns are mapped to :class:`UtcDateTime` (see
+``models.Base.type_annotation_map``), so they are read as an aware ``datetime``
+even though what is stored is this text, and a value written from Python is
+either in UTC or rejected. Values written by ``server_default`` carry
 three fractional digits, as ``strftime('%f')`` produces; values written from
 Python carry six, as SQLAlchemy's SQLite ``DATETIME`` produces. That mix is
 harmless — the fraction is a decimal expansion either way, so lexicographic
@@ -37,17 +38,20 @@ version floor — see :func:`require_subsec_support`.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine.interfaces import Dialect
     from sqlalchemy.sql.elements import ColumnElement
 
 __all__ = [
     "MIN_SQLITE_VERSION",
     "NOW_SQL",
     "TIMESTAMP_FORMAT",
+    "UtcDateTime",
     "epoch_seconds",
     "now",
     "now_sql",
@@ -65,6 +69,69 @@ NOW_SQL = f"strftime('{TIMESTAMP_FORMAT}', 'now')"
 MIN_SQLITE_VERSION = (3, 42, 0)
 
 _subsec_checked = False
+
+
+class UtcDateTime(sa.TypeDecorator[datetime]):
+    """``DateTime`` that keeps a timestamp column honest about being UTC.
+
+    The stored text carries no offset, and SQLAlchemy's SQLite ``DateTime``
+    formats whatever ``datetime`` it is handed field by field — so a value
+    carrying ``tzinfo`` has its offset dropped on the way in, recording an
+    instant hours away from the one the caller meant with nothing to show it
+    happened. That is what this type exists to prevent: it is the only place the
+    "UTC" in every timestamp docstring is actually true rather than assumed.
+
+    On the way in, an aware value is converted to UTC and a naive one is
+    rejected. Naive cannot be *made* correct — there is no way to tell a caller
+    who already normalised to UTC from one who passed local wall clock, and
+    guessing either way corrupts half the callers silently. On the way out, the
+    value comes back with ``timezone.utc`` attached, so what is read back is
+    directly comparable with ``datetime.now(timezone.utc)`` and can be written
+    to another column without tripping the check above.
+
+    Values written by ``server_default``/``onupdate`` never reach this type —
+    they are SQL, computed by SQLite from ``'now'``, which is UTC by definition.
+    """
+
+    impl = sa.DateTime
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        """Normalise *value* to naive UTC for storage.
+
+        Raises:
+            TypeError: If *value* is not a ``datetime`` (a plain ``date``
+                included — a bare day is not a timestamp).
+            ValueError: If *value* has no ``tzinfo``.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, datetime):
+            raise TypeError(
+                "timestamp columns take a datetime, got "
+                f"{type(value).__name__}: {value!r}"
+            )
+        if value.tzinfo is None:
+            raise ValueError(
+                f"timestamp columns are UTC, but {value!r} is naive; pass an "
+                "aware datetime (datetime.now(timezone.utc)) so the instant "
+                "meant is unambiguous"
+            )
+        # Stripped after conversion because the stored format has nowhere to
+        # put an offset; keeping one would only be dropped a layer down.
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+    def process_result_value(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        """Return *value* as an aware UTC ``datetime``."""
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 def now_sql() -> sa.TextClause:

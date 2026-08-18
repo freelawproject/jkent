@@ -23,10 +23,11 @@ many values it has. Reading these columns outside the ORM means decoding with
 
 Columns typed as a bare ``str`` are open vocabularies.
 
-Timestamp columns are ``Mapped[datetime | None]``, mapped to SQLAlchemy's
-``DateTime`` by ``Base.type_annotation_map`` and so read back as ``datetime``
-rather than as text needing ``fromisoformat``.
-The value still comes from ``timestamps.now_sql()`` and is the
+Timestamp columns are ``Mapped[datetime | None]``, mapped to
+``timestamps.UtcDateTime`` by ``Base.type_annotation_map`` and so read back as a
+UTC-aware ``datetime`` rather than as text needing ``fromisoformat``. Writing
+one from Python requires an aware value; a naive one is refused rather than
+guessed at. The value normally comes from ``timestamps.now_sql()`` and is the
 millisecond text format documented there. Durations are computed with
 ``timestamps.epoch_seconds`` — subtracting two ``DateTime`` columns directly
 compiles to a SQL ``-`` between two TEXT values, which SQLite coerces to 0
@@ -52,7 +53,7 @@ from jkent.driver.database_engine.enums import (
     SpeculationOutcome,
     code_check,
 )
-from jkent.driver.database_engine.timestamps import now_sql
+from jkent.driver.database_engine.timestamps import UtcDateTime, now_sql
 
 __all__ = [
     "ArchivedFile",
@@ -108,10 +109,12 @@ class Base(DeclarativeBase):
 
     ``type_annotation_map`` is what lets every timestamp column below be
     declared as a bare ``Mapped[datetime | None]``: without it each one would
-    have to name ``sa.DateTime()`` explicitly.
+    have to name :class:`~jkent.driver.database_engine.timestamps.UtcDateTime`
+    explicitly, and one that forgot would take naive local time without
+    complaint.
     """
 
-    type_annotation_map = {datetime: sa.DateTime()}
+    type_annotation_map = {datetime: UtcDateTime()}
 
 
 class SchemaInfo(Base):
