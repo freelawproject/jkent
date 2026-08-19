@@ -37,6 +37,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from pydantic import TypeAdapter
 from pyrate_limiter import Rate
 
+from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import (
     DEFAULT_PRIORITY,
     EntryMetadata,
@@ -745,16 +746,25 @@ class ParsedData(Generic[T]):
         return self.data
 
 
-class HttpMethod(Enum):
-    """HTTP methods supported by scrapers."""
+class HttpMethod(CodedEnum):
+    """HTTP methods supported by scrapers.
 
-    GET = "GET"
-    OPTIONS = "OPTIONS"
-    POST = "POST"
-    PUT = "PUT"
-    DELETE = "DELETE"
-    PATCH = "PATCH"
-    HEAD = "HEAD"
+    A :class:`~jkent.common.coded_enum.CodedEnum`: handled in Python as the
+    method name (so it still hashes, encodes, and compares against a literal
+    the way the transports and cache-key hasher expect) and stored in the
+    ``requests.method`` column as the integer in ``.code``.
+
+    The codes are jkent's own, not anything the HTTP spec assigns — they are a
+    storage detail and must not be renumbered. Nothing puts them on the wire.
+    """
+
+    GET = (1, "GET")
+    OPTIONS = (2, "OPTIONS")
+    POST = (3, "POST")
+    PUT = (4, "PUT")
+    DELETE = (5, "DELETE")
+    PATCH = (6, "PATCH")
+    HEAD = (7, "HEAD")
 
 
 # Type aliases for complex parameter types
@@ -1395,9 +1405,14 @@ class Request:
             instance to opt out.
         permanent: Persistent data (cookies, headers) that flows through the request chain.
         is_speculative: Whether this request is speculative (probing for content existence).
-        speculation_id: Tuple of (function_name, param_index, integer_id) identifying
-                       which speculative template generated this request. None for
+        speculation_tracking_id: Row id of the ``speculation_tracking`` entry for
+                       the template that generated this request. The tracking row
+                       is created before its probes are enqueued, so the id is
+                       known by the time the request is built. None for
                        non-speculative requests.
+        speculative_index: The integer passed to ``Speculative.from_int()`` to
+                       build this probe — where it sits in the template's
+                       sequence. None for non-speculative requests.
         via: Optional description of how the request was produced (ViaLink, ViaFormSubmit).
              Enables the Playwright driver to replay the browser action. HTTP driver ignores.
         incidental: Optional :class:`IncidentalMatch` (``Singular``/``Multiple``)
@@ -1431,7 +1446,8 @@ class Request:
     deduplication_key: str | None | SkipDeduplicationCheck = None
     permanent: dict[str, Any] = field(default_factory=dict)
     is_speculative: bool = False
-    speculation_id: tuple[str, int, int] | None = None
+    speculation_tracking_id: int | None = None
+    speculative_index: int | None = None
     via: ViaLink | ViaFormSubmit | None = None
     incidental: Singular | Multiple | None = None
     bypass_rate_limit: bool = False
@@ -1703,17 +1719,15 @@ class Request:
             deduplication_key=deduplication_key,
         )
 
-    def speculative(
-        self, func_name: str, param_index: int, spec_id: int
-    ) -> Request:
+    def speculative(self, tracking_id: int, spec_id: int) -> Request:
         """Create a speculative copy of this request.
 
-        Returns a new Request with is_speculative=True and
-        speculation_id set to (func_name, param_index, spec_id).
+        Returns a new Request with is_speculative=True pointing at the
+        ``speculation_tracking`` row of the template that produced it.
 
         Args:
-            func_name: Name of the entry function generating this request.
-            param_index: Index of the template in the params list.
+            tracking_id: Row id of the template's ``speculation_tracking``
+                entry, which the driver upserts before seeding its probes.
             spec_id: The integer ID from the Speculative.from_int() call.
 
         Returns:
@@ -1722,7 +1736,8 @@ class Request:
         return replace(
             self,
             is_speculative=True,
-            speculation_id=(func_name, param_index, spec_id),
+            speculation_tracking_id=tracking_id,
+            speculative_index=spec_id,
         )
 
 

@@ -258,8 +258,9 @@ def test_via_preserved_in_speculative_request():
         via=via,
     )
 
-    speculative = request.speculative("fetch_case", 0, 123)
+    speculative = request.speculative(4, 123)
 
     assert speculative.via == via
     assert speculative.is_speculative is True
-    assert speculative.speculation_id == ("fetch_case", 0, 123)
+    assert speculative.speculation_tracking_id == 4
+    assert speculative.speculative_index == 123

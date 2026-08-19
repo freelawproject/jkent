@@ -1342,7 +1342,6 @@ operational = [
     { name = "opentelemetry-api" },
     { name = "playwright" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "sqlmodel" },
     { name = "zstandard" },
 ]
 
@@ -1377,7 +1376,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pyrate-limiter", specifier = ">=3.9.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'operational'", specifier = ">=2.0" },
-    { name = "sqlmodel", marker = "extra == 'operational'", specifier = ">=0.0.32" },
     { name = "typing-extensions", specifier = ">=4.15.0" },
     { name = "zstandard", marker = "extra == 'operational'", specifier = ">=0.25.0" },
 ]
@@ -3007,20 +3005,6 @@ wheels = [
 [package.optional-dependencies]
 asyncio = [
     { name = "greenlet" },
-]
-
-[[package]]
-name = "sqlmodel"
-version = "0.0.39"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "sqlalchemy" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/68/ee/22a0559283c3cf6048678e787ed5d4959dcd00dedd8ba4567eeae684eeb1/sqlmodel-0.0.39.tar.gz", hash = "sha256:23d8e50a8d8ee936032ed79c55023a5d618dd6bc3c510bbf4909d1a7a605a570", size = 91057 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/7d/b9813a582d4eb310be35e1fc7dfaae71207d7b62e9e53be314ebd251b53b/sqlmodel-0.0.39-py3-none-any.whl", hash = "sha256:90ebe92ce5cc11d7fff8dc7cb594790a102333c8fe7c14865254f6fc5c939795", size = 29680 },
 ]
 
 [[package]]

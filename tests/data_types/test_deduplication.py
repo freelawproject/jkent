@@ -133,9 +133,7 @@ class TestKeyResolution:
         derived from the unresolved URL and must be regenerated when the
         copy is later resolved.
         """
-        speculative = make_request("detail.aspx?id=7").speculative(
-            "by_id", 0, 7
-        )
+        speculative = make_request("detail.aspx?id=7").speculative(1, 7)
         resolved = speculative.resolve_from(
             make_response("https://example.com/court/list")
         )
