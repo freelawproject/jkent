@@ -13,14 +13,17 @@ at the repo root for the proof-of-concept that drove this engine.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from camoufox.async_api import AsyncCamoufox
 
 from jkent.common.exceptions import TransientException
+from jkent.driver import xvfb
 from jkent.driver.browser_engine.engines.base import (
     BrowserEngine,
     apply_init_scripts,
@@ -59,6 +62,28 @@ class CamoufoxEngine(BrowserEngine):
     occasionally crashes on Firefox page-error events (Playwright bug
     in ``pageError.location.url`` handling), and the persistent
     profile carries any ``cf_clearance`` cookies forward on restart.
+
+    **Virtual display (Linux, headed).** Each browser gets its own Xvfb
+    display, injected as ``env["DISPLAY"]``, and the context is registered in
+    :mod:`jkent.driver.xvfb` so ``CloudflareHandler`` can aim ``xdotool`` at the
+    right one. This isolates this browser from anything else on the host's
+    display — the container's shared ``:99``, other tooling, a second engine in
+    the same process — which matters because windows on one display all sit at
+    0,0 with no window manager and only the topmost takes pointer input. It does
+    **not** by itself make concurrent workers safe: they share this browser, and
+    each of their pages is its own window on this display, so the handler also
+    raises the page it means to click and serialises. See that module for why
+    camoufox's own ``headless="virtual"`` is not usable here (1x1 screen, dies
+    with the browser, mutates ``os.environ``).
+
+    The display is owned by ``acquire()``, so it deliberately **outlives the
+    browser process**: a rolling restart re-maps a window onto the same display,
+    and the captured ``_launch_kwargs`` already carry its ``env``, so
+    :meth:`restart_context` needs to know nothing about it.
+
+    Auto-enabled when running headed on Linux with Xvfb present; set
+    ``JKENT_VIRTUAL_DISPLAY=0`` to opt out (e.g. to watch a browser on a real
+    desktop session), or pass ``virtual_display`` explicitly.
     """
 
     engine_name: ClassVar[str] = "camoufox"
@@ -71,6 +96,7 @@ class CamoufoxEngine(BrowserEngine):
         locale: str = "en-US",
         proxy: str | None = None,
         humanize: bool = True,
+        virtual_display: bool | None = None,
     ) -> None:
         self._scraper = scraper
         self._browser_profile = browser_profile
@@ -81,6 +107,25 @@ class CamoufoxEngine(BrowserEngine):
         self._browser_context: BrowserContext | None = None
         self._cm: Any | None = None  # AsyncCamoufox context manager handle
         self._launch_kwargs: dict[str, Any] = {}  # captured for restart
+        self._virtual_display_requested = virtual_display
+        self._display: xvfb.XvfbDisplay | None = None
+
+    def _wants_virtual_display(self) -> bool:
+        """Whether to allocate a private X display for this browser.
+
+        Explicit argument wins, then ``JKENT_VIRTUAL_DISPLAY``, then auto:
+        headed, on Linux, with Xvfb installed. Headless needs no display, and a
+        non-Linux host has no Xvfb — in both cases OS-level clicking is off the
+        table anyway and ``CloudflareHandler`` says so in its logs.
+        """
+        if self._virtual_display_requested is not None:
+            return self._virtual_display_requested
+        override = os.environ.get("JKENT_VIRTUAL_DISPLAY", "").strip().lower()
+        if override in {"0", "false", "no", "off"}:
+            return False
+        if override in {"1", "true", "yes", "on"}:
+            return True
+        return not self._headless and xvfb.supported()
 
     @property
     def supports_restart(self) -> bool:
@@ -144,6 +189,11 @@ class CamoufoxEngine(BrowserEngine):
         kwargs["user_data_dir"] = str(user_data_dir)
         if self._proxy:
             kwargs["proxy"] = parse_proxy_for_playwright(self._proxy)
+        if self._display is not None and self._display.display:
+            # Explicit env, never camoufox's virtual_display= — that assigns
+            # into os.environ, which would redirect every later launch in this
+            # process. Captured into _launch_kwargs, so a restart replays it.
+            kwargs["env"] = xvfb.env_for(self._display.display)
         return kwargs
 
     async def _enter_new_context(self) -> BrowserContext:
@@ -158,6 +208,12 @@ class CamoufoxEngine(BrowserEngine):
         # persistent_context=True always yields a BrowserContext.
         browser_context = cast("BrowserContext", await self._cm.__aenter__())
         self._browser_context = browser_context
+        # Re-register every time: a restart yields a *new* context object, and
+        # the old one's registry entry describes a browser that no longer
+        # exists. Missing this would leave CloudflareHandler clicking on the
+        # shared display after the first restart.
+        if self._display is not None and self._display.display:
+            xvfb.register(browser_context, self._display.display)
         await apply_init_scripts(browser_context, self._browser_profile)
         return browser_context
 
@@ -178,16 +234,40 @@ class CamoufoxEngine(BrowserEngine):
                     profile.channel,
                 )
 
+        if self._wants_virtual_display():
+            display = xvfb.XvfbDisplay()
+            try:
+                # Blocking (spawn + wait for the server), so keep it off the loop.
+                await asyncio.to_thread(display.start)
+            except Exception:  # noqa: BLE001 — degrade, don't fail the run
+                # A run without a private display still works; it just cannot
+                # OS-click reliably with more than one browser, which
+                # CloudflareHandler reports for itself.
+                logger.warning(
+                    "Could not allocate a virtual display; continuing without "
+                    "one (OS-level clicking will use $DISPLAY if set)",
+                    exc_info=True,
+                )
+            else:
+                self._display = display
+
         self._launch_kwargs = self._build_launch_kwargs()
-        browser_context = await self._enter_new_context()
         try:
-            yield browser_context
+            browser_context = await self._enter_new_context()
+            try:
+                yield browser_context
+            finally:
+                if self._cm is not None:
+                    with contextlib.suppress(Exception):
+                        await self._cm.__aexit__(None, None, None)
+                self._cm = None
+                self._browser_context = None
         finally:
-            if self._cm is not None:
-                with contextlib.suppress(Exception):
-                    await self._cm.__aexit__(None, None, None)
-            self._cm = None
-            self._browser_context = None
+            # After the browser, not before: the display has to outlive it (and
+            # every rolling restart in between).
+            if self._display is not None:
+                self._display.stop()
+                self._display = None
 
     async def restart_context(self) -> BrowserContext:
         if not self._launch_kwargs:

@@ -17,9 +17,12 @@ import abc
 import asyncio
 import contextlib
 import logging
+import os
 import random
 import re
-from typing import TYPE_CHECKING
+import shutil
+from typing import TYPE_CHECKING, ClassVar
+from weakref import WeakKeyDictionary
 
 import httpx
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -31,8 +34,12 @@ from jkent.data_types import (
     WaitForTimeout,
     WaitForURL,
 )
+from jkent.driver.xvfb import display_for
+from jkent.driver.xvfb import env_for as xvfb_env_for
 
 if TYPE_CHECKING:
+    from asyncio import AbstractEventLoop
+
     from playwright.async_api import FrameLocator, Page, Response
 
 logger = logging.getLogger(__name__)
@@ -356,6 +363,41 @@ class CloudflareHandler(InterstitialHandler):
     external solver — none of which belong in a selector. Meanwhile the
     handler's job is to detect every shape and *fail loudly* rather than hand
     back challenge HTML that the classifier would store as case data.
+
+    **Step 6 (2026-08-17): OS-level click, the one thing that does work.**
+    :meth:`_os_click_widget_checkbox` posts a real X11 pointer event with
+    ``xdotool`` instead of a synthesized one. It runs only where that is
+    possible — a real display (``$DISPLAY``) with ``xdotool`` on ``$PATH``,
+    i.e. the Linux/Xvfb container — and no-ops everywhere else, so it costs a
+    ``shutil.which`` on macOS developer machines.
+
+    Measured 6/6 solves (macOS ``cliclick`` 3/3, Linux container ``xdotool``
+    3/3), typically clearing 2-3s after the click. The full investigation is in
+    ``cfhandler.md``; the load-bearing parts for this method:
+
+    * **Only the input source matters.** Same session, same widget instance,
+      same pixel: a synthetic click did nothing while an OS click cleared it.
+      In that same session a synthetic click could not even open the widget's
+      own "Privacy" link — an ordinary ``target=_blank`` anchor with no bot
+      logic — while an OS click opened it.
+    * **The page must be untampered.** Every attempt that force-opened the
+      shadow root or rewrote the widget's document failed even with a real
+      click. Nothing here touches the widget's JS.
+    * **It must be headed.** ``xdotool`` needs a mapped window, so the
+      transport has to run ``headless=False`` under Xvfb. Headless is not a
+      slower path here, it is a broken one.
+    * Four theories for *why* synthetic input is ignored were tested and
+      falsified: a trust-flag check (Turnstile never reads ``isTrusted`` or
+      ``mozInputSource`` on the checkbox path), an unreachable frame (synthetic
+      input drives a structurally identical widget, and nested out-of-process
+      frames, fine), mouse-trajectory scoring (``humanize=True`` with a long
+      approach path changed nothing), and a capture-phase swallow in the page
+      (that listener turned out to be uBlock Origin, which camoufox bundles).
+      So do not "fix" this by shaping synthetic input; that ground is covered.
+
+    Solve *rate* is still unmeasured — 6 successes with no observed failure,
+    which is why this stays an escalation with a bounded retry rather than the
+    primary path, and why the raise below is still reachable.
     """
 
     # The challenge shell: Cloudflare's orchestrator bootstrap, present in the
@@ -415,6 +457,61 @@ class CloudflareHandler(InterstitialHandler):
     # not its centre — the container spans the full content column (896px
     # observed) while the widget itself is ~300px.
     _CHECKBOX_INSET_PX = 30
+    # OS clicks get more than one shot: the widget sometimes needs a second
+    # click, and the sampled-behaviour scoring behind it is not deterministic.
+    # Two is deliberate — each attempt pays _FALLBACK_CLEAR_TIMEOUT_MS, and an
+    # unsolvable challenge must not sit here burning the queue's time.
+    _OS_CLICK_ATTEMPTS = 2
+    # How long to wait after bring_to_front() before clicking. The call returns
+    # when Firefox has been asked to raise; the X restack lands after that, and
+    # clicking into the gap hits whichever window is still on top.
+    _RAISE_SETTLE_S = 0.4
+    # xdotool is a local, non-network binary; if it has not returned in a
+    # second something is wrong with the display, not with the click.
+    _OS_CLICK_SUBPROCESS_TIMEOUT_S = 5.0
+    # Viewport -> screen mapping for the OS click. mozInnerScreenX/Y are CSS px
+    # relative to the screen origin, so under dpr=1 they map 1:1 onto X11
+    # device px. Xvfb is always dpr=1, which is the only environment this path
+    # runs in; anything else is logged and skipped rather than clicked blind at
+    # coordinates that would land somewhere arbitrary.
+    _SCREEN_ORIGIN_JS = """() => ({
+        sx: window.mozInnerScreenX,
+        sy: window.mozInnerScreenY,
+        dpr: window.devicePixelRatio,
+    })"""
+    # Serialises raise → locate → click across every worker in this process.
+    #
+    # Required, not belt-and-braces. The transport runs one browser and gives
+    # each worker its own page, and every Playwright page is a separate OS
+    # window — 3 pages, 3 X windows, all at 0,0, all the same size, only the
+    # topmost receiving pointer input. So the sequence has to be atomic: if a
+    # sibling worker calls ``bring_to_front()`` between our raise and our click,
+    # our click lands in its window instead.
+    #
+    # Per-display allocation (see :mod:`jkent.driver.xvfb`) does not replace
+    # this. It isolates one *browser* from another; the pages inside a browser
+    # still share its display and window stack.
+    #
+    # Keyed by event loop rather than created once at class scope: an
+    # asyncio.Lock binds to the loop that first awaits it, so a single shared
+    # instance raises "bound to a different event loop" in any process that runs
+    # more than one loop over its lifetime (a second ``asyncio.run``, or a test
+    # suite giving each test a fresh loop). Weakly keyed so finished loops are
+    # not retained.
+    _os_click_locks: ClassVar[
+        WeakKeyDictionary[AbstractEventLoop, asyncio.Lock]
+    ] = WeakKeyDictionary()
+
+    @classmethod
+    def _click_lock(cls) -> asyncio.Lock:
+        """The OS-click lock for the running loop, created on first use."""
+        loop = asyncio.get_running_loop()
+        lock = cls._os_click_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            cls._os_click_locks[loop] = lock
+        return lock
+
     # How many Tabs to spend looking for the widget. One is enough whenever
     # the widget is mounted — measured tab order on the CA challenge is
     # [widget mount] -> footer "Cloudflare" -> footer "Privacy" — so the extra
@@ -459,12 +556,91 @@ class CloudflareHandler(InterstitialHandler):
         ]
 
     async def navigate_through(self, page: Page) -> None:
+        """Get past the challenge, holding the display while doing it.
+
+        Where OS input is possible the *whole* solve is serialised and run with
+        this page's window in the foreground — not merely the click. Measured:
+        with three concurrent workers and no serialisation, the two background
+        pages never rendered a widget at all ("no layout box", zero flow POSTs
+        seen in 20s), because Firefox does not lay out or run occluded windows.
+        Every page here is its own window (3 pages, 3 X windows), so only the
+        foreground one has a live challenge to solve.
+
+        Serialising is cheap: the pages share one cookie jar, so the first
+        worker's ``cf_clearance`` covers the rest — a queued worker usually just
+        reloads into clear content instead of solving anything.
+        """
+        display, _ = self._resolve_display(page)
+        if self._os_input_unavailable_reason(display) is not None:
+            # No display: nothing to foreground or contend over, and only the
+            # synthetic path is available.
+            await self._solve_challenge(page, None)
+            return
+
+        lock = self._click_lock()
+        queued = lock.locked()
+        async with lock:
+            try:
+                await page.bring_to_front()
+                await asyncio.sleep(self._RAISE_SETTLE_S)
+            except Exception:  # noqa: BLE001 — a raise failure is not fatal
+                logger.debug("bring_to_front failed", exc_info=True)
+
+            # Get a fresh, foreground challenge before solving if either:
+            #  * we queued behind a sibling (our widget went stale waiting, and
+            #    their clearance may already cover us — shared cookie jar), or
+            #  * nothing is rendered at all, which is what a page that loaded
+            #    while occluded looks like. Firefox does not lay out background
+            #    windows, so its challenge never ran: no flow POSTs, no widget,
+            #    no layout box. Foregrounding it now does not revive it; only a
+            #    reload does.
+            if queued and not await self._refresh_stale_challenge(page):
+                return  # a sibling's clearance already covers us
+            await self._solve_challenge(page, display)
+
+    async def _widget_has_layout(self, page: Page) -> bool:
+        """Whether a widget is actually rendered with a non-zero box.
+
+        Distinguishes "challenge present and live" from "page never rendered" —
+        the latter reports a challenge shell in the DOM but no laid-out widget,
+        because an occluded window is not laid out at all.
+        """
+        try:
+            container = page.locator(self._RESPONSE_INPUT).first.locator(
+                "xpath=.."
+            )
+            if not await container.count():
+                return False
+            box = await container.bounding_box(timeout=2_000)
+        except PlaywrightTimeoutError:
+            return False
+        except Exception:  # noqa: BLE001 — a probe must not break the solve
+            logger.debug("Widget layout probe failed", exc_info=True)
+            return False
+        return bool(box and box["width"] and box["height"])
+
+    async def _solve_challenge(self, page: Page, display: str | None) -> None:
+        """The solve itself. Callers hold the lock and have foregrounded ``page``."""
         await self._await_flow_readiness(page)
 
         # Readiness only means the orchestrator finished its setup POSTs; the
         # widget iframe can still be loading. Acting here is what made the old
         # Tab+Space land on a spinner.
         target = await self._await_interactive(page)
+
+        # Nothing rendered even after the interactive wait: the page loaded while
+        # its window was occluded, so its challenge never ran at all (Firefox
+        # does not lay out background windows — measured as zero flow POSTs and
+        # no layout box). Foregrounding does not revive it; only a reload does,
+        # and this handler is now foregrounded, so the reload gets a live one.
+        if target is None and not await self._widget_has_layout(page):
+            logger.warning(
+                "Challenge never rendered (page was occluded while loading); "
+                "reloading in the foreground and retrying"
+            )
+            if not await self._refresh_stale_challenge(page):
+                return
+            target = await self._await_interactive(page)
 
         if target == "button":
             logger.info(
@@ -477,6 +653,26 @@ class CloudflareHandler(InterstitialHandler):
                 await page.locator(self._RESPONSE_INPUT).first.wait_for(
                     state="attached", timeout=self._INTERACTIVE_TIMEOUT_MS
                 )
+
+        # OS-level input goes FIRST where the environment can post it, because
+        # it is the only step measured to clear a challenge since the
+        # 2026-08-09 regression. Ordering is not cosmetic: the first end-to-end
+        # container run had it running third, and it cleared nothing — by then
+        # the widget had spent ~40s being pressed with Space and clicked
+        # synthetically on the same pixel. Standalone, firing at ~15s on an
+        # untouched widget, the same click is 6/6. So spend the real click while
+        # the widget is fresh and keep the synthetic steps as the fallback for
+        # hosts with no display.
+        if display is not None:
+            if await self._os_click_attempts(page, display):
+                logger.info("Cloudflare challenge cleared via OS-level click")
+                return
+            logger.warning(
+                "OS-level click did not clear CF; falling back to synthetic "
+                "input (which has not worked since 2026-08-09)"
+            )
+        else:
+            logger.info("No OS-level input available; using synthetic input")
 
         # Tab focuses the Turnstile widget; Space activates the checkbox
         # inside its closed shadow root, which no selector can address.
@@ -519,8 +715,8 @@ class CloudflareHandler(InterstitialHandler):
         # Nothing worked. Raising is the point: the caller stores the failure
         # and retries, instead of snapshotting the challenge DOM as content.
         raise PlaywrightTimeoutError(
-            "Cloudflare challenge still present after Tab+Space and widget "
-            f"click ({self._CHALLENGE_SHELL} still attached)"
+            "Cloudflare challenge still present after OS click, Tab+Space and "
+            f"widget click ({self._CHALLENGE_SHELL} still attached)"
         )
 
     async def _focus_widget_via_tab(self, page: Page) -> str:
@@ -721,6 +917,222 @@ class CloudflareHandler(InterstitialHandler):
             box["y"] + box["height"] / 2,
         )
         return True
+
+    @staticmethod
+    def _resolve_display(page: Page) -> tuple[str | None, bool]:
+        """``(display, is_private)`` for this page's browser.
+
+        A *private* display was allocated for this browser alone
+        (:mod:`jkent.driver.browser_engine.xvfb`), which means its pointer and
+        window stack belong to us: clicks are unambiguous and need no locking.
+
+        Falling back to ``$DISPLAY`` is shared by definition — every browser in
+        this process maps windows onto it, all at 0,0 with no window manager to
+        separate them — so the caller must serialise, and even then can only
+        hope the intended window is on top.
+        """
+        private = display_for(getattr(page, "context", None))
+        if private:
+            return private, True
+        return os.environ.get("DISPLAY"), False
+
+    @staticmethod
+    def _os_input_unavailable_reason(display: str | None) -> str | None:
+        """Why an OS click cannot be posted here, or ``None`` if it can.
+
+        Returned as a string rather than a bool so the log says which piece is
+        missing: no display (headless, or a host without Xvfb) and no
+        ``xdotool`` (a macOS dev machine) call for completely different fixes,
+        and both are ordinary rather than errors.
+        """
+        if not display:
+            return "no X display (needs Xvfb; headless runs get none)"
+        if not shutil.which("xdotool"):
+            return "xdotool not on $PATH"
+        return None
+
+    async def _checkbox_screen_point(
+        self, page: Page
+    ) -> tuple[int, int] | None:
+        """Screen coordinates of Turnstile's checkbox, or ``None``.
+
+        Uses the light-DOM mount box — the same source
+        :meth:`_click_widget_checkbox` clicks — rather than locating the widget
+        visually in a screenshot. The visual route (find the widget's uniform
+        grey fill, take its bbox, offset in) was what the investigation used and
+        it works, but it costs a screenshot plus numpy/PIL, and the mount box is
+        already right here: the container's left edge and the widget's are 8px
+        apart, so ``_CHECKBOX_INSET_PX`` lands inside a checkbox that measures
+        ~21px across. Keeping this in the DOM also keeps numpy out of the
+        driver's dependency set.
+        """
+        container = page.locator(self._RESPONSE_INPUT).first.locator(
+            "xpath=.."
+        )
+        try:
+            box = await container.bounding_box(timeout=5_000)
+        except PlaywrightTimeoutError:
+            box = None
+        if not box or not box["width"] or not box["height"]:
+            logger.warning(
+                "Cloudflare widget container has no layout box; cannot place "
+                "an OS click"
+            )
+            return None
+
+        try:
+            origin = await page.evaluate(self._SCREEN_ORIGIN_JS)
+        except Exception:  # noqa: BLE001 — a dead page is not our error to raise
+            logger.debug("Screen-origin probe failed", exc_info=True)
+            return None
+
+        dpr = origin.get("dpr") or 1
+        if dpr != 1:
+            # Rather than guess between (css + origin) and (css + origin) * dpr
+            # on an untested display, decline. Xvfb is dpr=1, so this only fires
+            # somewhere this path was never measured.
+            logger.warning(
+                "Skipping OS click: devicePixelRatio is %s, and the "
+                "viewport->screen mapping is only verified at 1",
+                dpr,
+            )
+            return None
+
+        css_x = box["x"] + self._CHECKBOX_INSET_PX
+        css_y = box["y"] + box["height"] / 2
+        return int(origin["sx"] + css_x), int(origin["sy"] + css_y)
+
+    async def _run_xdotool(self, display: str, *args: str) -> bool:
+        """Run ``xdotool`` against ``display``, returning whether it succeeded.
+
+        The display is passed through the child's environment rather than an
+        ``xdotool --display`` flag: ``env=`` is verified to work per-process
+        (two browsers, two displays, clicks landing 1:1) and does not depend on
+        which xdotool subcommands accept the flag.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "xdotool",
+                *args,
+                env=xvfb_env_for(display),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            logger.warning("Could not execute xdotool", exc_info=True)
+            return False
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self._OS_CLICK_SUBPROCESS_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.warning("xdotool %s timed out", " ".join(args))
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            return False
+        if proc.returncode != 0:
+            logger.warning(
+                "xdotool %s failed (rc=%s): %s",
+                " ".join(args),
+                proc.returncode,
+                (stderr or b"").decode("utf-8", "replace").strip(),
+            )
+            return False
+        return True
+
+    async def _refresh_stale_challenge(self, page: Page) -> bool:
+        """Recover a challenge that went stale while queued. Returns whether one
+        still needs clicking.
+
+        Every page in this browser shares one cookie jar, so a sibling's
+        ``cf_clearance`` applies to us too — reloading is enough, and is what
+        should be tried before spending a click. If a challenge is still served
+        after the reload it is at least a *fresh* one, which is the state where
+        an OS click actually works.
+        """
+        logger.info(
+            "Reloading to get a live foreground challenge (queued behind a "
+            "sibling, or the page never rendered while occluded)"
+        )
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=30_000)
+        except PlaywrightTimeoutError:
+            logger.warning("Reload timed out; clicking the widget as-is")
+            return True
+
+        if await self._challenge_cleared(
+            page, timeout_ms=self._FALLBACK_CLEAR_TIMEOUT_MS
+        ):
+            logger.info(
+                "Cloudflare challenge already cleared by a sibling worker's "
+                "solve (shared cf_clearance)"
+            )
+            return False
+
+        # Fresh challenge: let the widget mount before aiming at it.
+        await self._await_interactive(page)
+        return True
+
+    async def _os_click_attempts(self, page: Page, display: str) -> bool:
+        """The click loop itself; callers hold :attr:`_os_click_lock`.
+
+        Measured 4/4 on the CA deployment, and every one of those four cleared
+        on the **second** click, ~1s after it, having sat unmoved through the
+        first. That shape is consistent enough to be a mechanism rather than
+        noise — most likely X11 click-to-focus, where the first click activates
+        the browser window and the second is the one the widget actually sees.
+        It is why :attr:`_OS_CLICK_ATTEMPTS` is 2 and not 1; a single-click
+        version of this method would have a 0/4 record.
+        """
+        for attempt in range(1, self._OS_CLICK_ATTEMPTS + 1):
+            point = await self._checkbox_screen_point(page)
+            if point is None:
+                return False
+            x, y = point
+
+            # Approach hop first, then the target. Two reasons, both load-bearing:
+            #
+            # 1. ``--sync`` waits for a pointer-motion event, so moving to where
+            #    the cursor already *is* blocks forever. Retry attempt 2 targets
+            #    the same pixel as attempt 1, which hung until the subprocess
+            #    timeout in the first end-to-end run. Stepping away guarantees
+            #    the second hop actually moves.
+            # 2. Turnstile samples pointer positions, so arriving from somewhere
+            #    beats materialising on the checkbox.
+            #
+            # --sync matters on the final hop: a click posted before the cursor
+            # arrives is a click somewhere else.
+            if not await self._run_xdotool(
+                display, "mousemove", str(x - 40), str(y + 25)
+            ):
+                return False
+            await asyncio.sleep(random.uniform(0.05, 0.09))
+            if not await self._run_xdotool(
+                display, "mousemove", "--sync", str(x), str(y)
+            ):
+                return False
+            await asyncio.sleep(random.uniform(0.08, 0.15))
+            if not await self._run_xdotool(display, "click", "1"):
+                return False
+            logger.info(
+                "Posted OS-level click %d/%d at screen (%d, %d)",
+                attempt,
+                self._OS_CLICK_ATTEMPTS,
+                x,
+                y,
+            )
+
+            if await self._challenge_cleared(
+                page, timeout_ms=self._FALLBACK_CLEAR_TIMEOUT_MS
+            ):
+                return True
+            logger.warning(
+                "Challenge still up %ds after OS click %d/%d",
+                self._FALLBACK_CLEAR_TIMEOUT_MS // 1000,
+                attempt,
+                self._OS_CLICK_ATTEMPTS,
+            )
+        return False
 
 
 INTERSTITIAL_HANDLERS: dict[DriverRequirement, InterstitialHandler] = {

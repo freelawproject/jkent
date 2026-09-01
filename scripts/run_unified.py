@@ -1,23 +1,13 @@
 #!/usr/bin/env python
-"""Run a scraper through the **unified driver** (`ScrapeRun`) — a manual-test
-stand-in for `jjkent run`.
+"""Run a scraper through the **unified driver** (`ScrapeRun`).
 
-Equivalent of, e.g.:
+This is jkent's own entry point for running a scraper — it needs nothing but `jkent[operational]` and an
+importable scraper module.
 
-    uv run jjkent run --db runs/NYCoA-full-2026-06-08.db \
-       --storage runs/NYApp-files \
-       --params '[{"enumerate_dockets": {...}}]' \
-       juriscraper.state.new_york.nycourts_gov.scraper:Site
-
-but it drives the unified `ScrapeRun` instead of the legacy `PersistentDriver`,
-so you can exercise the new transport/worker/run stack against a real scraper.
-
-Run it the same way you'd run `jjkent run` (from a project whose env has both
-`jjkent` and the target scraper importable), e.g. from `../juriscraper`:
-
-    uv run python ../kent/scripts/run_unified.py \
+    uv run python scripts/run_unified.py \
         --db runs/foo.db --storage runs/foo-files \
-        --params '[...]' my.module:Scraper
+        --params '[{"enumerate_dockets": {...}}]' \
+        juriscraper.state.new_york.nycourts_gov.scraper:Site
 
 All the wiring (transport auto-selection from ``driver_requirements``,
 browser-profile resolution from ``$JKENT_HOME/profiles``, DB pre-init for
@@ -112,7 +102,7 @@ async def _run(args: argparse.Namespace) -> None:
         add_params=add_params,
         resume=resume,
         num_workers=args.workers,
-        max_workers=args.max_workers,
+        worker_ramp_interval=args.worker_ramp,
         headless=not args.headed,
         proxy=args.proxy,
         on_data=on_data,
@@ -152,8 +142,22 @@ def _parse_args() -> argparse.Namespace:
         dest="add_params",
         help="JSON list of invocations to add to an existing run.",
     )
-    p.add_argument("--workers", type=int, default=1)
-    p.add_argument("--max-workers", type=int, default=10, dest="max_workers")
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Worker count, pinned for the whole run. Keep at 1 against "
+        "Cloudflare-protected sites (see docker/README.md).",
+    )
+    p.add_argument(
+        "--worker-ramp",
+        type=float,
+        default=0.0,
+        dest="worker_ramp",
+        help="Seconds between worker spawns at startup (0 = all at once). "
+        "Staggers arrival so --workers browser pages don't launch "
+        "simultaneously; the final pool size is unchanged.",
+    )
     p.add_argument("--no-resume", action="store_true")
     p.add_argument("--proxy", default=None)
     p.add_argument(

@@ -27,6 +27,7 @@ from jkent.data_types import (
     WaitForLoadState,
     WaitForSelector,
 )
+from jkent.driver import xvfb
 from jkent.driver.unified_driver.interstitials import (
     INTERSTITIAL_HANDLERS,
     CloudflareHandler,
@@ -834,3 +835,276 @@ class TestCloudflareSkipsSpaceOnBadFocus:
         await asyncio.wait_for(handler.navigate_through(page), timeout=5.0)
         page.keyboard.down.assert_not_awaited()
         page.keyboard.up.assert_not_awaited()
+
+
+class TestCloudflareOSClick:
+    """The OS-level click path: availability gating and coordinate mapping.
+
+    The click itself needs a real X display, so what is testable without one is
+    everything around it — and that is where the failure modes live. Each test
+    here corresponds to a bug found by running the handler end-to-end in the
+    container rather than to a hypothetical.
+    """
+
+    def test_unavailable_without_display(self) -> None:
+        reason = CloudflareHandler()._os_input_unavailable_reason(None)
+        assert reason is not None
+        assert "display" in reason
+
+    def test_unavailable_without_xdotool(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "jkent.driver.unified_driver.interstitials.shutil.which",
+            lambda _: None,
+        )
+        reason = CloudflareHandler()._os_input_unavailable_reason(":99")
+        assert reason is not None
+        assert "xdotool" in reason
+
+    def test_available_with_display_and_xdotool(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "jkent.driver.unified_driver.interstitials.shutil.which",
+            lambda _: "/usr/bin/xdotool",
+        )
+        assert CloudflareHandler()._os_input_unavailable_reason(":99") is None
+
+    def test_private_display_preferred_over_environment(
+        self, monkeypatch
+    ) -> None:
+        """A registered per-browser display wins, and is reported as private.
+
+        os.environ cannot describe more than one browser (workers are asyncio
+        tasks in one process), and camoufox's own virtual_display= mutates it —
+        so the registry is the only trustworthy source.
+        """
+        monkeypatch.setenv("DISPLAY", ":99")
+        page = _make_page()
+        context = MagicMock()
+        page.context = context
+        xvfb.register(context, ":137")
+        display, is_private = CloudflareHandler._resolve_display(page)
+        assert (display, is_private) == (":137", True)
+
+    def test_falls_back_to_environment_as_shared(self, monkeypatch) -> None:
+        monkeypatch.setenv("DISPLAY", ":99")
+        page = _make_page()
+        page.context = MagicMock()  # never registered
+        display, is_private = CloudflareHandler._resolve_display(page)
+        assert (display, is_private) == (":99", False)
+
+    @staticmethod
+    def _page_with_box(dpr: float) -> AsyncMock:
+        """A page whose widget mount has a layout box and a known screen origin."""
+        page = _make_page()
+        locator = _permissive_locator()
+        locator.bounding_box = AsyncMock(
+            return_value={
+                "x": 100.0,
+                "y": 200.0,
+                "width": 896.0,
+                "height": 70.0,
+            }
+        )
+        page.locator = MagicMock(return_value=locator)
+        page.evaluate = AsyncMock(return_value={"sx": 4, "sy": 57, "dpr": dpr})
+        return page
+
+    @pytest.mark.asyncio
+    async def test_screen_point_offsets_by_window_origin(self) -> None:
+        """CSS box + window origin, with the checkbox inset applied.
+
+        Turnstile draws the checkbox near the mount's left edge, so the inset is
+        what makes this land on the checkbox rather than in the middle of a
+        896px-wide container.
+        """
+        handler = CloudflareHandler()
+        point = await handler._checkbox_screen_point(self._page_with_box(1))
+        assert point == (
+            int(4 + 100.0 + CloudflareHandler._CHECKBOX_INSET_PX),
+            int(57 + 200.0 + 35.0),
+        )
+
+    @pytest.mark.asyncio
+    async def test_screen_point_declines_non_unit_dpr(self) -> None:
+        """dpr != 1 is declined, not guessed at.
+
+        The viewport->screen mapping is only verified at dpr 1 (what Xvfb
+        gives). Guessing between `origin + css` and `(origin + css) * dpr` on an
+        untested display would click at arbitrary coordinates.
+        """
+        handler = CloudflareHandler()
+        assert (
+            await handler._checkbox_screen_point(self._page_with_box(2))
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_layout_box_yields_no_point(self) -> None:
+        handler = CloudflareHandler()
+        page = _make_page()
+        locator = _permissive_locator()
+        locator.bounding_box = AsyncMock(return_value=None)
+        page.locator = MagicMock(return_value=locator)
+        assert await handler._checkbox_screen_point(page) is None
+
+    @pytest.mark.asyncio
+    async def test_moves_away_before_targeting(self, monkeypatch) -> None:
+        """The approach hop must precede the --sync move.
+
+        ``xdotool mousemove --sync`` waits for a motion event, so moving to
+        where the pointer already sits blocks until it is killed — which is
+        exactly what the second attempt of a same-pixel retry does. Stepping
+        away first guarantees the final hop actually moves.
+        """
+        monkeypatch.setenv("DISPLAY", ":99")
+        monkeypatch.setattr(
+            "jkent.driver.unified_driver.interstitials.shutil.which",
+            lambda _: "/usr/bin/xdotool",
+        )
+        handler = CloudflareHandler()
+        calls: list[tuple[str, ...]] = []
+
+        async def _fake_xdotool(self, display: str, *args: str) -> bool:
+            assert display == ":99"  # threaded through, not read from environ
+            calls.append(args)
+            return True
+
+        monkeypatch.setattr(CloudflareHandler, "_run_xdotool", _fake_xdotool)
+        page = self._page_with_box(1)
+        # Never clears, so both attempts run and the retry path is exercised.
+        monkeypatch.setattr(
+            CloudflareHandler,
+            "_challenge_cleared",
+            AsyncMock(return_value=False),
+        )
+
+        assert await handler._os_click_attempts(page, ":99") is False
+
+        moves = [c for c in calls if c[0] == "mousemove"]
+        assert len(moves) == 2 * CloudflareHandler._OS_CLICK_ATTEMPTS
+        # Within each attempt: a plain approach hop, then the --sync target hop.
+        assert "--sync" not in moves[0]
+        assert "--sync" in moves[1]
+        assert moves[0][1:] != moves[1][1:]
+        assert [c[0] for c in calls].count("click") == (
+            CloudflareHandler._OS_CLICK_ATTEMPTS
+        )
+
+
+class TestCloudflareConcurrentOSClick:
+    """Concurrent workers: raise-then-click, and recovering a queued-stale widget.
+
+    The transport runs ONE browser and leases each worker its own page, and every
+    Playwright page is a separate OS window — measured: 3 pages, 3 X windows, all
+    at 0,0, all the same size, only the topmost taking pointer input. So the
+    handler must raise its own window and serialise, and a worker that queued
+    behind a sibling must not click a widget that went stale while it waited.
+    """
+
+    @staticmethod
+    def _clickable_page() -> AsyncMock:
+        page = _make_page()
+        locator = _permissive_locator()
+        locator.bounding_box = AsyncMock(
+            return_value={"x": 10.0, "y": 20.0, "width": 896.0, "height": 70.0}
+        )
+        page.locator = MagicMock(return_value=locator)
+        page.evaluate = AsyncMock(return_value={"sx": 0, "sy": 57, "dpr": 1})
+        page.bring_to_front = AsyncMock()
+        page.reload = AsyncMock()
+        page.context = MagicMock()
+        return page
+
+    @pytest.fixture(autouse=True)
+    def _os_input_available(self, monkeypatch):
+        monkeypatch.setenv("DISPLAY", ":99")
+        monkeypatch.setattr(
+            "jkent.driver.unified_driver.interstitials.shutil.which",
+            lambda _: "/usr/bin/xdotool",
+        )
+        monkeypatch.setattr(
+            CloudflareHandler, "_RAISE_SETTLE_S", 0.0, raising=False
+        )
+        monkeypatch.setattr(
+            CloudflareHandler, "_run_xdotool", AsyncMock(return_value=True)
+        )
+
+    @pytest.mark.asyncio
+    async def test_foregrounds_its_window_before_solving(self) -> None:
+        """Without this the click lands in whichever window is on top."""
+        handler = CloudflareHandler()
+        page = self._clickable_page()
+        with patch.object(CloudflareHandler, "_solve_challenge", AsyncMock()):
+            await handler.navigate_through(page)
+        page.bring_to_front.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_uncontended_solve_does_not_reload(self) -> None:
+        """A worker that never queued has a fresh widget — leave it alone."""
+        handler = CloudflareHandler()
+        page = self._clickable_page()
+        with patch.object(CloudflareHandler, "_solve_challenge", AsyncMock()):
+            await handler.navigate_through(page)
+        page.reload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_queued_worker_reloads_before_clicking(self) -> None:
+        """Contended: the widget went stale while waiting, so refresh it first.
+
+        Measured 1/2 without this — the queued worker clicked a widget that had
+        sat ~15s and cleared nothing, while a reload gets a fresh one (and often
+        no challenge at all, the cookie jar being shared).
+        """
+        handler = CloudflareHandler()
+        page = self._clickable_page()
+
+        # Hold the lock so the call under test observes contention, exactly as a
+        # sibling mid-solve would. Via the accessor: the lock is per-event-loop.
+        lock = CloudflareHandler._click_lock()
+        await lock.acquire()
+
+        async def _release_soon() -> None:
+            await asyncio.sleep(0.05)
+            lock.release()
+
+        releaser = asyncio.create_task(_release_soon())
+        solve = AsyncMock()
+        try:
+            with (
+                patch.object(CloudflareHandler, "_solve_challenge", solve),
+                patch.object(
+                    CloudflareHandler,
+                    "_challenge_cleared",
+                    AsyncMock(return_value=True),
+                ),
+            ):
+                await handler.navigate_through(page)
+            page.reload.assert_awaited()
+            # Cleared after the reload -> a sibling's clearance covered us, so
+            # the solve was skipped entirely.
+            solve.assert_not_awaited()
+        finally:
+            await releaser
+
+    @pytest.mark.asyncio
+    async def test_clicks_are_serialised(self) -> None:
+        """Two workers must never interleave raise/move/click."""
+        handler = CloudflareHandler()
+        active = 0
+        overlaps = 0
+
+        async def _solve(self, page, display) -> None:  # noqa: ARG001
+            nonlocal active, overlaps
+            active += 1
+            if active > 1:
+                overlaps += 1
+            await asyncio.sleep(0.02)
+            active -= 1
+
+        with patch.object(CloudflareHandler, "_solve_challenge", _solve):
+            await asyncio.gather(
+                *(
+                    handler.navigate_through(self._clickable_page())
+                    for _ in range(4)
+                )
+            )
+        assert overlaps == 0
