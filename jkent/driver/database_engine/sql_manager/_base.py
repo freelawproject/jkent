@@ -11,12 +11,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from typing_extensions import Self
 
-from jkent.driver.database_engine.database import init_database
+from jkent.driver.database_engine.database import init_database, write_session
 from jkent.driver.database_engine.models import Request
 from jkent.observability import InstrumentedLock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from contextlib import AbstractAsyncContextManager
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,6 +84,16 @@ class SQLManagerBase:
             yield cls(engine, session_factory)
         finally:
             await engine.dispose()
+
+    def _write_session(self) -> AbstractAsyncContextManager[AsyncSession]:
+        """Open a write session: this manager's lock + ``BEGIN IMMEDIATE``.
+
+        Every mutating method goes through here rather than
+        ``self.lock, self.session_factory()`` — see
+        :func:`~jkent.driver.database_engine.database.write_session` for why
+        a writer must not open a deferred transaction.
+        """
+        return write_session(self.session_factory, self.lock)
 
     async def _ensure_queue_counter_seeded(
         self, session: AsyncSession

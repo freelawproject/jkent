@@ -71,7 +71,7 @@ class ErrorsMixin(SQLManagerBase):
         """
         error = build_error(exc, request_id, request_url)
 
-        async with self.lock, self.session_factory() as session:
+        async with self._write_session() as session:
             session.add(error)
             await session.flush()
             error_id = error.id
