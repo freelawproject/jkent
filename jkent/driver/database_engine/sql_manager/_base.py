@@ -85,7 +85,9 @@ class SQLManagerBase:
         finally:
             await engine.dispose()
 
-    def _write_session(self) -> AbstractAsyncContextManager[AsyncSession]:
+    def _write_session(
+        self,
+    ) -> AbstractAsyncContextManager[AsyncSession, bool | None]:
         """Open a write session: this manager's lock + ``BEGIN IMMEDIATE``.
 
         Every mutating method goes through here rather than
