@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -26,6 +26,12 @@ class SQLManagerBase:
 
     Provides the shared engine, session factory, and lock that all
     mixin classes depend on.
+
+    Attributes:
+        engine: The async SQLAlchemy engine the database is opened on.
+        session_factory: Async session factory bound to :attr:`engine`.
+        lock: The write lock every SQLManager mutation holds. One instance
+            per manager, so concurrent writers actually serialize.
 
     Example::
 
@@ -49,9 +55,11 @@ class SQLManagerBase:
             engine: An async SQLAlchemy engine.
             session_factory: An async session factory bound to the engine.
         """
-        self._engine = engine
-        self._session_factory = session_factory
-        self._lock: asyncio.Lock = InstrumentedLock()
+        self.engine: Final[AsyncEngine] = engine
+        self.session_factory: Final[async_sessionmaker] = session_factory
+        self.lock: Final[asyncio.Lock] = InstrumentedLock()
+        # Not Final: reseeded from the DB on first use, then bumped per
+        # enqueue.
         self._queue_counter: int | None = None
 
     @classmethod
@@ -76,21 +84,6 @@ class SQLManagerBase:
         finally:
             await engine.dispose()
 
-    @property
-    def engine(self) -> AsyncEngine:
-        """Get the underlying async engine."""
-        return self._engine
-
-    @property
-    def session_factory(self) -> async_sessionmaker:
-        """Get the underlying async session factory."""
-        return self._session_factory
-
-    @property
-    def lock(self) -> asyncio.Lock:
-        """The write lock every SQLManager mutation holds."""
-        return self._lock
-
     async def _ensure_queue_counter_seeded(
         self, session: AsyncSession
     ) -> None:
@@ -98,7 +91,7 @@ class SQLManagerBase:
 
         Runs a single ``max(queue_counter)`` scan the first time a counter
         is requested; subsequent calls are no-ops. Callers hold
-        ``self._lock``, so this never races.
+        ``self.lock``, so this never races.
         """
         if self._queue_counter is None:
             result = await session.execute(

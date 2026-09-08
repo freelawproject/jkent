@@ -10,7 +10,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TypedDict
 
 
 @dataclass
@@ -62,13 +62,31 @@ def compute_cache_key(
     return hasher.digest()
 
 
-def _compression_ratio(
-    original: int | None, compressed: int | None
-) -> float | None:
-    """Ratio of original to compressed size, rounded to 2 dp."""
-    if original and compressed:
-        return round(original / compressed, 2)
-    return None
+class IncidentalRequestDict(TypedDict):
+    """JSON-ready shape of an :class:`IncidentalRequestRecord`.
+
+    Mirrors the record's fields, with the derived properties
+    (``compression_ratio``, ``duration_ms``) materialized and ``created_at``
+    rendered as an ISO 8601 string.
+    """
+
+    id: int
+    parent_request_id: int
+    url: str
+    headers_json: str | None
+    started_at_ns: int | None
+    completed_at_ns: int | None
+    from_cache: bool | None
+    created_at: str | None
+    storage_id: int | None
+    resource_type: str | None
+    method: str | None
+    status_code: int | None
+    content_size_original: int | None
+    content_size_compressed: int | None
+    compression_ratio: float | None
+    failure_reason: str | None
+    duration_ms: float | None
 
 
 @dataclass
@@ -111,11 +129,12 @@ class IncidentalRequestRecord:
 
     @property
     def compression_ratio(self) -> float | None:
-        return _compression_ratio(
-            self.content_size_original, self.content_size_compressed
-        )
+        """Original size over compressed size; None if either is unknown."""
+        if self.content_size_original and self.content_size_compressed:
+            return self.content_size_original / self.content_size_compressed
+        return None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> IncidentalRequestDict:
         return {
             "id": self.id,
             "parent_request_id": self.parent_request_id,

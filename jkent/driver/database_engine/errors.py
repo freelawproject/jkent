@@ -1,26 +1,27 @@
-"""Error tracking and storage for the unified driver.
+"""Error classification and the error record type for the unified driver.
 
-This module provides functionality for capturing, storing, and querying
-errors that occur during scraping. It supports all exception types from
-the scraper_driver.common.exceptions module with type-specific details.
+This module turns a raised exception into the columns the ``errors`` table
+holds: :func:`describe_error` lifts an exception's structured attributes into
+:class:`ErrorDetails`, and :class:`ErrorRecord` is the read-side DTO the CLI
+and web transport serialize. The database access itself lives on
+:class:`~jkent.driver.database_engine.sql_manager._errors.ErrorsMixin`.
 
 Error Types:
 - structural: HTMLStructuralAssumptionException (selector issues)
 - validation: DataFormatAssumptionException (Pydantic validation failures)
 - transient: TransientException subclasses (HTTP errors, timeouts)
+- persistent: PersistentException subclasses (retrying will not help)
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import traceback as tb
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
-import sqlalchemy as sa
-from sqlalchemy import select
+from pydantic import BaseModel
 
 from jkent.common.exceptions import (
     DataFormatAssumptionException,
@@ -33,15 +34,19 @@ from jkent.common.exceptions import (
     TransientException,
 )
 from jkent.driver.database_engine.enums import ErrorType, SelectorType
-from jkent.driver.database_engine.models import Error, Request
+from jkent.driver.database_engine.models import Error
 
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import async_sessionmaker
+#: Stand-in for ``errors.request_url`` when neither the exception nor the
+#: caller supplied one. The column is NOT NULL.
+UNKNOWN_URL = "unknown"
 
 
-@dataclass
-class ErrorRecord:
+class ErrorRecord(BaseModel):
     """Error record from database for listing and display.
+
+    A ``pydantic.BaseModel`` rather than a dataclass so ``model_dump_json``
+    / ``model_validate_json`` handle the web transport, instead of a
+    hand-maintained field list that drifts from the columns.
 
     Attributes:
         id: Database ID of the error.
@@ -63,7 +68,9 @@ class ErrorRecord:
         status_code: For transient errors - HTTP status code.
         timeout_seconds: For transient errors - timeout duration.
         traceback: Full Python stack trace.
-        created_at: When the error was recorded.
+        created_at: When the error was recorded. Required: the column is
+            typed nullable only because a server default fills it, and a
+            record whose creation time we don't know is not worth keeping.
     """
 
     id: int
@@ -84,35 +91,157 @@ class ErrorRecord:
     status_code: int | None
     timeout_seconds: float | None
     traceback: str | None
-    created_at: datetime | None
+    created_at: datetime
 
-    def to_json(self) -> str:
-        """Serialize to JSON for web transport."""
-        return json.dumps(
-            {
-                "id": self.id,
-                "request_id": self.request_id,
-                "error_type": self.error_type,
-                "error_class": self.error_class,
-                "message": self.message,
-                "request_url": self.request_url,
-                "context_json": self.context_json,
-                "selector": self.selector,
-                "selector_type": self.selector_type,
-                "expected_min": self.expected_min,
-                "expected_max": self.expected_max,
-                "actual_count": self.actual_count,
-                "model_name": self.model_name,
-                "validation_errors": self.validation_errors,
-                "failed_doc": self.failed_doc,
-                "status_code": self.status_code,
-                "timeout_seconds": self.timeout_seconds,
-                "traceback": self.traceback,
-                "created_at": self.created_at.isoformat()
-                if self.created_at
-                else None,
-            }
+    @classmethod
+    def from_model(cls, error: Error) -> ErrorRecord:
+        """Build a record from an ``errors`` row.
+
+        Args:
+            error: Error model instance.
+
+        Returns:
+            The record, with the JSON columns parsed back into objects.
+
+        Raises:
+            pydantic.ValidationError: If the row has no ``created_at``. The
+                column's server default makes that unreachable; the cast
+                below tells the type checker so, and pydantic still checks.
+        """
+        return cls(
+            id=error.id,
+            request_id=error.request_id,
+            error_type=error.error_type,
+            error_class=error.error_class,
+            message=error.message,
+            request_url=error.request_url,
+            context_json=error.context_json,
+            selector=error.selector,
+            selector_type=error.selector_type,
+            expected_min=error.expected_min,
+            expected_max=error.expected_max,
+            actual_count=error.actual_count,
+            model_name=error.model_name,
+            validation_errors=(
+                json.loads(error.validation_errors_json)
+                if error.validation_errors_json
+                else None
+            ),
+            failed_doc=(
+                json.loads(error.failed_doc_json)
+                if error.failed_doc_json
+                else None
+            ),
+            status_code=error.status_code,
+            timeout_seconds=error.timeout_seconds,
+            traceback=error.traceback,
+            created_at=cast(datetime, error.created_at),
         )
+
+
+@dataclass(frozen=True)
+class ErrorDetails:
+    """The columns an exception's own attributes supply.
+
+    Every field maps to a column on :class:`~...models.Error`, so
+    :func:`describe_error` can be unpacked straight into the row. Fields the
+    exception type does not carry stay ``None``, which is exactly how the
+    table stores them.
+    """
+
+    error_type: ErrorType
+    request_url: str | None = None
+    context_json: str | None = None
+    selector: str | None = None
+    selector_type: SelectorType | None = None
+    expected_min: int | None = None
+    expected_max: int | None = None
+    actual_count: int | None = None
+    model_name: str | None = None
+    validation_errors_json: str | None = None
+    failed_doc_json: str | None = None
+    status_code: int | None = None
+    timeout_seconds: float | None = None
+
+
+def _context_json(exc: ScraperAssumptionException) -> str | None:
+    """JSON of an assumption exception's context dict, or None if empty.
+
+    Dumped with ``default=str``: the context holds arbitrary scraped values.
+    """
+    return json.dumps(exc.context, default=str) if exc.context else None
+
+
+def describe_error(exc: Exception) -> ErrorDetails:
+    """Lift an exception's structured attributes into error columns.
+
+    One dispatch over the exception hierarchy covers both the classification
+    and the type-specific columns, so the two cannot disagree about what an
+    exception is.
+
+    The arms are ordered most-specific first: the structural and validation
+    cases are ``ScraperAssumptionException`` subclasses and the HTTP/timeout
+    cases are ``TransientException`` / ``PersistentException`` subclasses, so
+    the category arms at the bottom must not shadow them.
+
+    Args:
+        exc: The exception to describe.
+
+    Returns:
+        The :class:`ErrorDetails` for *exc*. Anything unrecognized is
+        ``ErrorType.UNKNOWN`` with no type-specific columns.
+    """
+    match exc:
+        case HTMLStructuralAssumptionException():
+            return ErrorDetails(
+                error_type=ErrorType.STRUCTURAL,
+                request_url=exc.request_url,
+                context_json=_context_json(exc),
+                selector=exc.selector,
+                selector_type=SelectorType(exc.selector_type),
+                expected_min=exc.expected_min,
+                expected_max=exc.expected_max,
+                actual_count=exc.actual_count,
+            )
+        case DataFormatAssumptionException():
+            return ErrorDetails(
+                error_type=ErrorType.VALIDATION,
+                request_url=exc.request_url,
+                context_json=_context_json(exc),
+                model_name=exc.model_name,
+                validation_errors_json=json.dumps(exc.errors, default=str),
+                failed_doc_json=json.dumps(exc.failed_doc, default=str),
+            )
+        case ScraperAssumptionException():
+            return ErrorDetails(
+                error_type=ErrorType.PERSISTENT,
+                request_url=exc.request_url,
+                context_json=_context_json(exc),
+            )
+        case HTTPResponseAssumptionException():
+            return ErrorDetails(
+                error_type=ErrorType.TRANSIENT,
+                request_url=exc.url,
+                status_code=exc.status_code,
+            )
+        case RequestTimeoutException():
+            return ErrorDetails(
+                error_type=ErrorType.TRANSIENT,
+                request_url=exc.url,
+                timeout_seconds=exc.timeout_seconds,
+            )
+        case PersistentHTTPResponseException():
+            return ErrorDetails(
+                error_type=ErrorType.PERSISTENT,
+                request_url=exc.url,
+                status_code=exc.status_code,
+            )
+        case TransientException():
+            return ErrorDetails(error_type=ErrorType.TRANSIENT)
+        case PersistentException():
+            return ErrorDetails(error_type=ErrorType.PERSISTENT)
+        case _:
+            return ErrorDetails(error_type=ErrorType.UNKNOWN)
 
 
 def classify_error(exc: Exception) -> ErrorType:
@@ -126,259 +255,45 @@ def classify_error(exc: Exception) -> ErrorType:
         ``str`` subclasses, so callers comparing against ``"structural"`` and
         friends keep working.
     """
-    if isinstance(exc, HTMLStructuralAssumptionException):
-        return ErrorType.STRUCTURAL
-    elif isinstance(exc, DataFormatAssumptionException):
-        return ErrorType.VALIDATION
-    elif isinstance(exc, TransientException):
-        return ErrorType.TRANSIENT
-    elif isinstance(exc, PersistentException):
-        return ErrorType.PERSISTENT
-    else:
-        return ErrorType.UNKNOWN
+    return describe_error(exc).error_type
 
 
-async def store_error(
-    session_factory: async_sessionmaker,
+def build_error(
     exc: Exception,
     request_id: int | None = None,
     request_url: str | None = None,
-    *,
-    db_lock: asyncio.Lock,
-) -> int:
-    """Store an error in the database.
-
-    Extracts type-specific fields from the exception and stores them
-    in the errors table.
+) -> Error:
+    """Build an unpersisted ``errors`` row for an exception.
 
     Args:
-        session_factory: Async session factory.
-        exc: The exception to store.
+        exc: The exception to record.
         request_id: ID of the request that caused this error (if known).
-        request_url: URL that triggered the error (fallback if not in exception).
-        db_lock: Shared asyncio lock for serializing SQLite access.
-            Required and keyword-only: a per-call lock would not actually
-            serialize concurrent writers, so the shared instance must be
-            passed explicitly.
+        request_url: URL that triggered the error. Overrides the URL the
+            exception carries; falls back to :data:`UNKNOWN_URL` when
+            neither has one.
 
     Returns:
-        The database ID of the stored error.
+        The :class:`~...models.Error` instance, not yet added to a session.
     """
-    error_type = classify_error(exc)
-    error_class = f"{type(exc).__module__}.{type(exc).__name__}"
-    message = str(exc)
-
-    traceback_str = "".join(
-        tb.format_exception(type(exc), exc, exc.__traceback__)
-    )
-
-    if request_url is None:
-        if isinstance(exc, ScraperAssumptionException):
-            request_url = exc.request_url
-        elif isinstance(
-            exc,
-            HTTPResponseAssumptionException
-            | PersistentHTTPResponseException
-            | RequestTimeoutException,
-        ):
-            request_url = exc.url
-        else:
-            request_url = "unknown"
-
-    context_json = None
-    if isinstance(exc, ScraperAssumptionException) and exc.context:
-        context_json = json.dumps(exc.context, default=str)
-
-    selector = None
-    selector_type = None
-    expected_min = None
-    expected_max = None
-    actual_count = None
-    model_name = None
-    validation_errors_json = None
-    failed_doc_json = None
-    status_code = None
-    timeout_seconds = None
-
-    if isinstance(exc, HTMLStructuralAssumptionException):
-        selector = exc.selector
-        selector_type = exc.selector_type
-        expected_min = exc.expected_min
-        expected_max = exc.expected_max
-        actual_count = exc.actual_count
-
-    elif isinstance(exc, DataFormatAssumptionException):
-        model_name = exc.model_name
-        validation_errors_json = json.dumps(exc.errors, default=str)
-        failed_doc_json = json.dumps(exc.failed_doc, default=str)
-
-    elif isinstance(
-        exc,
-        HTTPResponseAssumptionException | PersistentHTTPResponseException,
-    ):
-        status_code = exc.status_code
-
-    elif isinstance(exc, RequestTimeoutException):
-        timeout_seconds = exc.timeout_seconds
-
-    error = Error(
+    details = describe_error(exc)
+    return Error(
         request_id=request_id,
-        error_type=error_type,
-        error_class=error_class,
-        message=message,
-        request_url=request_url,
-        context_json=context_json,
-        selector=selector,
-        selector_type=selector_type,
-        expected_min=expected_min,
-        expected_max=expected_max,
-        actual_count=actual_count,
-        model_name=model_name,
-        validation_errors_json=validation_errors_json,
-        failed_doc_json=failed_doc_json,
-        status_code=status_code,
-        timeout_seconds=timeout_seconds,
-        traceback=traceback_str,
+        error_type=details.error_type,
+        error_class=f"{type(exc).__module__}.{type(exc).__name__}",
+        message=str(exc),
+        request_url=request_url or details.request_url or UNKNOWN_URL,
+        context_json=details.context_json,
+        selector=details.selector,
+        selector_type=details.selector_type,
+        expected_min=details.expected_min,
+        expected_max=details.expected_max,
+        actual_count=details.actual_count,
+        model_name=details.model_name,
+        validation_errors_json=details.validation_errors_json,
+        failed_doc_json=details.failed_doc_json,
+        status_code=details.status_code,
+        timeout_seconds=details.timeout_seconds,
+        traceback="".join(
+            tb.format_exception(type(exc), exc, exc.__traceback__)
+        ),
     )
-
-    async with db_lock, session_factory() as session:
-        session.add(error)
-        await session.flush()
-        error_id = error.id
-        await session.commit()
-
-    return error_id if error_id else 0
-
-
-def _error_model_to_record(error: Error) -> ErrorRecord:
-    """Convert an Error model instance to an ErrorRecord.
-
-    Args:
-        error: Error model instance.
-
-    Returns:
-        ErrorRecord instance.
-    """
-    # Parse JSON fields
-    validation_errors = (
-        json.loads(error.validation_errors_json)
-        if error.validation_errors_json
-        else None
-    )
-    failed_doc = (
-        json.loads(error.failed_doc_json) if error.failed_doc_json else None
-    )
-
-    return ErrorRecord(
-        id=error.id,  # type: ignore[arg-type]
-        request_id=error.request_id,
-        error_type=error.error_type,
-        error_class=error.error_class,
-        message=error.message,
-        request_url=error.request_url,
-        context_json=error.context_json,
-        selector=error.selector,
-        selector_type=error.selector_type,
-        expected_min=error.expected_min,
-        expected_max=error.expected_max,
-        actual_count=error.actual_count,
-        model_name=error.model_name,
-        validation_errors=validation_errors,
-        failed_doc=failed_doc,
-        status_code=error.status_code,
-        timeout_seconds=error.timeout_seconds,
-        traceback=error.traceback,
-        created_at=error.created_at,
-    )
-
-
-async def get_error(
-    session_factory: async_sessionmaker,
-    error_id: int,
-) -> ErrorRecord | None:
-    """Get a single error by ID.
-
-    Args:
-        session_factory: Async session factory.
-        error_id: The error ID to retrieve.
-
-    Returns:
-        ErrorRecord if found, None otherwise.
-    """
-    async with session_factory() as session:
-        error = await session.get(Error, error_id)
-        if error is None:
-            return None
-        return _error_model_to_record(error)
-
-
-async def list_errors(
-    session_factory: async_sessionmaker,
-    error_type: ErrorType | str | None = None,
-    continuation: str | None = None,
-    offset: int = 0,
-    limit: int = 50,
-) -> list[ErrorRecord]:
-    """List errors with optional filters.
-
-    Args:
-        session_factory: Async session factory.
-        error_type: Filter by error type, as an :class:`ErrorType` member or
-            its label — ``CodedEnumType`` binds either to the stored code.
-        continuation: Filter by continuation method name (requires join with requests).
-        offset: Number of records to skip.
-        limit: Maximum records to return.
-
-    Returns:
-        List of ErrorRecord objects.
-    """
-    async with session_factory() as session:
-        stmt = select(Error)
-
-        if continuation:
-            stmt = stmt.join(Request, Error.request_id == Request.id)
-            stmt = stmt.where(Request.continuation == continuation)
-
-        if error_type:
-            stmt = stmt.where(Error.error_type == error_type)
-
-        stmt = stmt.order_by(Error.created_at.desc())
-        stmt = stmt.limit(limit).offset(offset)
-
-        result = await session.execute(stmt)
-        errors = result.scalars().all()
-
-        return [_error_model_to_record(e) for e in errors]
-
-
-async def count_errors(
-    session_factory: async_sessionmaker,
-    error_type: ErrorType | str | None = None,
-    continuation: str | None = None,
-) -> int:
-    """Count errors with optional filters.
-
-    Accepts the same filters as :func:`list_errors` so a paginated total
-    matches the rows that listing would return.
-
-    Args:
-        session_factory: Async session factory.
-        error_type: Filter by error type (member or label, as
-            :func:`list_errors`).
-        continuation: Filter by continuation method name (requires join with requests).
-
-    Returns:
-        Count of matching errors.
-    """
-    async with session_factory() as session:
-        stmt = select(sa.func.count()).select_from(Error)
-
-        if continuation:
-            stmt = stmt.join(Request, Error.request_id == Request.id)
-            stmt = stmt.where(Request.continuation == continuation)
-
-        if error_type:
-            stmt = stmt.where(Error.error_type == error_type)
-
-        result = await session.execute(stmt)
-        return result.scalar_one()
