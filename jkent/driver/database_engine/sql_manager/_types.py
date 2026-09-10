@@ -129,9 +129,14 @@ class IncidentalRequestRecord:
 
     @property
     def compression_ratio(self) -> float | None:
-        """Original size over compressed size; None if either is unknown."""
+        """Compressed size over original size (lower is better).
+
+        Same direction as the ``jkent.compression.ratio`` histogram, so a
+        replay listing and a Grafana panel agree on what a "ratio" means.
+        None if either size is unknown.
+        """
         if self.content_size_original and self.content_size_compressed:
-            return self.content_size_original / self.content_size_compressed
+            return self.content_size_compressed / self.content_size_original
         return None
 
     def to_dict(self) -> IncidentalRequestDict:
