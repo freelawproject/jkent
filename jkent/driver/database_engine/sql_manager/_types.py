@@ -8,9 +8,96 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, TypedDict
+
+if TYPE_CHECKING:
+    from jkent.data_types import HttpMethod
+    from jkent.driver.database_engine.enums import RequestType
+
+
+@dataclass
+class RequestInsert:
+    """One ``requests``-row insert, as ``insert_request`` consumes it.
+
+    The single definition of the insert payload: ``serialize_request``
+    produces it, ``insert_request`` / ``insert_request_in_session`` consume
+    it, so the field list exists once instead of being repeated across three
+    signatures. ``dedup_key`` and ``parent_id`` keep the query layer's
+    vocabulary and map to the ``deduplication_key`` / ``parent_request_id``
+    columns via :meth:`column_values`.
+    """
+
+    request_type: RequestType
+    method: HttpMethod
+    url: str
+    continuation: str
+    current_location: str = ""
+    priority: int = 9
+    headers_json: str | None = None
+    cookies_json: str | None = None
+    body: bytes | None = None
+    accumulated_data_json: str | None = None
+    permanent_json: str | None = None
+    expected_type: str | None = None
+    dedup_key: str | None = None
+    parent_id: int | None = None
+    is_speculative: bool = False
+    speculation_tracking_id: int | None = None
+    speculative_index: int | None = None
+    verify: str | None = None
+    via_json: str | None = None
+    bypass_rate_limit: bool = False
+    timeout_json: str | None = None
+    json_data: str | None = None
+    files_json: str | None = None
+    auth_json: str | None = None
+    allow_redirects: bool = True
+    proxies_json: str | None = None
+    stream: bool = False
+    cert_json: str | None = None
+    archive_hash_header: str | None = None
+    reseedable: bool | None = None
+
+    _COLUMN_RENAMES: ClassVar[dict[str, str]] = {
+        "dedup_key": "deduplication_key",
+        "parent_id": "parent_request_id",
+    }
+
+    def column_values(self) -> dict[str, Any]:
+        """Field values keyed by ``requests`` column name."""
+        return {
+            self._COLUMN_RENAMES.get(f.name, f.name): getattr(self, f.name)
+            for f in fields(self)
+        }
+
+
+class IncidentalRequestParams(TypedDict):
+    """Kwargs of one incidental-request insert, minus ``parent_request_id``.
+
+    The record shape :meth:`IncidentalRequestStorageMixin.
+    insert_incidental_requests` consumes — typed so a misspelled key is a
+    type error at the call site instead of a ``TypeError`` mid-transaction.
+    Every key is required: the capture listener initializes the full record
+    up front and fills response fields in as they arrive.
+    """
+
+    resource_type: str
+    method: str
+    url: str
+    headers_json: str | None
+    body: bytes | None
+    status_code: int | None
+    response_headers_json: str | None
+    content_compressed: bytes | None
+    content_size_original: int | None
+    content_size_compressed: int | None
+    compression_dict_id: int | None
+    started_at_ns: int | None
+    completed_at_ns: int | None
+    from_cache: bool | None
+    failure_reason: str | None
 
 
 @dataclass

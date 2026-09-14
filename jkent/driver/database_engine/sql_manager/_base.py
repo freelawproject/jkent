@@ -42,7 +42,7 @@ class SQLManagerBase:
 
         # With existing engine/session factory (for driver integration)
         manager = SQLManager(engine, session_factory)
-        await manager.store_response(request_id, response, continuation)
+        await manager.insert_request(params)
     """
 
     def __init__(
