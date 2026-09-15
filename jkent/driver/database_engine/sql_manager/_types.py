@@ -149,6 +149,30 @@ def compute_cache_key(
     return hasher.digest()
 
 
+class IncidentalStorageDict(TypedDict):
+    """A raw ``incidental_request_storage`` row, for decompression.
+
+    The columns verbatim, except ``content_md5``: this dict is a
+    display/transport surface that gets JSON-serialized downstream, where
+    raw bytes would not survive, so the digest is rendered as hex. The
+    stored format stays the raw digest.
+    """
+
+    id: int
+    resource_type: str | None
+    url: str
+    method: str | None
+    body: bytes | None
+    status_code: int | None
+    response_headers_json: str | None
+    content_compressed: bytes | None
+    content_size_original: int | None
+    content_size_compressed: int | None
+    compression_dict_id: int | None
+    failure_reason: str | None
+    content_md5: str | None
+
+
 class IncidentalRequestDict(TypedDict):
     """JSON-ready shape of an :class:`IncidentalRequestRecord`.
 

@@ -1108,7 +1108,9 @@ class IncidentalRequestStorage(Base):
     content_md5: Mapped[bytes | None] = mapped_column(
         LargeBinary,
         doc=(
-            "Raw 16-byte MD5 digest of the uncompressed body. Indexed, and "
+            "Raw 16-byte MD5 digest of the stored (compressed) body — the "
+            "exact bytes in ``content_compressed``, which is what the "
+            "dedup lookup hashes. Indexed, and "
             "used to find an existing row to reuse instead of storing the "
             "payload again. A BLOB digest rather than hex text: this table "
             "has one row per distinct payload in a crawl, and hex spends 33 "
