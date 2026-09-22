@@ -32,8 +32,12 @@ repos:
     rev: v2.3.0
     hooks:
       - id: mypy
+        # The typed third-party libraries the code narrows against; without
+        # them mypy sees `Any` and checks a weaker program than the venv does.
         additional_dependencies:
           - types-lxml
+          - pydantic>=2.12.5
+          - sqlalchemy[asyncio]>=2.0
 
   - repo: local
     hooks:

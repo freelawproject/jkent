@@ -38,10 +38,8 @@ if TYPE_CHECKING:
     # rely on the homogeneity invariant, so they take this wider type.
     MixedResults: TypeAlias = "Sequence[str | Element]"
 
-_active_observer: contextvars.ContextVar[SelectorObserver | None] = (  # type: ignore
-    contextvars.ContextVar["SelectorObserver | None"](  # type: ignore
-        "selector_observer", default=None
-    )
+_active_observer: contextvars.ContextVar[SelectorObserver | None] = (
+    contextvars.ContextVar("selector_observer", default=None)
 )
 
 

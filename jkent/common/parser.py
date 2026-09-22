@@ -52,7 +52,7 @@ class JKentParser(ABC, Generic[T]):
         """
         element = lxml_html.fromstring(html)
         page = LxmlPageElement(element, url)
-        return cls()(page)  # type: ignore[arg-type]
+        return cls()(page)
 
     @classmethod
     def from_file(

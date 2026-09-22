@@ -28,7 +28,6 @@ from typing import (
     Final,
     Generic,
     TypeVar,
-    cast,
     get_origin,
 )
 from urllib.parse import parse_qs, quote, urljoin, urlparse
@@ -432,13 +431,7 @@ class BaseScraper(Generic[ScraperReturnType]):
             raise ScraperConfigError(
                 "Nonexistent continuation referenced"
             ) from None
-        return cast(
-            Callable[
-                [Response],
-                Generator[ScraperYield[ScraperReturnType], bool | None, None],
-            ],
-            method,
-        )
+        return method
 
     @staticmethod
     def _iter_decorated(
@@ -599,7 +592,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     # it was validated from (persisted with the speculation
                     # state so hosts can map state rows back to their seed
                     if not hasattr(self, "_speculation_templates"):
-                        self._speculation_templates: dict[  # type: ignore
+                        self._speculation_templates: dict[
                             str, list[tuple[Speculative, Any]]
                         ] = {}
                     if func_name not in self._speculation_templates:
@@ -641,8 +634,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     and issubclass(param_type, PydanticBaseModel)
                 ):
                     # Use Pydantic's schema generation
-                    pydantic_type = cast(type[PydanticBaseModel], param_type)
-                    model_schema = pydantic_type.model_json_schema()
+                    model_schema = param_type.model_json_schema()
                     # Extract $defs and add to top-level
                     if "$defs" in model_schema:
                         all_defs.update(model_schema["$defs"])
@@ -1015,8 +1007,8 @@ class Selector:
     value: str
     grammar: ClassVar[str] = ""
 
-    CSS: ClassVar[type[CSS]]  # type: ignore
-    XPath: ClassVar[type[XPath]]  # type: ignore
+    CSS: ClassVar[type[CSS]]
+    XPath: ClassVar[type[XPath]]
 
     @classmethod
     def of(cls, value: str, grammar: str) -> Selector:
@@ -1065,8 +1057,8 @@ class XPath(Selector):
         return XPath(f"({self.value})[{position}]")
 
 
-Selector.CSS = CSS  # type: ignore
-Selector.XPath = XPath  # type: ignore
+Selector.CSS = CSS
+Selector.XPath = XPath
 
 
 @dataclass(frozen=True)

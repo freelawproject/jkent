@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -38,10 +38,12 @@ class ContractDecorator(Protocol):
     The return type of :func:`require` / :func:`ensure`. (A callback
     protocol scopes the type variable to ``__call__`` instead of leaving
     it free in the factory's own signature, as a plain ``Callable[[F], F]``
-    return annotation would.)
+    return annotation would.) The parameter is positional-only so that
+    icontract's decorator classes, whose ``__call__`` names it ``func``,
+    satisfy the protocol structurally.
     """
 
-    def __call__(self, fn: F) -> F: ...
+    def __call__(self, fn: F, /) -> F: ...
 
 
 # Class-statement keywords for Protocols whose method stubs carry
@@ -82,12 +84,7 @@ def require(
     # Dev-only dependency, imported only when contracts are enabled.
     import icontract  # noqa: PLC0415
 
-    # icontract's decorators are classes with a generic __call__; type
-    # checkers won't structurally match them against the protocol.
-    return cast(
-        "ContractDecorator",
-        icontract.require(condition, description=description),
-    )
+    return icontract.require(condition, description=description)
 
 
 def ensure(
@@ -99,9 +96,4 @@ def ensure(
     # Dev-only dependency, imported only when contracts are enabled.
     import icontract  # noqa: PLC0415
 
-    # icontract's decorators are classes with a generic __call__; type
-    # checkers won't structurally match them against the protocol.
-    return cast(
-        "ContractDecorator",
-        icontract.ensure(condition, description=description),
-    )
+    return icontract.ensure(condition, description=description)

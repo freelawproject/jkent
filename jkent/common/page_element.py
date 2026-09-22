@@ -316,7 +316,7 @@ class Form:
             http_params = HTTPRequestParams(
                 url=self.action,
                 method=method_enum,
-                data=field_data,  # type: ignore[arg-type]
+                data=field_data,
             )
 
         # Set defaults for continuation if not provided

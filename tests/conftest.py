@@ -92,11 +92,11 @@ class AioHttpTestServer:
         async def start() -> None:
             self._runner = web.AppRunner(self.app)
             await self._runner.setup()
-            site = web.TCPSite(self._runner, self.host, self.port)  # type: ignore
+            site = web.TCPSite(self._runner, self.host, self.port)
             await site.start()
 
-        self._loop.run_until_complete(start())  # type: ignore
-        self._loop.run_forever()  # type: ignore
+        self._loop.run_until_complete(start())
+        self._loop.run_forever()
 
     def stop(self) -> None:
         """Stop the server and clean up resources."""
@@ -107,7 +107,7 @@ class AioHttpTestServer:
                     self._runner.cleanup()
                 ) if self._runner is not None else None
 
-            future = asyncio.run_coroutine_threadsafe(cleanup(), self._loop)  # type: ignore
+            future = asyncio.run_coroutine_threadsafe(cleanup(), self._loop)
             with suppress(Exception):  # Best effort cleanup
                 future.result(timeout=2.0)
 

@@ -14,6 +14,7 @@ tests/driver/unified/test_data_types_e2e.py against the unified driver.
 """
 
 import json
+from typing import Any
 
 import pytest
 
@@ -367,8 +368,8 @@ class TestBugCourtScraperWithAPI:
         results = list(scraper.parse_detail(response))
 
         assert len(results) == 1
-        assert isinstance(results[0], Request) and results[0].nonnavigating  # type: ignore
-        assert "/api/cases/" in results[0].request.url  # type: ignore
+        assert isinstance(results[0], Request) and results[0].nonnavigating
+        assert "/api/cases/" in results[0].request.url
 
     def test_parse_api_yields_parsed_data(
         self, scraper: BugCourtScraperWithAPI, server_url: str
@@ -414,8 +415,6 @@ class TestBugCourtScraperWithAPI:
 
         assert len(results) == 1
         assert isinstance(results[0], ParsedData)
-        data: dict = results[  # type: ignore
-            0
-        ].unwrap()
+        data: dict[str, Any] = results[0].unwrap()
         assert "api_metadata" in data
         assert data["api_metadata"]["jurisdiction"] == "BUG"

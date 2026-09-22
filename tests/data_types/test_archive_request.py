@@ -403,7 +403,7 @@ class TestBugCourtScraperWithArchive:
         # Should yield ParsedData directly
         parsed_data = [r for r in results if isinstance(r, ParsedData)]
         assert len(parsed_data) == 1
-        data: dict[str, Any] = parsed_data[0].unwrap()  # ty: ignore[invalid-assignment]
+        data: dict[str, Any] = parsed_data[0].unwrap()
         assert data["docket"] == case.docket
 
     def test_archive_opinion_yields_parsed_data_with_file_url(
@@ -433,9 +433,7 @@ class TestBugCourtScraperWithArchive:
 
         assert len(results) == 1
         assert isinstance(results[0], ParsedData)
-        data: dict = results[  # type: ignore
-            0
-        ].unwrap()
+        data: dict[str, Any] = results[0].unwrap()
         assert "opinion_file" in data
         assert data["opinion_file"] == "/tmp/BCC-2024-001.pdf"
         assert "download_url" in data
