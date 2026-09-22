@@ -71,7 +71,7 @@ class DeferredValidation(Generic[T]):
             ) from e
 
     @property
-    def raw_data(self) -> dict:
+    def raw_data(self) -> dict[str, Any]:
         """Access the raw unvalidated data.
 
         Returns:

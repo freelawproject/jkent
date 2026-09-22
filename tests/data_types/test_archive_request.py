@@ -14,6 +14,8 @@ tests/driver/unified/test_data_types_e2e.py against the unified driver; the
 archive handlers have their own dedicated suites.
 """
 
+from typing import Any
+
 import pytest
 
 from jkent.data_types import (
@@ -401,7 +403,7 @@ class TestBugCourtScraperWithArchive:
         # Should yield ParsedData directly
         parsed_data = [r for r in results if isinstance(r, ParsedData)]
         assert len(parsed_data) == 1
-        data: dict = parsed_data[0].unwrap()  # ty: ignore[invalid-assignment]
+        data: dict[str, Any] = parsed_data[0].unwrap()  # ty: ignore[invalid-assignment]
         assert data["docket"] == case.docket
 
     def test_archive_opinion_yields_parsed_data_with_file_url(

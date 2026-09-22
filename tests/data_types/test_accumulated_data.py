@@ -11,6 +11,8 @@ parsing methods directly. The driver-level pipeline coverage lives in
 tests/driver/unified/test_data_types_e2e.py against the unified driver.
 """
 
+from typing import Any
+
 import pytest
 
 from jkent.data_types import (
@@ -57,7 +59,10 @@ class TestAccumulatedDataField:
 
     def test_accumulated_data_is_deep_copied(self):
         """Request shall deep copy accumulated_data in __post_init__."""
-        original_data: dict = {"key": "value", "nested": {"inner": "data"}}
+        original_data: dict[str, Any] = {
+            "key": "value",
+            "nested": {"inner": "data"},
+        }
         request = Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,

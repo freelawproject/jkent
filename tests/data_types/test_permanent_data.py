@@ -16,6 +16,8 @@ the wire lives in tests/driver/unified/test_data_types_e2e.py against the
 unified driver.
 """
 
+from typing import Any
+
 from jkent.data_types import (
     HttpMethod,
     HTTPRequestParams,
@@ -29,7 +31,7 @@ def _request(
     *,
     headers: dict[str, str] | None = None,
     cookies: dict[str, str] | None = None,
-    permanent: dict | None = None,
+    permanent: dict[str, Any] | None = None,
     continuation: str = "parse",
 ) -> Request:
     return Request(

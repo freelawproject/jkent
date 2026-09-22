@@ -22,6 +22,8 @@ import asyncio
 import time
 from typing import Literal
 
+from typing_extensions import override
+
 from jkent.observability.metrics import current_labels, instruments
 
 
@@ -32,6 +34,7 @@ class InstrumentedLock(asyncio.Lock):
     #: coroutine that holds the lock, so a plain attribute is race-free.
     _held_since: float | None = None
 
+    @override
     async def acquire(self) -> Literal[True]:
         start = time.monotonic()
         acquired = await super().acquire()
@@ -40,6 +43,7 @@ class InstrumentedLock(asyncio.Lock):
         inst.lock_wait.record(self._held_since - start, current_labels())
         return acquired
 
+    @override
     def release(self) -> None:
         held_since = self._held_since
         self._held_since = None

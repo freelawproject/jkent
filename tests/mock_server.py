@@ -821,7 +821,7 @@ async def handle_complex_form_results(request: web.Request) -> web.Response:
     client_state = data.get("date_start_client_state", "")
 
     # Filter cases
-    filtered = CASES
+    filtered: list[MockCase] = CASES
     if category == "criminal":
         filtered = []  # No criminal cases in mock data
     if case_type:

@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import TypeAdapter
 from pyrate_limiter import Rate
+from typing_extensions import override
 
 from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import (
@@ -846,7 +847,7 @@ class HTTPRequestParams:
 
 
 @ensure(
-    lambda result: (
+    lambda result: (  # pyrefly: ignore[implicit-any-lambda]
         len(result) == 64 and set(result) <= set("0123456789abcdef")
     ),
     "dedup key is a sha256 hex digest",
@@ -876,7 +877,7 @@ def _generate_deduplication_key(request_params: HTTPRequestParams) -> str:
         if isinstance(request_params.params, dict):
             sorted_params = sorted(request_params.params.items())
             params_str = str(sorted_params)
-        elif isinstance(request_params.params, list | tuple):
+        elif isinstance(request_params.params, (list, tuple)):
             # Sort by repr: total over mixed value types (plain tuple
             # comparison raises TypeError when two entries share a name
             # and carry e.g. an int and a str).
@@ -1043,6 +1044,7 @@ class CSS(Selector):
 
     grammar: ClassVar[str] = "css"
 
+    @override
     def nth(self, position: int) -> Selector:
         # Playwright's :nth-match() picks the position-th match document-wide,
         # mirroring how the parse enumerated the CSS matches.
@@ -1055,6 +1057,7 @@ class XPath(Selector):
 
     grammar: ClassVar[str] = "xpath"
 
+    @override
     def nth(self, position: int) -> Selector:
         # Parenthesize first so the positional predicate applies to the whole
         # node-set rather than only the last location step.
@@ -1542,7 +1545,7 @@ class Request:
         return replace(req, headers=merged_headers, cookies=merged_cookies)
 
     @ensure(
-        lambda result, current_location: (
+        lambda result, current_location: (  # pyrefly: ignore[implicit-any-lambda]
             not urlparse(current_location).scheme
             or urlparse(result).scheme != ""
         ),

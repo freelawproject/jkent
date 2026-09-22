@@ -7,6 +7,7 @@ priority — including an explicit 9 — is always kept.
 """
 
 from collections.abc import Generator
+from typing import Any
 
 from jkent.common.decorators import step
 from jkent.data_types import (
@@ -22,7 +23,7 @@ from jkent.data_types import (
 )
 
 
-def make_request(**kwargs) -> Request:
+def make_request(**kwargs: Any) -> Request:
     kwargs.setdefault("continuation", "parse")
     return Request(
         request=HTTPRequestParams(
@@ -74,7 +75,9 @@ class TestStepPriorityInheritance:
     """Callable continuations inherit the target step's priority."""
 
     @staticmethod
-    def _run_step(scraper, step_name: str = "parse_listing"):
+    def _run_step(
+        scraper: BaseScraper[dict[str, Any]], step_name: str = "parse_listing"
+    ):
         request = Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET, url="https://example.com/list"
@@ -92,17 +95,17 @@ class TestStepPriorityInheritance:
         return list(getattr(scraper, step_name)(response))
 
     def test_unset_priority_inherits_target_step_priority(self):
-        class InheritScraper(BaseScraper[dict]):
+        class InheritScraper(BaseScraper[dict[str, Any]]):
             @step
             def parse_listing(
                 self, response: Response
-            ) -> Generator[ScraperYield, None, None]:
+            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
                 yield make_request(continuation=self.parse_detail)
 
             @step(priority=2)
             def parse_detail(
                 self, response: Response
-            ) -> Generator[ScraperYield, None, None]:
+            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
                 yield ParsedData({"ok": True})
 
         yields = self._run_step(InheritScraper())
@@ -111,17 +114,17 @@ class TestStepPriorityInheritance:
     def test_explicit_priority_9_not_overridden_by_target_step(self):
         """An explicit 9 must not be replaced by the target's priority."""
 
-        class ExplicitScraper(BaseScraper[dict]):
+        class ExplicitScraper(BaseScraper[dict[str, Any]]):
             @step
             def parse_listing(
                 self, response: Response
-            ) -> Generator[ScraperYield, None, None]:
+            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
                 yield make_request(continuation=self.parse_detail, priority=9)
 
             @step(priority=2)
             def parse_detail(
                 self, response: Response
-            ) -> Generator[ScraperYield, None, None]:
+            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
                 yield ParsedData({"ok": True})
 
         yields = self._run_step(ExplicitScraper())

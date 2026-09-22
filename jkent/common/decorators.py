@@ -241,7 +241,7 @@ def _process_yielded_request(yielded: Any) -> Any:
 
 
 def step(
-    func: Callable[..., Generator[ScraperYield, Any, None]] | None = None,
+    func: Callable[..., Generator[ScraperYield[Any], Any, None]] | None = None,
     *,
     priority: int = DEFAULT_PRIORITY,
     encoding: str = "utf-8",
@@ -316,8 +316,8 @@ def step(
     """
 
     def decorator(
-        fn: Callable[..., Generator[ScraperYield, Any, None]],
-    ) -> Callable[..., Generator[ScraperYield, bool | None, None]]:
+        fn: Callable[..., Generator[ScraperYield[Any], Any, None]],
+    ) -> Callable[..., Generator[ScraperYield[Any], bool | None, None]]:
         # Inspect the function signature to determine what to inject
         sig = inspect.signature(fn)
         param_names = [p.name for p in sig.parameters.values()]
@@ -336,7 +336,7 @@ def step(
             response: Response,
             *args: Any,
             **kwargs: Any,
-        ) -> Generator[ScraperYield, bool | None, None]:
+        ) -> Generator[ScraperYield[Any], bool | None, None]:
             # Build kwargs for injection based on parameter names
             injected_kwargs: dict[str, Any] = {}
             observer: SelectorObserver | None = None

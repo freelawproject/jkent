@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -16,12 +16,14 @@ if TYPE_CHECKING:
 
     from jkent.driver.database_engine.enums import ErrorType
 
+_TP = TypeVar("_TP", bound=tuple[Any, ...])
+
 
 def _filter_errors(
-    stmt: Select,
+    stmt: Select[_TP],
     error_type: ErrorType | str | None,
     continuation: str | None,
-) -> Select:
+) -> Select[_TP]:
     """Apply the shared error filters to a select over ``errors``.
 
     Used by both the listing and the count so a paginated total cannot

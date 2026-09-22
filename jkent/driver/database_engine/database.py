@@ -20,7 +20,7 @@ from jkent.driver.database_engine.timestamps import require_subsec_support
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -128,7 +128,7 @@ async def create_engine_and_init(
 
 def get_session_factory(
     engine: AsyncEngine,
-) -> async_sessionmaker:
+) -> async_sessionmaker[AsyncSession]:
     """Create a session factory bound to the engine.
 
     Args:
@@ -144,7 +144,7 @@ async def init_database(
     db_path: Path,
     echo: bool = False,
     **engine_kwargs: Any,
-) -> tuple[AsyncEngine, async_sessionmaker]:
+) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     """Initialize database and return engine + session factory.
 
     This is the main entry point, replacing schema.init_database().
@@ -164,7 +164,7 @@ async def init_database(
 
 @asynccontextmanager
 async def write_session(
-    session_factory: async_sessionmaker,
+    session_factory: async_sessionmaker[AsyncSession],
     lock: asyncio.Lock,
 ) -> AsyncIterator[AsyncSession]:
     """Open a session for a write transaction, serialized by ``lock``.
@@ -189,7 +189,6 @@ async def write_session(
             await session.commit()
     """
     async with lock, session_factory() as session:
-        await session.connection(
-            execution_options={BEGIN_IMMEDIATE_OPTION: True}
-        )
+        begin_immediate: Mapping[str, Any] = {BEGIN_IMMEDIATE_OPTION: True}
+        await session.connection(execution_options=begin_immediate)
         yield session

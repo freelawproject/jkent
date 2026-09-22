@@ -85,13 +85,13 @@ class LxmlPageElement(PageElement):
     ) -> list[LxmlPageElement]: ...
 
     @require(
-        lambda min_count, max_count: (
+        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count >= 0 and (max_count is None or max_count >= min_count)
         ),
         "expected-count bounds form a valid (possibly open) interval",
     )
     @ensure(
-        lambda result, min_count, max_count: (
+        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count <= len(result)
             and (max_count is None or len(result) <= max_count)
         ),
@@ -207,13 +207,13 @@ class LxmlPageElement(PageElement):
         return typed_results
 
     @require(
-        lambda min_count, max_count: (
+        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count >= 0 and (max_count is None or max_count >= min_count)
         ),
         "expected-count bounds form a valid (possibly open) interval",
     )
     @ensure(
-        lambda result, min_count, max_count: (
+        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count <= len(result)
             and (max_count is None or len(result) <= max_count)
         ),

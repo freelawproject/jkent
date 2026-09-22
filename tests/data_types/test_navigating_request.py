@@ -13,6 +13,7 @@ tests/driver/unified/test_data_types_e2e.py against the unified driver.
 """
 
 import json
+from typing import Any
 
 import pytest
 
@@ -390,7 +391,7 @@ class TestBugCourtScraper:
         )
 
         results = list(scraper.parse_detail(response))
-        data: dict = (  # ty: ignore[invalid-assignment]
+        data: dict[str, Any] = (  # ty: ignore[invalid-assignment]
             results[0].unwrap() if isinstance(results[0], ParsedData) else {}  # type: ignore
         )
 
