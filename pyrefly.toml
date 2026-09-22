@@ -1,0 +1,3 @@
+project-includes = ["jkent", "tests"]
+
+preset = "default"

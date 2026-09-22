@@ -1,3 +1,8 @@
+ci:
+  autoupdate_schedule: quarterly
+  # pyrefly needs the project environment (uv); pre-commit.ci can't provide
+  # it. The Lint workflow runs the same check.
+  skip: [ pyrefly ]
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -32,6 +37,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: pyrefly
+        name: pyrefly
+        entry: uv run pyrefly check --prune-baseline
+        language: system
+        pass_filenames: false
+        files: '(\.py$|^pyrefly\.toml$|^\.pyrefly-baseline\.json$)'
       - id: pyre
         name: pyre
         # Run via uvx in an isolated env: pyre-check pins an older click, so

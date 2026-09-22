@@ -3,6 +3,9 @@
 Tests checked-query behavior, observer integration, form and link handling.
 """
 
+from collections.abc import Mapping
+from typing import cast
+
 import pytest
 from lxml import html
 
@@ -401,7 +404,9 @@ def test_unchecked_checkbox_with_value_is_omitted():
 
     assert form.get_field("cb") is None
     request = form.submit(continuation="test")
-    assert "cb" not in request.request.data
+    data = request.request.data
+    assert isinstance(data, Mapping)
+    assert "cb" not in data
 
 
 def test_checked_checkbox_with_value_is_submitted():
@@ -451,7 +456,9 @@ def test_unchecked_checkbox_without_value_is_omitted():
 
     assert form.get_field("cb") is None
     request = form.submit(continuation="test")
-    assert "cb" not in request.request.data
+    data = request.request.data
+    assert isinstance(data, Mapping)
+    assert "cb" not in data
 
 
 def test_mixed_checkboxes_only_checked_submitted():
