@@ -35,10 +35,10 @@ ENFORCE_CONTRACTS: bool = os.environ.get(
 class ContractDecorator(Protocol):
     """A decorator that hands back the decorated callable's own type.
 
-    The return type of :func:`require` / :func:`ensure`. (A plain
-    ``Callable[[F], F]`` return annotation leaves the type variable
-    free in the signature, which pyre rejects; a callback protocol
-    scopes it to ``__call__``.)
+    The return type of :func:`require` / :func:`ensure`. (A callback
+    protocol scopes the type variable to ``__call__`` instead of leaving
+    it free in the factory's own signature, as a plain ``Callable[[F], F]``
+    return annotation would.)
     """
 
     def __call__(self, fn: F) -> F: ...
@@ -60,15 +60,13 @@ class ContractDecorator(Protocol):
 #
 # With contracts off the dict is empty and the class statement is
 # exactly a plain Protocol. The keywords go through ``**`` because
-# type checkers (mypy and pyre both) reject a dynamic ``metaclass=``
+# type checkers reject a dynamic ``metaclass=``
 # expression outright — passed this way they see a plain Protocol,
 # which is also precisely what production gets.
 DBC_PROTOCOL_KW: dict[str, type] = {}
 if not TYPE_CHECKING and ENFORCE_CONTRACTS:
     import icontract  # noqa: PLC0415 — dev-only dep, contracts are on
 
-    # pyre-ignore[31]: pyre can't model type(Protocol) as a base class;
-    # this branch is runtime-only (dev, contracts on) anyway.
     class _DBCProtocolMeta(icontract.DBCMeta, type(Protocol)):
         """DBCMeta composed with Protocol's metaclass."""
 

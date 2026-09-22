@@ -3,6 +3,7 @@
 Tests recording logic, deduplication, output formats, and absolute selector composition.
 """
 
+import json
 from typing import Any
 
 import pytest
@@ -333,8 +334,6 @@ def test_json_output_nested_has_no_parent_cycle(simple_html: str):
     backref cycle (regression: children carry a ``parent`` ref pointing back
     up, so serialization has to drop ``parent`` at every depth, not just the
     top)."""
-    import json as _json
-
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
 
@@ -363,7 +362,7 @@ def test_json_output_nested_has_no_parent_cycle(simple_html: str):
     json_output = observer.json()
 
     # Serializable end to end, and no "parent" key leaks at any level.
-    assert _json.dumps(json_output)
+    assert json.dumps(json_output)
     top = json_output[0]
     assert "parent" not in top
     child = top["children"][0]

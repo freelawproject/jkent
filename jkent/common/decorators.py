@@ -255,10 +255,6 @@ def _process_yielded_request(yielded: Any) -> Any:
 StepYield = TypeVar("StepYield", bound=ScraperYield[Any])
 StepScraper = TypeVar("StepScraper", bound=BaseScraper[Any])
 
-# Pyre cannot represent these aliases (``Concatenate[X, ...]``, and generic
-# aliases built on it, are beyond it), so their definition and every use
-# carry ``pyre-ignore`` comments; the other checkers verify them fully.
-#
 # The method as the scraper author writes it: ``self`` followed by whatever
 # injectable names it asks for (see :func:`step`).
 StepFunction = Callable[
@@ -268,20 +264,20 @@ StepFunction = Callable[
 # injected arguments supplied by the wrapper.
 StepMethod = Callable[
     Concatenate[StepScraper, Response, ...],
-    Generator[StepYield, bool | None, None],  # pyre-ignore[6]
+    Generator[StepYield, bool | None, None],
 ]
 
 
 @overload
 def step(
-    func: StepFunction[StepScraper, StepYield],  # pyre-ignore[11, 34]
+    func: StepFunction[StepScraper, StepYield],
     *,
     priority: int = ...,
     encoding: str = ...,
     await_list: list[WaitCondition] | None = ...,
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
-) -> StepMethod[StepScraper, StepYield]: ...  # pyre-ignore[11, 34]
+) -> StepMethod[StepScraper, StepYield]: ...
 @overload
 def step(
     func: None = None,
@@ -291,12 +287,11 @@ def step(
     await_list: list[WaitCondition] | None = ...,
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
-) -> Callable[  # pyre-ignore[34]
+) -> Callable[
     [StepFunction[StepScraper, StepYield]], StepMethod[StepScraper, StepYield]
 ]: ...
 def step(
-    func: StepFunction[StepScraper, StepYield]  # pyre-ignore[34]
-    | None = None,
+    func: StepFunction[StepScraper, StepYield] | None = None,
     *,
     priority: int = DEFAULT_PRIORITY,
     encoding: str = "utf-8",
@@ -304,7 +299,7 @@ def step(
     auto_await_timeout: int | None = None,
     preprocess: Callable[[str], str] | None = None,
 ) -> (
-    StepMethod[StepScraper, StepYield]  # pyre-ignore[34]
+    StepMethod[StepScraper, StepYield]
     | Callable[
         [StepFunction[StepScraper, StepYield]],
         StepMethod[StepScraper, StepYield],
@@ -377,8 +372,8 @@ def step(
     """
 
     def decorator(
-        fn: StepFunction[StepScraper, StepYield],  # pyre-ignore[34]
-    ) -> StepMethod[StepScraper, StepYield]:  # pyre-ignore[34]
+        fn: StepFunction[StepScraper, StepYield],
+    ) -> StepMethod[StepScraper, StepYield]:
         # Inspect the function signature to determine what to inject
         sig = inspect.signature(fn)
         param_names = [p.name for p in sig.parameters.values()]
@@ -397,9 +392,7 @@ def step(
             response: Response,
             *args: Any,
             **kwargs: Any,
-        ) -> Generator[  # pyre-ignore[34]: StepYield is bound by `decorator`
-            StepYield, bool | None, None
-        ]:
+        ) -> Generator[StepYield, bool | None, None]:
             # Build kwargs for injection based on parameter names
             injected_kwargs: dict[str, Any] = {}
             observer: SelectorObserver | None = None
@@ -529,7 +522,7 @@ EntryReturn = TypeVar("EntryReturn")
 
 def entry(
     return_type: type,
-) -> Callable[  # pyre-ignore[34]: the type variables scope to the decorator
+) -> Callable[
     [Callable[EntryParams, EntryReturn]], Callable[EntryParams, EntryReturn]
 ]:
     """Decorator for scraper entry point methods with typed parameters.

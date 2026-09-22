@@ -98,8 +98,6 @@ class LxmlPageElement(PageElement):
         "a returned result list always satisfies the caller's bounds — "
         "out-of-bounds counts raise instead",
     )
-    # pyre-ignore[43]: contracts decorate only the implementation, not
-    # the @overload stubs — they're identity functions to type checkers.
     def checked_xpath(
         self,
         xpath: str,

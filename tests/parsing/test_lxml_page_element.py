@@ -4,7 +4,6 @@ Tests checked-query behavior, observer integration, form and link handling.
 """
 
 from collections.abc import Mapping
-from typing import cast
 
 import pytest
 from lxml import html

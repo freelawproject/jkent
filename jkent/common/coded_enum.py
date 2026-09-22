@@ -53,10 +53,9 @@ class CodedEnum(str, enum.Enum):
     already has members cannot be).
     """
 
-    # Both are populated in ``__new__`` as members are constructed, which pyre
-    # reports as an uninitialized attribute.
-    code: int  # pyre-ignore[13]
-    _code_index: ClassVar[dict[int, CodedEnum]]  # pyre-ignore[13]
+    # Both are populated in ``__new__`` as members are constructed.
+    code: int
+    _code_index: ClassVar[dict[int, CodedEnum]]
 
     if TYPE_CHECKING:
         # Type checkers resolve a *functional* call — ``RequestStatus("pending")``,

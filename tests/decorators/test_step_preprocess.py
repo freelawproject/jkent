@@ -54,7 +54,7 @@ def _response(html: str = _BROKEN_HTML) -> Response:
 class _Host(BaseScraper[dict[str, Any]]):
     """Minimal scraper — only the ``@step`` methods under test matter."""
 
-    @step(preprocess=_repair)  # pyre-ignore[56]
+    @step(preprocess=_repair)
     def parse_with_repair(
         self, page: LxmlPageElement, text: str
     ) -> Generator[ParsedData[dict[str, Any]], None, None]:
@@ -70,14 +70,14 @@ class _Host(BaseScraper[dict[str, Any]]):
         found = page._element.xpath("//div[@id='case-name']/text()")
         yield ParsedData(data={"found": found})
 
-    @step(preprocess=_repair)  # pyre-ignore[56]
+    @step(preprocess=_repair)
     def parse_tree(
         self, lxml_tree: LxmlPageElement
     ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         found = lxml_tree._element.xpath("//div[@id='case-name']/text()")
         yield ParsedData(data={"found": found})
 
-    @step(preprocess=_explode)  # pyre-ignore[56]
+    @step(preprocess=_explode)
     def parse_exploding(
         self, text: str
     ) -> Generator[ParsedData[dict[str, Any]], None, None]:
