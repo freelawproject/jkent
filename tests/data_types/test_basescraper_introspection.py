@@ -40,6 +40,7 @@ from jkent.data_types import (
 class BareMinimumScraper(BaseScraper[dict[str, Any]]):
     """Scraper with no overrides — uses all defaults."""
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
@@ -67,6 +68,7 @@ class FullyConfiguredScraper(BaseScraper[dict[str, Any]]):
     requires_auth = True
     rate_limits = [Rate(10, Duration.SECOND)]
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
@@ -84,6 +86,7 @@ class FullyConfiguredScraper(BaseScraper[dict[str, Any]]):
 class MultiStepScraper(BaseScraper[dict[str, Any]]):
     """Scraper with multiple @step methods at different priorities."""
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
@@ -123,6 +126,7 @@ class CustomSSLScraper(BaseScraper[dict[str, Any]]):
         ctx = ssl.create_default_context()
         return ctx
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
@@ -263,6 +267,7 @@ class TestGetSSLContext:
         class DirectSSLScraper(BaseScraper[dict[str, Any]]):
             ssl_context = ssl.create_default_context()
 
+            @override
             @entry(dict)
             def get_entry(self) -> Generator[Request, None, None]:
                 yield Request(
@@ -329,6 +334,7 @@ class TestListSteps:
         """Scraper with no @step methods returns an empty list."""
 
         class NoStepScraper(BaseScraper[dict[str, Any]]):
+            @override
             @entry(dict)
             def get_entry(self) -> Generator[Request, None, None]:
                 yield Request(
@@ -363,6 +369,7 @@ class BrokenAttrScraper(BaseScraper[dict[str, Any]]):
 
     broken = _RaisingDescriptor()
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
@@ -384,6 +391,7 @@ class BrokenPropertyScraper(BaseScraper[dict[str, Any]]):
     def broken(self) -> str:
         raise RuntimeError("broken property")
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(

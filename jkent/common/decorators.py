@@ -31,7 +31,16 @@ parameters, replacing the old get_entry()/ScraperParams system.
 import inspect
 from collections.abc import Callable, Generator
 from functools import wraps
-from typing import Any, TypeVar, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    Concatenate,
+    ParamSpec,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+    overload,
+)
 
 from lxml import html as lxml_html
 from pydantic_core import from_json
@@ -55,6 +64,7 @@ from jkent.common.selector_observer import (
 from jkent.common.speculative import Speculative
 from jkent.data_types import (
     ArchiveResponse,
+    BaseScraper,
     Request,
     Response,
     ScraperYield,
@@ -240,15 +250,77 @@ def _process_yielded_request(yielded: Any) -> Any:
     return yielded
 
 
+StepYield = TypeVar("StepYield", bound=ScraperYield[Any])
+StepScraper = TypeVar("StepScraper", bound=BaseScraper[Any])
+
+
+@overload
 def step(
-    func: Callable[..., Generator[ScraperYield[Any], Any, None]] | None = None,
+    func: Callable[
+        Concatenate[StepScraper, ...],
+        Generator[StepYield, Any, None],
+    ],
+    *,
+    priority: int = ...,
+    encoding: str = ...,
+    await_list: list[WaitCondition] | None = ...,
+    auto_await_timeout: int | None = ...,
+    preprocess: Callable[[str], str] | None = ...,
+) -> Callable[
+    Concatenate[StepScraper, Response, ...],
+    Generator[StepYield, Any, None],
+]: ...
+@overload
+def step(
+    func: None = None,
+    *,
+    priority: int = ...,
+    encoding: str = ...,
+    await_list: list[WaitCondition] | None = ...,
+    auto_await_timeout: int | None = ...,
+    preprocess: Callable[[str], str] | None = ...,
+) -> Callable[
+    [
+        Callable[
+            Concatenate[StepScraper, ...],
+            Generator[StepYield, Any, None],
+        ]
+    ],
+    Callable[
+        Concatenate[StepScraper, Response, ...],
+        Generator[StepYield, Any, None],
+    ],
+]: ...
+def step(
+    func: Callable[
+        Concatenate[StepScraper, ...],
+        Generator[StepYield, Any, None],
+    ]
+    | None = None,
     *,
     priority: int = DEFAULT_PRIORITY,
     encoding: str = "utf-8",
     await_list: list[WaitCondition] | None = None,
     auto_await_timeout: int | None = None,
     preprocess: Callable[[str], str] | None = None,
-) -> Any:
+) -> (
+    Callable[
+        Concatenate[StepScraper, Response, ...],
+        Generator[StepYield, Any, None],
+    ]
+    | Callable[
+        [
+            Callable[
+                Concatenate[StepScraper, ...],
+                Generator[StepYield, Any, None],
+            ]
+        ],
+        Callable[
+            Concatenate[StepScraper, Response, ...],
+            Generator[StepYield, Any, None],
+        ],
+    ]
+):
     """Decorator for scraper step methods with automatic argument injection.
 
     This decorator inspects the function signature and injects values based on
@@ -316,8 +388,14 @@ def step(
     """
 
     def decorator(
-        fn: Callable[..., Generator[ScraperYield[Any], Any, None]],
-    ) -> Callable[..., Generator[ScraperYield[Any], bool | None, None]]:
+        fn: Callable[
+            Concatenate[StepScraper, ...],
+            Generator[StepYield, Any, None],
+        ],
+    ) -> Callable[
+        Concatenate[StepScraper, Response, ...],
+        Generator[StepYield, bool | None, None],
+    ]:
         # Inspect the function signature to determine what to inject
         sig = inspect.signature(fn)
         param_names = [p.name for p in sig.parameters.values()]
@@ -332,11 +410,11 @@ def step(
 
         @wraps(fn)
         def wrapper(
-            scraper_self: Any,
+            scraper_self: StepScraper,
             response: Response,
             *args: Any,
             **kwargs: Any,
-        ) -> Generator[ScraperYield[Any], bool | None, None]:
+        ) -> Generator[StepYield, bool | None, None]:
             # Build kwargs for injection based on parameter names
             injected_kwargs: dict[str, Any] = {}
             observer: SelectorObserver | None = None
@@ -460,9 +538,15 @@ def _is_bare_tuple(param_type: Any) -> bool:
     return get_origin(param_type) is tuple and not get_args(param_type)
 
 
+EntryParams = ParamSpec("EntryParams")
+EntryReturn = TypeVar("EntryReturn", type, Any)
+
+
 def entry(
-    return_type: type | Any,
-) -> Callable[..., Any]:
+    return_type: EntryReturn,
+) -> Callable[
+    [Callable[EntryParams, EntryReturn]], Callable[EntryParams, EntryReturn]
+]:
     """Decorator for scraper entry point methods with typed parameters.
 
     Marks a method as an entry point and attaches EntryMetadata describing
@@ -497,7 +581,9 @@ def entry(
         Decorator that attaches EntryMetadata to the function.
     """
 
-    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def decorator(
+        fn: Callable[EntryParams, EntryReturn],
+    ) -> Callable[EntryParams, EntryReturn]:
         # Inspect function signature to extract parameter types
         # Skip 'self' for instance methods
         # Use get_type_hints with the function's module globals for proper

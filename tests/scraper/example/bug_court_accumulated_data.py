@@ -12,7 +12,7 @@ The scraper:
 """
 
 from collections.abc import Generator
-from typing import Any
+from typing import Any, override
 
 from lxml import html
 from lxml.html import HtmlElement
@@ -76,6 +76,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict[str, Any]]):
 
     BASE_URL = "http://127.0.0.1"
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
