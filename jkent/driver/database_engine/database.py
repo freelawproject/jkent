@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -17,8 +18,19 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool, QueuePool
 from jkent.driver.database_engine.models import Base
 from jkent.driver.database_engine.timestamps import require_subsec_support
 
+if TYPE_CHECKING:
+    import asyncio
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 # For future migrations if they should become necessary
 BASELINE_VERSION = 1
+
+#: Execution option that opens a transaction as ``BEGIN IMMEDIATE`` instead of
+#: SQLite's default deferred ``BEGIN``. Set by :func:`write_session`; read by
+#: the engine's ``begin`` handler in :func:`create_engine_and_init`.
+BEGIN_IMMEDIATE_OPTION = "jkent_begin_immediate"
 
 
 async def create_engine_and_init(
@@ -50,7 +62,7 @@ async def create_engine_and_init(
     url = f"sqlite+aiosqlite:///{db_path}"
     kwargs: dict[str, Any] = {
         "echo": echo,
-        "connect_args": {"check_same_thread": False},
+        "connect_args": {"check_same_thread": False, "isolation_level": None},
         # A persistent pool, not NullPool: with aiosqlite every connection is
         # a dedicated OS thread, so connection-per-session made each session
         # checkout a thread spawn + sqlite3.connect + PRAGMA setup — profiled
@@ -88,17 +100,28 @@ async def create_engine_and_init(
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    @event.listens_for(engine.sync_engine, "begin")
+    def _begin(conn: Any) -> None:
+        if conn.get_execution_options().get(BEGIN_IMMEDIATE_OPTION, False):
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+        else:
+            conn.exec_driver_sql("BEGIN")
 
-        current = (
-            await conn.execute(sa.text("SELECT MAX(version) FROM schema_info"))
-        ).scalar()
-        if not current:
-            await conn.execute(
-                sa.text("INSERT INTO schema_info (version) VALUES (:v)"),
-                {"v": BASELINE_VERSION},
-            )
+    async with engine.connect() as conn:
+        await conn.execution_options(**{BEGIN_IMMEDIATE_OPTION: True})
+        async with conn.begin():
+            await conn.run_sync(Base.metadata.create_all)
+
+            current = (
+                await conn.execute(
+                    sa.text("SELECT MAX(version) FROM schema_info")
+                )
+            ).scalar()
+            if not current:
+                await conn.execute(
+                    sa.text("INSERT INTO schema_info (version) VALUES (:v)"),
+                    {"v": BASELINE_VERSION},
+                )
 
     return engine
 
@@ -137,3 +160,36 @@ async def init_database(
     """
     engine = await create_engine_and_init(db_path, echo=echo, **engine_kwargs)
     return engine, get_session_factory(engine)
+
+
+@asynccontextmanager
+async def write_session(
+    session_factory: async_sessionmaker,
+    lock: asyncio.Lock,
+) -> AsyncIterator[AsyncSession]:
+    """Open a session for a write transaction, serialized by ``lock``.
+
+    The single entry point for every mutation of a run database. It does two
+    things a bare ``session_factory()`` does not:
+
+    - holds ``lock``, serializing writers that share this manager, and
+    - opens the transaction as ``BEGIN IMMEDIATE`` (see the ``begin`` handler
+      in :func:`create_engine_and_init`), so a writer racing a *different*
+      connection on the same file — another process, or a second handle in
+      this one — waits out ``busy_timeout`` instead of failing outright with
+      "database is locked".
+
+    The caller still commits; the session rolls back on the way out if it
+    doesn't.
+
+    Example::
+
+        async with write_session(self.session_factory, self.lock) as session:
+            session.add(row)
+            await session.commit()
+    """
+    async with lock, session_factory() as session:
+        await session.connection(
+            execution_options={BEGIN_IMMEDIATE_OPTION: True}
+        )
+        yield session

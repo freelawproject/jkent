@@ -11,5 +11,8 @@ Initial PyPI release.
   Camoufox transports, archive downloads, rate limiting, interstitial
   handling, replay.
 - `RunBootstrapper`: requirement-driven component selection and run wiring.
+- `SQLManager`: standalone run-database access (typed `RequestInsert` /
+  `DequeuedRow` payloads, dedup-safe inserts) plus run statistics
+  (`get_stats` / `read_run_summary`) for post-run reporting.
 - Driver runtime dependencies are isolated in the `operational` extra; the
   base install is the dependency-light scraper SDK.
