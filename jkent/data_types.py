@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 ScraperReturnType = TypeVar("ScraperReturnType")
+M = TypeVar("M")
 
 
 class ScraperStatus(Enum):
@@ -441,9 +442,9 @@ class BaseScraper(Generic[ScraperReturnType]):
 
     @staticmethod
     def _iter_decorated(
-        target: Any,
-        get_metadata: Callable[[Any], Any],
-    ) -> Generator[tuple[str, Any, Any], None, None]:
+        target: object,
+        get_metadata: Callable[[Callable[..., Any]], M | None],
+    ) -> Generator[tuple[str, Callable[..., Any], M], None, None]:
         """Yield (name, method, metadata) for each decorated attribute.
 
         Shared introspection loop for list_steps/list_entries/
@@ -531,7 +532,7 @@ class BaseScraper(Generic[ScraperReturnType]):
 
     def _list_entry_info(
         self,
-    ) -> list[tuple[Any, Any]]:
+    ) -> list[tuple[Callable[..., Any], EntryMetadata]]:
         """List entry methods with their metadata for dispatch.
 
         Returns:
@@ -589,7 +590,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     raise ValueError(
                         f"Unknown entry '{func_name}'. Available: {available}"
                     )
-                method, meta = entry_map[func_name]  # type: ignore
+                method, meta = entry_map[func_name]
                 validated_kwargs = meta.validate_params(kwargs_dict)
 
                 if meta.speculative:
@@ -1199,7 +1200,7 @@ def via_from_json(raw: str) -> ViaLink | ViaFormSubmit:
     raise ValueError(f"unknown via type {kind!r} in via_json")
 
 
-def _json_deep_contains(actual: Any, expected: Any) -> bool:
+def _json_deep_contains(actual: object, expected: object) -> bool:
     """True if ``expected`` is a structural subset of ``actual``.
 
     Dicts match when every expected key is present and its value deep-contains;

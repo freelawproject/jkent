@@ -63,7 +63,7 @@ class ContractDecorator(Protocol):
 # type checkers (mypy and pyre both) reject a dynamic ``metaclass=``
 # expression outright — passed this way they see a plain Protocol,
 # which is also precisely what production gets.
-DBC_PROTOCOL_KW: dict[str, Any] = {}
+DBC_PROTOCOL_KW: dict[str, type] = {}
 if not TYPE_CHECKING and ENFORCE_CONTRACTS:
     import icontract  # noqa: PLC0415 — dev-only dep, contracts are on
 
@@ -76,7 +76,7 @@ if not TYPE_CHECKING and ENFORCE_CONTRACTS:
 
 
 def require(
-    condition: Callable[..., Any], description: str | None = None
+    condition: Callable[..., object], description: str | None = None
 ) -> ContractDecorator:
     """``icontract.require`` when contracts are on; identity otherwise."""
     if not ENFORCE_CONTRACTS:
@@ -93,7 +93,7 @@ def require(
 
 
 def ensure(
-    condition: Callable[..., Any], description: str | None = None
+    condition: Callable[..., object], description: str | None = None
 ) -> ContractDecorator:
     """``icontract.ensure`` when contracts are on; identity otherwise."""
     if not ENFORCE_CONTRACTS:

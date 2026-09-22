@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, cast
 from pydantic import Field, TypeAdapter
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from lxml.html import HtmlElement
 
     from jkent.common.lxml_page_element import LxmlPageElement
@@ -145,7 +147,7 @@ class SelectorObserver:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: TracebackType | None,
     ) -> None:
         """Restore the previously-active observer, if any."""
         if self._tokens:

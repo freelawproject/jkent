@@ -17,6 +17,7 @@ import pytest
 
 from jkent.common.decorators import step
 from jkent.common.exceptions import ScraperAssumptionException
+from jkent.common.lxml_page_element import LxmlPageElement
 from jkent.data_types import ParsedData, Response, XPath
 
 # An unclosed <style pdffontname=...> makes lxml treat everything after it
@@ -55,7 +56,7 @@ class _Host:
 
     @step(preprocess=_repair)
     def parse_with_repair(
-        self, page: Any, text: str
+        self, page: LxmlPageElement, text: str
     ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         name = page.query_strings(
             XPath("//div[@id='case-name']/text()"), "case name"
@@ -64,14 +65,14 @@ class _Host:
 
     @step
     def parse_without_repair(
-        self, page: Any
+        self, page: LxmlPageElement
     ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         found = page._element.xpath("//div[@id='case-name']/text()")
         yield ParsedData(data={"found": found})
 
     @step(preprocess=_repair)
     def parse_tree(
-        self, lxml_tree: Any
+        self, lxml_tree: LxmlPageElement
     ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         found = lxml_tree._element.xpath("//div[@id='case-name']/text()")
         yield ParsedData(data={"found": found})

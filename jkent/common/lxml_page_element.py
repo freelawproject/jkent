@@ -158,7 +158,7 @@ class LxmlPageElement(PageElement):
 
         if type is str:
             # Return only string results
-            typed_results: list[Any] = [
+            typed_results: list[str] | list[LxmlPageElement] = [
                 r for r in results if isinstance(r, str)
             ]
             is_element_query = False

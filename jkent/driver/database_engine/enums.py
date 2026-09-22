@@ -177,7 +177,9 @@ class CodedEnumType(TypeDecorator[CodedEnum]):
         super().__init__(**kwargs)
 
     @override
-    def process_bind_param(self, value: Any, dialect: Dialect) -> int | None:
+    def process_bind_param(
+        self, value: CodedEnum | str | None, dialect: Dialect
+    ) -> int | None:
         """Member or label in, integer code out."""
         if value is None:
             return None
@@ -199,7 +201,7 @@ class CodedEnumType(TypeDecorator[CodedEnum]):
 
     @override
     def process_result_value(
-        self, value: Any, dialect: Dialect
+        self, value: int | None, dialect: Dialect
     ) -> CodedEnum | None:
         """Integer code in, member out."""
         if value is None:
