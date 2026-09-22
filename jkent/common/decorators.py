@@ -51,6 +51,8 @@ from jkent.common.decorator_metadata import (
     DEFAULT_PRIORITY,
     EntryMetadata,
     StepMetadata,
+    attach_entry_metadata,
+    attach_step_metadata,
     get_step_metadata,
 )
 from jkent.common.exceptions import (
@@ -491,7 +493,7 @@ def step(
                     yield _process_yielded_request(yielded)
 
         # Attach metadata to the wrapper
-        wrapper._step_metadata = metadata  # type: ignore[attr-defined]
+        attach_step_metadata(wrapper, metadata)
         return wrapper
 
     # Support both @step and @step(priority=5) syntax
@@ -657,7 +659,7 @@ def entry(
             speculative_param=speculative_param,
         )
 
-        fn._entry_metadata = metadata  # type: ignore[attr-defined]
+        attach_entry_metadata(fn, metadata)
         return fn
 
     return decorator

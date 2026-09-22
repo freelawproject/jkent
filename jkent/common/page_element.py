@@ -12,7 +12,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, TypeGuard
 
 from typing_extensions import Self
 
@@ -123,6 +123,10 @@ class FormField:
     element_id: str | None = None
 
 
+def _has_no_none(items: list[str | None]) -> TypeGuard[list[str]]:
+    return None not in items
+
+
 def _merge_override(
     default: str | list[str] | None,
     override: str | list[str | None] | FieldResolver,
@@ -137,8 +141,8 @@ def _merge_override(
     identical data. Positions past the rendered defaults take the override
     verbatim; a trailing ``None`` with no default to fall back to is dropped.
     """
-    if not isinstance(override, list) or None not in override:
-        return override  # type: ignore[return-value]
+    if not isinstance(override, list) or _has_no_none(override):
+        return override
     defaults = (
         default
         if isinstance(default, list)

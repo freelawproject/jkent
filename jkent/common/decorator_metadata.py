@@ -132,6 +132,24 @@ class EntryMetadata:
         return {name: getattr(model, name) for name in self.param_types}
 
 
+_STEP_METADATA_ATTR: Final = "_step_metadata"
+_ENTRY_METADATA_ATTR: Final = "_entry_metadata"
+
+
+def attach_step_metadata(
+    func: Callable[..., Any], metadata: StepMetadata
+) -> None:
+    """Record *metadata* on *func* for :func:`get_step_metadata` to find."""
+    setattr(func, _STEP_METADATA_ATTR, metadata)
+
+
+def attach_entry_metadata(
+    func: Callable[..., Any], metadata: EntryMetadata
+) -> None:
+    """Record *metadata* on *func* for :func:`get_entry_metadata` to find."""
+    setattr(func, _ENTRY_METADATA_ATTR, metadata)
+
+
 def get_step_metadata(func: Callable[..., Any]) -> StepMetadata | None:
     """Get step metadata from a decorated method.
 
@@ -141,7 +159,7 @@ def get_step_metadata(func: Callable[..., Any]) -> StepMetadata | None:
     Returns:
         StepMetadata if the method is decorated, None otherwise.
     """
-    return getattr(func, "_step_metadata", None)
+    return getattr(func, _STEP_METADATA_ATTR, None)
 
 
 def get_entry_metadata(func: Callable[..., Any]) -> EntryMetadata | None:
@@ -153,4 +171,4 @@ def get_entry_metadata(func: Callable[..., Any]) -> EntryMetadata | None:
     Returns:
         EntryMetadata if the method is decorated with @entry, None otherwise.
     """
-    return getattr(func, "_entry_metadata", None)
+    return getattr(func, _ENTRY_METADATA_ATTR, None)
