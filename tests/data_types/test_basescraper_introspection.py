@@ -100,13 +100,13 @@ class MultiStepScraper(BaseScraper[dict[str, Any]]):
     ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         yield ParsedData({"page": "listing"})
 
-    @step(priority=5)
+    @step(priority=5)  # pyre-ignore[56]
     def parse_detail(
         self, response: Response
     ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         yield ParsedData({"page": "detail"})
 
-    @step(priority=1, encoding="latin-1")
+    @step(priority=1, encoding="latin-1")  # pyre-ignore[56]
     def parse_document(
         self, response: Response
     ) -> Generator[ScraperYield[dict[str, Any]], None, None]:

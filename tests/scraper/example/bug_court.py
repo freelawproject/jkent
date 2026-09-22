@@ -16,11 +16,12 @@ features:
 import json
 from collections.abc import Generator
 from datetime import date, datetime
-from typing import Any, override
+from typing import Any
 
 from lxml import html
 from lxml.html import HtmlElement
 from pydantic import Field, HttpUrl
+from typing_extensions import override
 
 from jkent.common.data_models import ScrapedData
 from jkent.common.decorators import entry

@@ -12,10 +12,11 @@ The scraper:
 """
 
 from collections.abc import Generator
-from typing import Any, override
+from typing import Any
 
 from lxml import html
 from lxml.html import HtmlElement
+from typing_extensions import override
 
 from jkent.common.decorators import entry
 from jkent.data_types import (
