@@ -62,7 +62,7 @@ class DeferredValidation(Generic[T]):
             return self._model_class.model_validate(self._data)
         except ValidationError as e:
             # Convert Pydantic ErrorDetails to dict for compatibility
-            errors_list = [dict(err) for err in e.errors()]  # type: ignore
+            errors_list = [dict(err) for err in e.errors()]
             raise DataFormatAssumptionException(
                 errors=errors_list,
                 failed_doc=self._data,
@@ -71,7 +71,7 @@ class DeferredValidation(Generic[T]):
             ) from e
 
     @property
-    def raw_data(self) -> dict:
+    def raw_data(self) -> dict[str, Any]:
         """Access the raw unvalidated data.
 
         Returns:

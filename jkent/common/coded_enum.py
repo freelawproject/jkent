@@ -38,7 +38,7 @@ straight out of the database, outside the mapping this class provides.
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -53,10 +53,9 @@ class CodedEnum(str, enum.Enum):
     already has members cannot be).
     """
 
-    # Both are populated in ``__new__`` as members are constructed, which pyre
-    # reports as an uninitialized attribute.
-    code: int  # pyre-ignore[13]
-    _code_index: ClassVar[dict[int, Any]]  # pyre-ignore[13]
+    # Both are populated in ``__new__`` as members are constructed.
+    code: int
+    _code_index: ClassVar[dict[int, CodedEnum]]
 
     if TYPE_CHECKING:
         # Type checkers resolve a *functional* call — ``RequestStatus("pending")``,

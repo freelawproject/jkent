@@ -17,7 +17,8 @@ import pytest
 
 from jkent.common.decorators import step
 from jkent.common.exceptions import ScraperAssumptionException
-from jkent.data_types import ParsedData, Response, XPath
+from jkent.common.lxml_page_element import LxmlPageElement
+from jkent.data_types import BaseScraper, ParsedData, Response, XPath
 
 # An unclosed <style pdffontname=...> makes lxml treat everything after it
 # as CSS text, so the case-name div disappears from the parsed DOM.
@@ -50,13 +51,13 @@ def _response(html: str = _BROKEN_HTML) -> Response:
     )
 
 
-class _Host:
-    """Bare method holder — @step only needs ``self`` to pass through."""
+class _Host(BaseScraper[dict[str, Any]]):
+    """Minimal scraper — only the ``@step`` methods under test matter."""
 
     @step(preprocess=_repair)
     def parse_with_repair(
-        self, page: Any, text: str
-    ) -> Generator[ParsedData, None, None]:
+        self, page: LxmlPageElement, text: str
+    ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         name = page.query_strings(
             XPath("//div[@id='case-name']/text()"), "case name"
         )
@@ -64,18 +65,22 @@ class _Host:
 
     @step
     def parse_without_repair(
-        self, page: Any
-    ) -> Generator[ParsedData, None, None]:
+        self, page: LxmlPageElement
+    ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         found = page._element.xpath("//div[@id='case-name']/text()")
         yield ParsedData(data={"found": found})
 
     @step(preprocess=_repair)
-    def parse_tree(self, lxml_tree: Any) -> Generator[ParsedData, None, None]:
+    def parse_tree(
+        self, lxml_tree: LxmlPageElement
+    ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         found = lxml_tree._element.xpath("//div[@id='case-name']/text()")
         yield ParsedData(data={"found": found})
 
     @step(preprocess=_explode)
-    def parse_exploding(self, text: str) -> Generator[ParsedData, None, None]:
+    def parse_exploding(
+        self, text: str
+    ) -> Generator[ParsedData[dict[str, Any]], None, None]:
         yield ParsedData(data={})  # pragma: no cover - preprocess raises
 
 

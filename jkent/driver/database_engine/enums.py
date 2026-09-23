@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from sqlalchemy.types import TypeDecorator
+from typing_extensions import override
 
 from jkent.common.coded_enum import CodedEnum
 
@@ -152,7 +153,7 @@ class SelectorType(CodedEnum):
     XPATH = (2, "xpath")
 
 
-class CodedEnumType(TypeDecorator):
+class CodedEnumType(TypeDecorator[CodedEnum]):
     """Stores a :class:`CodedEnum` as its integer ``.code``.
 
     Binds a member — or the label string the query layer still passes in some
@@ -175,7 +176,10 @@ class CodedEnumType(TypeDecorator):
         self.enum_class = enum_class
         super().__init__(**kwargs)
 
-    def process_bind_param(self, value: Any, dialect: Dialect) -> int | None:
+    @override
+    def process_bind_param(
+        self, value: CodedEnum | str | None, dialect: Dialect
+    ) -> int | None:
         """Member or label in, integer code out."""
         if value is None:
             return None
@@ -195,14 +199,16 @@ class CodedEnumType(TypeDecorator):
             f"(use {self.enum_class.__name__}.from_code() for a raw code)"
         )
 
+    @override
     def process_result_value(
-        self, value: Any, dialect: Dialect
+        self, value: int | None, dialect: Dialect
     ) -> CodedEnum | None:
         """Integer code in, member out."""
         if value is None:
             return None
         return self.enum_class.from_code(value)
 
+    @override
     def __repr__(self) -> str:
         return f"CodedEnumType({self.enum_class.__name__})"
 

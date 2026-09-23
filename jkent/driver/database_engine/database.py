@@ -20,9 +20,12 @@ from jkent.driver.database_engine.timestamps import require_subsec_support
 
 if TYPE_CHECKING:
     import asyncio
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
+    from sqlalchemy import Connection
+    from sqlalchemy.engine.interfaces import DBAPIConnection
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.pool import ConnectionPoolEntry
 
 # For future migrations if they should become necessary
 BASELINE_VERSION = 1
@@ -87,7 +90,9 @@ async def create_engine_and_init(
     engine = create_async_engine(url, **kwargs)
 
     @event.listens_for(engine.sync_engine, "connect")
-    def _set_sqlite_pragma(dbapi_conn: Any, connection_record: Any) -> None:
+    def _set_sqlite_pragma(
+        dbapi_conn: DBAPIConnection, connection_record: ConnectionPoolEntry
+    ) -> None:
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         # WAL's default synchronous is FULL — an fsync on every commit, and
@@ -101,7 +106,7 @@ async def create_engine_and_init(
         cursor.close()
 
     @event.listens_for(engine.sync_engine, "begin")
-    def _begin(conn: Any) -> None:
+    def _begin(conn: Connection) -> None:
         if conn.get_execution_options().get(BEGIN_IMMEDIATE_OPTION, False):
             conn.exec_driver_sql("BEGIN IMMEDIATE")
         else:
@@ -128,7 +133,7 @@ async def create_engine_and_init(
 
 def get_session_factory(
     engine: AsyncEngine,
-) -> async_sessionmaker:
+) -> async_sessionmaker[AsyncSession]:
     """Create a session factory bound to the engine.
 
     Args:
@@ -144,7 +149,7 @@ async def init_database(
     db_path: Path,
     echo: bool = False,
     **engine_kwargs: Any,
-) -> tuple[AsyncEngine, async_sessionmaker]:
+) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     """Initialize database and return engine + session factory.
 
     This is the main entry point, replacing schema.init_database().
@@ -164,7 +169,7 @@ async def init_database(
 
 @asynccontextmanager
 async def write_session(
-    session_factory: async_sessionmaker,
+    session_factory: async_sessionmaker[AsyncSession],
     lock: asyncio.Lock,
 ) -> AsyncIterator[AsyncSession]:
     """Open a session for a write transaction, serialized by ``lock``.
@@ -189,7 +194,6 @@ async def write_session(
             await session.commit()
     """
     async with lock, session_factory() as session:
-        await session.connection(
-            execution_options={BEGIN_IMMEDIATE_OPTION: True}
-        )
+        begin_immediate: Mapping[str, bool] = {BEGIN_IMMEDIATE_OPTION: True}
+        await session.connection(execution_options=begin_immediate)
         yield session

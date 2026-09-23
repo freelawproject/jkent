@@ -1,0 +1,5 @@
+project-includes = ["jkent", "tests"]
+
+preset = "strict"
+
+baseline = ".pyrefly-baseline.json"

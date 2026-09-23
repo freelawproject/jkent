@@ -11,6 +11,8 @@ This test module verifies:
    untouched.
 """
 
+from typing import Any
+
 from jkent.data_types import (
     HttpMethod,
     HTTPRequestParams,
@@ -22,7 +24,7 @@ from jkent.data_types import (
 def make_request(
     url: str,
     method: HttpMethod = HttpMethod.GET,
-    **request_kwargs,
+    **request_kwargs: Any,
 ) -> Request:
     return Request(
         request=HTTPRequestParams(method=method, url=url),

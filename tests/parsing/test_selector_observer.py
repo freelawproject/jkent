@@ -3,6 +3,9 @@
 Tests recording logic, deduplication, output formats, and absolute selector composition.
 """
 
+import json
+from typing import Any
+
 import pytest
 from lxml import html
 
@@ -26,7 +29,7 @@ from jkent.data_types import (
 
 
 @pytest.fixture
-def simple_html():
+def simple_html() -> str:
     """Simple HTML document for testing."""
     return """
     <html>
@@ -83,7 +86,7 @@ def test_reentering_same_observer_unwinds_cleanly():
     assert get_active_observer() is None
 
 
-def test_page_element_reports_to_active_observer(simple_html):
+def test_page_element_reports_to_active_observer(simple_html: str):
     """LxmlPageElement records queries to the active observer."""
     tree = LxmlPageElement(html.fromstring(simple_html), "http://example.com")
 
@@ -96,7 +99,7 @@ def test_page_element_reports_to_active_observer(simple_html):
     assert observer.queries[0].match_count == 3
 
 
-def test_no_active_observer_outside_context(simple_html):
+def test_no_active_observer_outside_context(simple_html: str):
     """LxmlPageElement still works when no observer is active."""
     assert get_active_observer() is None
 
@@ -107,7 +110,7 @@ def test_no_active_observer_outside_context(simple_html):
     assert get_active_observer() is None
 
 
-def test_record_simple_query(simple_html):
+def test_record_simple_query(simple_html: str):
     """Observer should record a simple query."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
@@ -132,7 +135,7 @@ def test_record_simple_query(simple_html):
     assert query.expected_max is None
 
 
-def test_record_nested_queries(simple_html):
+def test_record_nested_queries(simple_html: str):
     """Observer should record nested queries with parent-child relationships."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
@@ -174,7 +177,7 @@ def test_record_nested_queries(simple_html):
     assert child_query.parent_element_id == parent_query.element_id
 
 
-def test_deduplication_same_selector(simple_html):
+def test_deduplication_same_selector(simple_html: str):
     """Observer should deduplicate repeated queries with the same parent."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
@@ -215,7 +218,7 @@ def test_deduplication_same_selector(simple_html):
     assert child_query.match_count == 6
 
 
-def test_sample_extraction(simple_html):
+def test_sample_extraction(simple_html: str):
     """Observer should extract sample content from results."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver(max_samples=2)
@@ -237,7 +240,7 @@ def test_sample_extraction(simple_html):
     assert "Cell 2" in query.sample_elements[0]
 
 
-def test_simple_tree_output(simple_html):
+def test_simple_tree_output(simple_html: str):
     """Observer should generate human-readable tree output."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
@@ -275,7 +278,7 @@ def test_simple_tree_output(simple_html):
     assert "cells" in tree
 
 
-def test_simple_tree_failure_indicator(simple_html):
+def test_simple_tree_failure_indicator(simple_html: str):
     """Observer should show ✗ for failed queries."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
@@ -298,7 +301,7 @@ def test_simple_tree_failure_indicator(simple_html):
     assert "expected 1+" in tree
 
 
-def test_json_output(simple_html):
+def test_json_output(simple_html: str):
     """Observer should generate JSON output."""
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
@@ -326,13 +329,11 @@ def test_json_output(simple_html):
     assert query_dict["element_id"] is not None
 
 
-def test_json_output_nested_has_no_parent_cycle(simple_html):
+def test_json_output_nested_has_no_parent_cycle(simple_html: str):
     """json() must serialize a scoped query tree without hitting the parent
     backref cycle (regression: children carry a ``parent`` ref pointing back
     up, so serialization has to drop ``parent`` at every depth, not just the
     top)."""
-    import json as _json
-
     doc = html.fromstring(simple_html)
     observer = SelectorObserver()
 
@@ -361,7 +362,7 @@ def test_json_output_nested_has_no_parent_cycle(simple_html):
     json_output = observer.json()
 
     # Serializable end to end, and no "parent" key leaks at any level.
-    assert _json.dumps(json_output)
+    assert json.dumps(json_output)
     top = json_output[0]
     assert "parent" not in top
     child = top["children"][0]
@@ -579,9 +580,9 @@ def test_interleaved_step_executions_keep_their_own_observers():
     the driver could read autowait/debug telemetry from the wrong request.
     """
 
-    class TwoPageScraper(BaseScraper[dict]):
+    class TwoPageScraper(BaseScraper[dict[str, Any]]):
         @step
-        def parse(self, page, response):
+        def parse(self, page: LxmlPageElement, response: Response):
             page.query(Selector.XPath("//h1"), "title", min_count=0)
             yield ParsedData({"url": response.url})
 
@@ -613,9 +614,9 @@ def test_interleaved_step_executions_keep_their_own_observers():
 def test_step_without_page_injection_leaves_observer_unset():
     """Steps that never parse a page attach no observer."""
 
-    class TextScraper(BaseScraper[dict]):
+    class TextScraper(BaseScraper[dict[str, Any]]):
         @step
-        def parse(self, text):
+        def parse(self, text: str):
             yield ParsedData({"text": text})
 
     scraper = TextScraper()

@@ -478,7 +478,8 @@ class TestEntryDecoratorErrors:
             class BadScraper(BaseScraper[FakeData]):
                 @entry(FakeData)
                 def bad_entry(
-                    self, pair: tuple
+                    self,
+                    pair: tuple,  # pyrefly: ignore[implicit-any-type-argument]
                 ) -> Generator[Request, None, None]:
                     yield Request(
                         request=HTTPRequestParams(
@@ -491,7 +492,7 @@ class TestEntryDecoratorErrors:
         with pytest.raises(TypeError, match="must have a type annotation"):
 
             @entry(FakeData)
-            def bad(self, x):
+            def bad(self, x):  # pyrefly: ignore[implicit-any-parameter]
                 pass
 
     def test_unvalidatable_type_rejected_at_decoration(self):

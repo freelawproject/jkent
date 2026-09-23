@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
+from typing_extensions import override
 
 if TYPE_CHECKING:
     from sqlalchemy.engine.interfaces import Dialect
@@ -96,6 +97,7 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
     impl = sa.DateTime
     cache_ok = True
 
+    @override
     def process_bind_param(
         self, value: datetime | None, dialect: Dialect
     ) -> datetime | None:
@@ -123,6 +125,7 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
         # put an offset; keeping one would only be dropped a layer down.
         return value.astimezone(timezone.utc).replace(tzinfo=None)
 
+    @override
     def process_result_value(
         self, value: datetime | None, dialect: Dialect
     ) -> datetime | None:

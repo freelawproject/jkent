@@ -28,7 +28,6 @@ from typing import (
     Final,
     Generic,
     TypeVar,
-    cast,
     get_origin,
 )
 from urllib.parse import parse_qs, quote, urljoin, urlparse
@@ -36,6 +35,7 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import TypeAdapter
 from pyrate_limiter import Rate
+from typing_extensions import override
 
 from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import (
@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 ScraperReturnType = TypeVar("ScraperReturnType")
+M = TypeVar("M")
 
 
 class ScraperStatus(Enum):
@@ -430,19 +431,13 @@ class BaseScraper(Generic[ScraperReturnType]):
             raise ScraperConfigError(
                 "Nonexistent continuation referenced"
             ) from None
-        return cast(
-            Callable[
-                [Response],
-                Generator[ScraperYield[ScraperReturnType], bool | None, None],
-            ],
-            method,
-        )
+        return method
 
     @staticmethod
     def _iter_decorated(
-        target: Any,
-        get_metadata: Callable[[Any], Any],
-    ) -> Generator[tuple[str, Any, Any], None, None]:
+        target: object,
+        get_metadata: Callable[[Callable[..., Any]], M | None],
+    ) -> Generator[tuple[str, Callable[..., Any], M], None, None]:
         """Yield (name, method, metadata) for each decorated attribute.
 
         Shared introspection loop for list_steps/list_entries/
@@ -530,7 +525,7 @@ class BaseScraper(Generic[ScraperReturnType]):
 
     def _list_entry_info(
         self,
-    ) -> list[tuple[Any, Any]]:
+    ) -> list[tuple[Callable[..., Any], EntryMetadata]]:
         """List entry methods with their metadata for dispatch.
 
         Returns:
@@ -588,7 +583,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     raise ValueError(
                         f"Unknown entry '{func_name}'. Available: {available}"
                     )
-                method, meta = entry_map[func_name]  # type: ignore
+                method, meta = entry_map[func_name]
                 validated_kwargs = meta.validate_params(kwargs_dict)
 
                 if meta.speculative:
@@ -597,7 +592,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     # it was validated from (persisted with the speculation
                     # state so hosts can map state rows back to their seed
                     if not hasattr(self, "_speculation_templates"):
-                        self._speculation_templates: dict[  # type: ignore
+                        self._speculation_templates: dict[
                             str, list[tuple[Speculative, Any]]
                         ] = {}
                     if func_name not in self._speculation_templates:
@@ -639,8 +634,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     and issubclass(param_type, PydanticBaseModel)
                 ):
                     # Use Pydantic's schema generation
-                    pydantic_type = cast(type[PydanticBaseModel], param_type)
-                    model_schema = pydantic_type.model_json_schema()
+                    model_schema = param_type.model_json_schema()
                     # Extract $defs and add to top-level
                     if "$defs" in model_schema:
                         all_defs.update(model_schema["$defs"])
@@ -846,7 +840,7 @@ class HTTPRequestParams:
 
 
 @ensure(
-    lambda result: (
+    lambda result: (  # pyrefly: ignore[implicit-any-lambda]
         len(result) == 64 and set(result) <= set("0123456789abcdef")
     ),
     "dedup key is a sha256 hex digest",
@@ -876,7 +870,7 @@ def _generate_deduplication_key(request_params: HTTPRequestParams) -> str:
         if isinstance(request_params.params, dict):
             sorted_params = sorted(request_params.params.items())
             params_str = str(sorted_params)
-        elif isinstance(request_params.params, list | tuple):
+        elif isinstance(request_params.params, (list, tuple)):
             # Sort by repr: total over mixed value types (plain tuple
             # comparison raises TypeError when two entries share a name
             # and carry e.g. an int and a str).
@@ -1013,8 +1007,8 @@ class Selector:
     value: str
     grammar: ClassVar[str] = ""
 
-    CSS: ClassVar[type[CSS]]  # type: ignore
-    XPath: ClassVar[type[XPath]]  # type: ignore
+    CSS: ClassVar[type[CSS]]
+    XPath: ClassVar[type[XPath]]
 
     @classmethod
     def of(cls, value: str, grammar: str) -> Selector:
@@ -1043,6 +1037,7 @@ class CSS(Selector):
 
     grammar: ClassVar[str] = "css"
 
+    @override
     def nth(self, position: int) -> Selector:
         # Playwright's :nth-match() picks the position-th match document-wide,
         # mirroring how the parse enumerated the CSS matches.
@@ -1055,14 +1050,15 @@ class XPath(Selector):
 
     grammar: ClassVar[str] = "xpath"
 
+    @override
     def nth(self, position: int) -> Selector:
         # Parenthesize first so the positional predicate applies to the whole
         # node-set rather than only the last location step.
         return XPath(f"({self.value})[{position}]")
 
 
-Selector.CSS = CSS  # type: ignore
-Selector.XPath = XPath  # type: ignore
+Selector.CSS = CSS
+Selector.XPath = XPath
 
 
 @dataclass(frozen=True)
@@ -1196,7 +1192,7 @@ def via_from_json(raw: str) -> ViaLink | ViaFormSubmit:
     raise ValueError(f"unknown via type {kind!r} in via_json")
 
 
-def _json_deep_contains(actual: Any, expected: Any) -> bool:
+def _json_deep_contains(actual: object, expected: object) -> bool:
     """True if ``expected`` is a structural subset of ``actual``.
 
     Dicts match when every expected key is present and its value deep-contains;
@@ -1542,7 +1538,7 @@ class Request:
         return replace(req, headers=merged_headers, cookies=merged_cookies)
 
     @ensure(
-        lambda result, current_location: (
+        lambda result, current_location: (  # pyrefly: ignore[implicit-any-lambda]
             not urlparse(current_location).scheme
             or urlparse(result).scheme != ""
         ),

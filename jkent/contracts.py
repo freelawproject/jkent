@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -35,13 +35,15 @@ ENFORCE_CONTRACTS: bool = os.environ.get(
 class ContractDecorator(Protocol):
     """A decorator that hands back the decorated callable's own type.
 
-    The return type of :func:`require` / :func:`ensure`. (A plain
-    ``Callable[[F], F]`` return annotation leaves the type variable
-    free in the signature, which pyre rejects; a callback protocol
-    scopes it to ``__call__``.)
+    The return type of :func:`require` / :func:`ensure`. (A callback
+    protocol scopes the type variable to ``__call__`` instead of leaving
+    it free in the factory's own signature, as a plain ``Callable[[F], F]``
+    return annotation would.) The parameter is positional-only so that
+    icontract's decorator classes, whose ``__call__`` names it ``func``,
+    satisfy the protocol structurally.
     """
 
-    def __call__(self, fn: F) -> F: ...
+    def __call__(self, fn: F, /) -> F: ...
 
 
 # Class-statement keywords for Protocols whose method stubs carry
@@ -60,15 +62,13 @@ class ContractDecorator(Protocol):
 #
 # With contracts off the dict is empty and the class statement is
 # exactly a plain Protocol. The keywords go through ``**`` because
-# type checkers (mypy and pyre both) reject a dynamic ``metaclass=``
+# type checkers reject a dynamic ``metaclass=``
 # expression outright — passed this way they see a plain Protocol,
 # which is also precisely what production gets.
-DBC_PROTOCOL_KW: dict[str, Any] = {}
+DBC_PROTOCOL_KW: dict[str, type] = {}
 if not TYPE_CHECKING and ENFORCE_CONTRACTS:
     import icontract  # noqa: PLC0415 — dev-only dep, contracts are on
 
-    # pyre-ignore[31]: pyre can't model type(Protocol) as a base class;
-    # this branch is runtime-only (dev, contracts on) anyway.
     class _DBCProtocolMeta(icontract.DBCMeta, type(Protocol)):
         """DBCMeta composed with Protocol's metaclass."""
 
@@ -76,7 +76,7 @@ if not TYPE_CHECKING and ENFORCE_CONTRACTS:
 
 
 def require(
-    condition: Callable[..., Any], description: str | None = None
+    condition: Callable[..., object], description: str | None = None
 ) -> ContractDecorator:
     """``icontract.require`` when contracts are on; identity otherwise."""
     if not ENFORCE_CONTRACTS:
@@ -84,16 +84,11 @@ def require(
     # Dev-only dependency, imported only when contracts are enabled.
     import icontract  # noqa: PLC0415
 
-    # icontract's decorators are classes with a generic __call__; type
-    # checkers won't structurally match them against the protocol.
-    return cast(
-        "ContractDecorator",
-        icontract.require(condition, description=description),
-    )
+    return icontract.require(condition, description=description)
 
 
 def ensure(
-    condition: Callable[..., Any], description: str | None = None
+    condition: Callable[..., object], description: str | None = None
 ) -> ContractDecorator:
     """``icontract.ensure`` when contracts are on; identity otherwise."""
     if not ENFORCE_CONTRACTS:
@@ -101,9 +96,4 @@ def ensure(
     # Dev-only dependency, imported only when contracts are enabled.
     import icontract  # noqa: PLC0415
 
-    # icontract's decorators are classes with a generic __call__; type
-    # checkers won't structurally match them against the protocol.
-    return cast(
-        "ContractDecorator",
-        icontract.ensure(condition, description=description),
-    )
+    return icontract.ensure(condition, description=description)

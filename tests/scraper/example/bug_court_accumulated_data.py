@@ -12,8 +12,11 @@ The scraper:
 """
 
 from collections.abc import Generator
+from typing import Any
 
 from lxml import html
+from lxml.html import HtmlElement
+from typing_extensions import override
 
 from jkent.common.decorators import entry
 from jkent.data_types import (
@@ -27,7 +30,7 @@ from jkent.data_types import (
 )
 
 
-def _get_text(element, xpath: str) -> str:
+def _get_text(element: HtmlElement, xpath: str) -> str:
     """Extract text content from an xpath query.
 
     Args:
@@ -43,7 +46,7 @@ def _get_text(element, xpath: str) -> str:
     return ""
 
 
-def _get_text_by_id(tree, element_id: str) -> str:
+def _get_text_by_id(tree: HtmlElement, element_id: str) -> str:
     """Extract text content from an element by its ID.
 
     Args:
@@ -56,7 +59,7 @@ def _get_text_by_id(tree, element_id: str) -> str:
     return _get_text(tree, f"//*[@id='{element_id}']")
 
 
-class BugCourtScraperWithAccumulatedData(BaseScraper[dict]):
+class BugCourtScraperWithAccumulatedData(BaseScraper[dict[str, Any]]):
     """Scraper for Bug Appeals Court demonstrating accumulated_data.
 
     This Step 5 implementation demonstrates:
@@ -74,6 +77,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict]):
 
     BASE_URL = "http://127.0.0.1"
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
@@ -87,7 +91,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict]):
 
     def parse_appeals_list(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse the appeals list page and extract case_name.
 
         This method demonstrates starting the accumulated_data flow.
@@ -119,7 +123,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict]):
 
     def parse_appeals_detail(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse appeals detail page and extract trial court docket.
 
         This method enriches accumulated_data with appeals court info,
@@ -160,7 +164,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict]):
 
     def parse_trial_court(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse trial court page and yield complete combined data.
 
         This method receives accumulated_data from the appeals pages

@@ -16,9 +16,12 @@ features:
 import json
 from collections.abc import Generator
 from datetime import date, datetime
+from typing import Any
 
 from lxml import html
+from lxml.html import HtmlElement
 from pydantic import Field, HttpUrl
+from typing_extensions import override
 
 from jkent.common.data_models import ScrapedData
 from jkent.common.decorators import entry
@@ -39,7 +42,7 @@ from jkent.data_types import (
 # =============================================================================
 
 
-class BugCourtScraper(BaseScraper[dict]):
+class BugCourtScraper(BaseScraper[dict[str, Any]]):
     """Scraper for the Bug Civil Court.
 
     This Step 2 implementation demonstrates:
@@ -55,6 +58,7 @@ class BugCourtScraper(BaseScraper[dict]):
 
     BASE_URL = "http://127.0.0.1"
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
@@ -68,7 +72,7 @@ class BugCourtScraper(BaseScraper[dict]):
 
     def parse_list(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse the case list page and yield requests for detail pages.
 
         This method extracts basic case information from the list page,
@@ -102,7 +106,7 @@ class BugCourtScraper(BaseScraper[dict]):
 
     def parse_detail(
         self, response: Response
-    ) -> Generator[ScraperYield, None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse a case detail page and yield the complete case data.
 
         This method extracts all case information from the detail page
@@ -150,7 +154,7 @@ class BugCourtScraper(BaseScraper[dict]):
 # =============================================================================
 
 
-class BugCourtScraperWithAPI(BaseScraper[dict]):
+class BugCourtScraperWithAPI(BaseScraper[dict[str, Any]]):
     """Scraper for the Bug Civil Court with API metadata.
 
     This Step 3 implementation demonstrates:
@@ -166,6 +170,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict]):
 
     BASE_URL = "http://127.0.0.1"
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
@@ -179,7 +184,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict]):
 
     def parse_list(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse the case list page and yield requests for detail pages.
 
         Args:
@@ -205,7 +210,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict]):
 
     def parse_detail(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse detail page and fetch API metadata without navigating.
 
         This method demonstrates the key difference:
@@ -234,7 +239,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict]):
 
     def parse_api(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse JSON API response and yield complete case data.
 
         Args:
@@ -268,7 +273,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict]):
 # =============================================================================
 
 
-def _get_text(element, xpath: str) -> str:
+def _get_text(element: HtmlElement | LxmlPageElement, xpath: str) -> str:
     """Extract text content from an xpath query.
 
     Args:
@@ -284,7 +289,9 @@ def _get_text(element, xpath: str) -> str:
     return ""
 
 
-def _get_text_by_id(tree, element_id: str) -> str:
+def _get_text_by_id(
+    tree: HtmlElement | LxmlPageElement, element_id: str
+) -> str:
     """Extract text content from an element by its ID.
 
     Args:
@@ -317,7 +324,7 @@ def _parse_date(date_str: str):
 # =============================================================================
 
 
-class BugCourtScraperWithArchive(BaseScraper[dict]):
+class BugCourtScraperWithArchive(BaseScraper[dict[str, Any]]):
     """Scraper for the Bug Civil Court with file archiving.
 
     This Step 4 implementation demonstrates:
@@ -334,6 +341,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict]):
 
     BASE_URL = "http://127.0.0.1"
 
+    @override
     @entry(dict)
     def get_entry(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
@@ -347,7 +355,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict]):
 
     def parse_list(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse the case list page and yield requests for detail pages.
 
         Args:
@@ -373,7 +381,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict]):
 
     def parse_detail(
         self, response: Response
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Parse detail page and check for downloadable files.
 
         This method extracts case data and yields archive Requests for
@@ -439,7 +447,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict]):
 
     def archive_opinion(
         self, response: ArchiveResponse
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Process archived opinion PDF and yield case data.
 
         The ArchiveResponse includes file_url with the local storage path.
@@ -461,7 +469,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict]):
 
     def archive_oral_argument(
         self, response: ArchiveResponse
-    ) -> Generator[ScraperYield[dict], None, None]:
+    ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
         """Process archived oral argument MP3 and yield case data.
 
         The ArchiveResponse includes file_url with the local storage path.

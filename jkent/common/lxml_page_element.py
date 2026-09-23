@@ -85,21 +85,19 @@ class LxmlPageElement(PageElement):
     ) -> list[LxmlPageElement]: ...
 
     @require(
-        lambda min_count, max_count: (
+        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count >= 0 and (max_count is None or max_count >= min_count)
         ),
         "expected-count bounds form a valid (possibly open) interval",
     )
     @ensure(
-        lambda result, min_count, max_count: (
+        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count <= len(result)
             and (max_count is None or len(result) <= max_count)
         ),
         "a returned result list always satisfies the caller's bounds — "
         "out-of-bounds counts raise instead",
     )
-    # pyre-ignore[43]: contracts decorate only the implementation, not
-    # the @overload stubs — they're identity functions to type checkers.
     def checked_xpath(
         self,
         xpath: str,
@@ -158,7 +156,7 @@ class LxmlPageElement(PageElement):
 
         if type is str:
             # Return only string results
-            typed_results: list[Any] = [
+            typed_results: list[str] | list[LxmlPageElement] = [
                 r for r in results if isinstance(r, str)
             ]
             is_element_query = False
@@ -207,13 +205,13 @@ class LxmlPageElement(PageElement):
         return typed_results
 
     @require(
-        lambda min_count, max_count: (
+        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count >= 0 and (max_count is None or max_count >= min_count)
         ),
         "expected-count bounds form a valid (possibly open) interval",
     )
     @ensure(
-        lambda result, min_count, max_count: (
+        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
             min_count <= len(result)
             and (max_count is None or len(result) <= max_count)
         ),

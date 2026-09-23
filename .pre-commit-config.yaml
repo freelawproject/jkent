@@ -1,3 +1,8 @@
+ci:
+  autoupdate_schedule: quarterly
+  # pyrefly needs the project environment (uv); pre-commit.ci can't provide
+  # it. The Lint workflow runs the same check.
+  skip: [ pyrefly ]
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -17,38 +22,36 @@ repos:
        args: [--markdown-linebreak-ext=md]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.8
+    rev: v0.15.21
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [ --fix ]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
+    rev: v2.3.0
     hooks:
       - id: mypy
+        # The typed third-party libraries the code narrows against; without
+        # them mypy sees `Any` and checks a weaker program than the venv does.
         additional_dependencies:
           - types-lxml
+          - pydantic>=2.12.5
+          - sqlalchemy[asyncio]>=2.0
 
   - repo: local
     hooks:
-      - id: pyre
-        name: pyre
-        # Run via uvx in an isolated env: pyre-check pins an older click, so
-        # adding it to the project venv/uv.lock would downgrade click and break
-        # the CLI tests. uvx keeps it out of the project environment entirely.
-        # `uv sync` first because .pyre_configuration's search_path points at
-        # the project venv's site-packages, which must exist for import
-        # resolution (matters on a fresh CI checkout).
-        entry: bash -c 'uv sync --quiet && uvx --from pyre-check==0.9.25 pyre check'
+      - id: pyrefly
+        name: pyrefly
+        entry: uv run pyrefly check --prune-baseline
         language: system
         pass_filenames: false
-        types: [python]
+        files: '(\.py$|^pyrefly\.toml$|^\.pyrefly-baseline\.json$)'
       - id: zuban
         name: zuban
-        # Same isolation rationale as pyre: uvx keeps zuban out of the
-        # project venv, and `uv sync` guarantees the venv's site-packages
-        # exist for third-party import resolution on a fresh checkout.
+        # Run via uvx in an isolated env so zuban stays out of the project
+        # venv/uv.lock; `uv sync` first so the venv's site-packages exist for
+        # third-party import resolution on a fresh CI checkout.
         entry: bash -c 'uv sync --quiet && uvx zuban@0.8.2 check'
         language: system
         pass_filenames: false

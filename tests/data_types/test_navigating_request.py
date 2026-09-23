@@ -13,6 +13,7 @@ tests/driver/unified/test_data_types_e2e.py against the unified driver.
 """
 
 import json
+from typing import Any
 
 import pytest
 
@@ -273,7 +274,7 @@ class TestParsedData:
 
         # The dataclass is frozen, so we can't reassign the data attribute
         with pytest.raises(AttributeError):
-            parsed.data = {"new": "data"}  # type: ignore
+            parsed.data = {"new": "data"}  # type: ignore[misc]
 
     def test_unwrap_returns_data(self):
         """ParsedData.unwrap() shall return the wrapped data."""
@@ -390,8 +391,8 @@ class TestBugCourtScraper:
         )
 
         results = list(scraper.parse_detail(response))
-        data: dict = (  # ty: ignore[invalid-assignment]
-            results[0].unwrap() if isinstance(results[0], ParsedData) else {}  # type: ignore
+        data: dict[str, Any] = (
+            results[0].unwrap() if isinstance(results[0], ParsedData) else {}
         )
 
         assert data["docket"] == case.docket

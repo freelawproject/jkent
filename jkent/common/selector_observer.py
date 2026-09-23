@@ -13,12 +13,13 @@ from __future__ import annotations
 import contextvars
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 
+from lxml.html import HtmlElement
 from pydantic import Field, TypeAdapter
 
 if TYPE_CHECKING:
-    from lxml.html import HtmlElement
+    from types import TracebackType
 
     from jkent.common.lxml_page_element import LxmlPageElement
 
@@ -36,10 +37,8 @@ if TYPE_CHECKING:
     # rely on the homogeneity invariant, so they take this wider type.
     MixedResults: TypeAlias = "Sequence[str | Element]"
 
-_active_observer: contextvars.ContextVar[SelectorObserver | None] = (  # type: ignore
-    contextvars.ContextVar["SelectorObserver | None"](  # type: ignore
-        "selector_observer", default=None
-    )
+_active_observer: contextvars.ContextVar[SelectorObserver | None] = (
+    contextvars.ContextVar("selector_observer", default=None)
 )
 
 
@@ -145,7 +144,7 @@ class SelectorObserver:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: TracebackType | None,
     ) -> None:
         """Restore the previously-active observer, if any."""
         if self._tokens:
@@ -254,14 +253,11 @@ class SelectorObserver:
         Returns:
             The underlying HtmlElement, or None for a string result.
         """
-        match result:
-            case str():
-                return None
-            case _:
-                # LxmlPageElement exposes the raw element via _element;
-                # a raw HtmlElement is already unwrapped.
-                element = getattr(result, "_element", result)
-                return cast("HtmlElement", element)
+        if isinstance(result, str):
+            return None
+        if isinstance(result, HtmlElement):
+            return result
+        return result._element
 
     def _extract_samples(self, results: MixedResults) -> list[str]:
         """Extract sample text content from results.

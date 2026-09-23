@@ -10,7 +10,7 @@ never called, so ``busy_timeout`` cannot absorb it and the caller sees
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -20,16 +20,18 @@ from jkent.driver.database_engine.database import init_database, write_session
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from sqlalchemy import Connection
+    from sqlalchemy.engine.interfaces import DBAPICursor
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 def _record_statements(engine: AsyncEngine, into: list[str]) -> None:
     @event.listens_for(engine.sync_engine, "after_cursor_execute")
     def _capture(
-        _conn: Any,
-        _cursor: Any,
+        _conn: Connection,
+        _cursor: DBAPICursor,
         statement: str,
-        *_args: Any,
+        *_args: object,
     ) -> None:
         into.append(statement)
 

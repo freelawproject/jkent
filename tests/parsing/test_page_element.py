@@ -3,6 +3,8 @@
 Tests interface conformance and value object behavior.
 """
 
+from typing import Any
+
 import pytest
 
 from jkent.common.decorators import step
@@ -253,7 +255,7 @@ def test_link_follow_callable_continuation_resolved_by_step():
     the name and inherit the target step's priority.
     """
 
-    class LinkScraper(BaseScraper[dict]):
+    class LinkScraper(BaseScraper[dict[str, Any]]):
         @step
         def parse_listing(self, response: Response):
             link = Link(

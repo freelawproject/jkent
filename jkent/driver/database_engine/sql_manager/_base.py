@@ -48,7 +48,7 @@ class SQLManagerBase:
     def __init__(
         self,
         engine: AsyncEngine,
-        session_factory: async_sessionmaker,
+        session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         """Initialize with an engine and session factory.
 
@@ -57,7 +57,9 @@ class SQLManagerBase:
             session_factory: An async session factory bound to the engine.
         """
         self.engine: Final[AsyncEngine] = engine
-        self.session_factory: Final[async_sessionmaker] = session_factory
+        self.session_factory: Final[async_sessionmaker[AsyncSession]] = (
+            session_factory
+        )
         self.lock: Final[asyncio.Lock] = InstrumentedLock()
         # Not Final: reseeded from the DB on first use, then bumped per
         # enqueue.
