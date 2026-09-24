@@ -48,6 +48,9 @@ from jkent.driver.unified_driver.transport import (
 from jkent.driver.unified_driver.transport.httpx_transport import (
     HttpxTransport,
 )
+from jkent.driver.unified_driver.transport.playwright_transport import (
+    PlaywrightTransport,
+)
 from jkent.driver.unified_driver.wiring import (
     RunCollaborators,
     RunConfig,
@@ -72,6 +75,7 @@ __all__ = [
     "HttpxTransport",
     "NoopHandle",
     "NoopRateLimiter",
+    "PlaywrightTransport",
     "PoolWorker",
     "PyrateRateLimiter",
     "QueuedRequest",
