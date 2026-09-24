@@ -1,0 +1,52 @@
+# Linux + Xvfb + xdotool: the environment where CloudflareHandler's OS-level
+# click can clear an interstitial. See Dockerfile.
+#
+#   docker compose -f docker/compose.yaml build
+#   docker compose -f docker/compose.yaml run --rm jkent            # shell
+#   docker compose -f docker/compose.yaml run --rm jkent \
+#     python scripts/run_unified.py --help
+#
+# This file needs only jkent and a juriscraper checkout, and drives scrapers
+# with jkent's own scripts/run_unified.py. Paths default to a sibling layout
+# (the directory holding jkent also holds juriscraper); override any of them
+# with the env vars below, either exported or in a `.env` beside this file.
+
+services:
+  jkent:
+    build:
+      # The repo root, for pyproject.toml + uv.lock; /.dockerignore keeps the
+      # context to the few files the Dockerfile copies.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: jkent-cf:latest
+    # Firefox will fall over on the default 64MB /dev/shm.
+    shm_size: 1gb
+    working_dir: /work/jkent
+    environment:
+      DISPLAY: ":99"
+      SCREEN_GEOMETRY: "1920x1080x24"
+      PYTHONUNBUFFERED: "1"
+      # Where RunBootstrapper resolves browser profiles
+      # ($JKENT_HOME/profiles/{name}); mounted from the host below.
+      JKENT_HOME: /work/jkent-home
+    volumes:
+      # The code under test — your working tree, installed editable at start.
+      - ${JKENT_PATH:-../}:/work/jkent
+      # Scraper code. Mounted *as* /work/juriscraper whatever the checkout is
+      # called on the host, so `import juriscraper` resolves; the entrypoint
+      # also puts it on PYTHONPATH for the not-pip-installable case.
+      - ${JKENT_JURISCRAPER_PATH:-../../juriscraper}:/work/juriscraper
+      # Run databases and downloaded archives.
+      - ${JKENT_RUNS_PATH:-./runs}:/work/runs
+      # Browser profiles (the camoufox fingerprint options and init scripts a
+      # scraper asks for). Without this a scraper runs profile-less, behind
+      # one warning. Read-only: a run only reads a profile's manifest.
+      - ${JKENT_HOME:-~/.jkent}:/work/jkent-home:ro
+    # The camoufox browser is baked into the image (XDG_CACHE_HOME=/cache), so
+    # nothing else needs to persist between containers. /tmp is tmpfs because
+    # browser profiles and Xvfb logs churn there and none of it should outlive
+    # the run.
+    tmpfs:
+      - /tmp
+    stdin_open: true
+    tty: true

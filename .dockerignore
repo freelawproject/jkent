@@ -1,0 +1,6 @@
+# The docker/ image build (context: the repo root) copies only these; the rest
+# of the tree is bind-mounted at run time, not baked in.
+*
+!pyproject.toml
+!uv.lock
+!docker/entrypoint.sh
