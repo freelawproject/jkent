@@ -32,6 +32,9 @@ from jkent.driver.unified_driver.transport import (
     Transport,
     WorkerHandle,
 )
+from jkent.driver.unified_driver.transport.httpx_transport import (
+    HttpxTransport,
+)
 
 __all__ = [
     "AdaptiveRateLimiter",
@@ -41,6 +44,7 @@ __all__ = [
     "CircuitBreaker",
     "CircuitBreakerPolicy",
     "DEFAULT_ADAPTIVE_LADDER",
+    "HttpxTransport",
     "NoopRateLimiter",
     "PyrateRateLimiter",
     "QueuedRequest",
