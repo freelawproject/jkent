@@ -17,10 +17,24 @@ from jkent.driver.unified_driver.circuit_breaker import (
 )
 from jkent.driver.unified_driver.lifecycle import AsyncLifecycle
 from jkent.driver.unified_driver.pool import WorkerPool
+from jkent.driver.unified_driver.rate_limiter import (
+    DEFAULT_ADAPTIVE_LADDER,
+    AdaptiveRateLimiter,
+    NoopRateLimiter,
+    PyrateRateLimiter,
+    RateLimiter,
+    RateLimiters,
+)
 
 __all__ = [
+    "AdaptiveRateLimiter",
     "AsyncLifecycle",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
+    "DEFAULT_ADAPTIVE_LADDER",
+    "NoopRateLimiter",
+    "PyrateRateLimiter",
+    "RateLimiter",
+    "RateLimiters",
     "WorkerPool",
 ]
