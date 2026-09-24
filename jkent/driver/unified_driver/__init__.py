@@ -15,6 +15,7 @@ from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerPolicy,
 )
+from jkent.driver.unified_driver.compaction import Compactor, Compactors
 from jkent.driver.unified_driver.lifecycle import AsyncLifecycle
 from jkent.driver.unified_driver.persistence import (
     ErrorBudget,
@@ -49,6 +50,8 @@ __all__ = [
     "AwaitCondition",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
+    "Compactor",
+    "Compactors",
     "DEFAULT_ADAPTIVE_LADDER",
     "ErrorBudget",
     "ErrorSink",
