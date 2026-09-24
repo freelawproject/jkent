@@ -31,6 +31,7 @@ from jkent.driver.unified_driver.rate_limiter import (
     RateLimiter,
     RateLimiters,
 )
+from jkent.driver.unified_driver.run import ScrapeRun
 from jkent.driver.unified_driver.steps import StepExecutor
 from jkent.driver.unified_driver.transport import (
     MAX_RETRY_AFTER_S,
@@ -81,6 +82,7 @@ __all__ = [
     "RunCollaborators",
     "RunConfig",
     "RunHooks",
+    "ScrapeRun",
     "StatelessTransport",
     "parse_retry_after",
     "Transport",
