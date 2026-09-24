@@ -21,8 +21,8 @@ _TP = TypeVar("_TP", bound=tuple[Any, ...])
 
 def _filter_errors(
     stmt: Select[_TP],
-    error_type: ErrorType | str | None,
-    continuation: str | None,
+    error_type: ErrorType | None,
+    step: str | None,
 ) -> Select[_TP]:
     """Apply the shared error filters to a select over ``errors``.
 
@@ -31,17 +31,16 @@ def _filter_errors(
 
     Args:
         stmt: A select whose FROM is (or includes) ``errors``.
-        error_type: Filter by error type, as an :class:`ErrorType` member or
-            its label — ``CodedEnumType`` binds either to the stored code.
-        continuation: Filter by continuation method name. Joins ``requests``,
+        error_type: Filter by error type.
+        step: Filter by step method name. Joins ``requests``,
             which drops errors raised outside a request context.
 
     Returns:
         The select with the requested filters applied.
     """
-    if continuation is not None:
+    if step is not None:
         stmt = stmt.join(Request, Error.request_id == Request.id).where(
-            Request.continuation == continuation
+            Request.step == step
         )
     if error_type is not None:
         stmt = stmt.where(Error.error_type == error_type)
@@ -94,21 +93,20 @@ class ErrorsMixin(SQLManagerBase):
             error = await session.get(Error, error_id)
             if error is None:
                 return None
-            return ErrorRecord.from_model(error)
+            return ErrorRecord.model_validate(error)
 
     async def list_errors(
         self,
-        error_type: ErrorType | str | None = None,
-        continuation: str | None = None,
+        error_type: ErrorType | None = None,
+        step: str | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> list[ErrorRecord]:
         """List errors with optional filters, newest first.
 
         Args:
-            error_type: Filter by error type, as an :class:`ErrorType` member
-                or its label.
-            continuation: Filter by continuation method name (requires join
+            error_type: Filter by error type.
+            step: Filter by step method name (requires join
                 with requests).
             offset: Number of records to skip.
             limit: Maximum records to return.
@@ -116,19 +114,21 @@ class ErrorsMixin(SQLManagerBase):
         Returns:
             List of ErrorRecord objects.
         """
-        stmt = _filter_errors(select(Error), error_type, continuation)
+        stmt = _filter_errors(select(Error), error_type, step)
         stmt = (
             stmt.order_by(Error.created_at.desc()).limit(limit).offset(offset)
         )
 
         async with self.session_factory() as session:
             result = await session.execute(stmt)
-            return [ErrorRecord.from_model(e) for e in result.scalars().all()]
+            return [
+                ErrorRecord.model_validate(e) for e in result.scalars().all()
+            ]
 
     async def count_errors(
         self,
-        error_type: ErrorType | str | None = None,
-        continuation: str | None = None,
+        error_type: ErrorType | None = None,
+        step: str | None = None,
     ) -> int:
         """Count errors with optional filters.
 
@@ -136,9 +136,8 @@ class ErrorsMixin(SQLManagerBase):
         matches the rows that listing would return.
 
         Args:
-            error_type: Filter by error type (member or label, as
-                :meth:`list_errors`).
-            continuation: Filter by continuation method name (requires join
+            error_type: Filter by error type.
+            step: Filter by step method name (requires join
                 with requests).
 
         Returns:
@@ -147,7 +146,7 @@ class ErrorsMixin(SQLManagerBase):
         stmt = _filter_errors(
             select(sa.func.count()).select_from(Error),
             error_type,
-            continuation,
+            step,
         )
 
         async with self.session_factory() as session:

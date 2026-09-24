@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -23,17 +23,62 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
 
     from sqlalchemy import Connection
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.engine.interfaces import DBAPIConnection
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
     from sqlalchemy.pool import ConnectionPoolEntry
+    from sqlalchemy.sql import Executable
 
-# For future migrations if they should become necessary
-BASELINE_VERSION = 1
+#: The schema this jkent reads and writes. A database stamped at any other
+#: version is refused at open: there is no migration runner, so the only
+#: supported answer is to recreate the run database.
+BASELINE_VERSION = 3
+
+
+class UnsupportedSchemaVersionError(RuntimeError):
+    """A run database was stamped at a schema version jkent cannot read.
+
+    Raised at open, before any table is touched, so the operator hears about
+    it at startup rather than as ``no such column`` inside a worker hours in.
+    """
+
+    def __init__(self, db_path: Path, found: int) -> None:
+        self.db_path = db_path
+        self.found = found
+        super().__init__(
+            f"{db_path} is stamped at schema version {found}; this jkent "
+            f"reads version {BASELINE_VERSION}. There is no migration "
+            f"runner — recreate the run database."
+        )
+
 
 #: Execution option that opens a transaction as ``BEGIN IMMEDIATE`` instead of
 #: SQLite's default deferred ``BEGIN``. Set by :func:`write_session`; read by
 #: the engine's ``begin`` handler in :func:`create_engine_and_init`.
 BEGIN_IMMEDIATE_OPTION = "jkent_begin_immediate"
+
+
+async def _stamped_version(conn: AsyncConnection) -> int | None:
+    """The version in ``schema_info``, or None for a database with no stamp.
+
+    None covers both a brand-new file and one whose ``schema_info`` table
+    does not exist yet — either way there is nothing to refuse and the
+    caller stamps it.
+    """
+    has_table = (
+        await conn.execute(
+            sa.text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'schema_info'"
+            )
+        )
+    ).scalar()
+    if not has_table:
+        return None
+    version: int | None = (
+        await conn.execute(sa.text("SELECT MAX(version) FROM schema_info"))
+    ).scalar()
+    return version
 
 
 async def create_engine_and_init(
@@ -69,7 +114,7 @@ async def create_engine_and_init(
         # A persistent pool, not NullPool: with aiosqlite every connection is
         # a dedicated OS thread, so connection-per-session made each session
         # checkout a thread spawn + sqlite3.connect + PRAGMA setup — profiled
-        # as dominating wall time on DB-chatty runs (jent replay). A few
+        # as dominating wall time on DB-chatty runs (replay hosts). A few
         # long-lived threads are the cheaper trade.
         #
         # max_overflow=-1 (unbounded, overflow closed on release) preserves
@@ -115,14 +160,17 @@ async def create_engine_and_init(
     async with engine.connect() as conn:
         await conn.execution_options(**{BEGIN_IMMEDIATE_OPTION: True})
         async with conn.begin():
+            # Check the stamp before create_all: create_all adds missing
+            # tables but never missing columns, so a database from another
+            # schema version opens cleanly here and fails much later, inside
+            # a worker, as "no such column".
+            existing = await _stamped_version(conn)
+            if existing is not None and existing != BASELINE_VERSION:
+                raise UnsupportedSchemaVersionError(db_path, existing)
+
             await conn.run_sync(Base.metadata.create_all)
 
-            current = (
-                await conn.execute(
-                    sa.text("SELECT MAX(version) FROM schema_info")
-                )
-            ).scalar()
-            if not current:
+            if existing is None:
                 await conn.execute(
                     sa.text("INSERT INTO schema_info (version) VALUES (:v)"),
                     {"v": BASELINE_VERSION},
@@ -165,6 +213,16 @@ async def init_database(
     """
     engine = await create_engine_and_init(db_path, echo=echo, **engine_kwargs)
     return engine, get_session_factory(engine)
+
+
+async def execute_rowcount(session: AsyncSession, stmt: Executable) -> int:
+    """Execute a Core UPDATE/DELETE and return how many rows it touched.
+
+    ``session.execute``'s typed overload promises a ``Result``, which has no
+    ``rowcount``; what an UPDATE actually returns is a ``CursorResult``.
+    """
+    result = cast("CursorResult[Any]", await session.execute(stmt))
+    return result.rowcount
 
 
 @asynccontextmanager
