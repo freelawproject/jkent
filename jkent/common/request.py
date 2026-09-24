@@ -18,7 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from functools import cached_property
-from typing import Any, BinaryIO, Final, TypeVar, cast, overload
+from typing import Any, BinaryIO, Final, NamedTuple, TypeVar, cast, overload
 from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
 
 from jkent.common.coded_enum import CodedEnum
@@ -38,6 +38,7 @@ __all__ = [
     "QueryParams",
     "Request",
     "RequestData",
+    "SerializedRequest",
     "SkipDeduplicationCheck",
     "TimeoutType",
     "VerifyType",
@@ -226,18 +227,33 @@ def encode_body(data: RequestData) -> tuple[bytes | None, bool]:
     return None, False
 
 
+class SerializedRequest(NamedTuple):
+    """The request columns :func:`serialize_url_and_body` derives."""
+
+    url: str
+    body: bytes | None
+    body_is_form: bool
+
+
 def serialize_url_and_body(
     http_request: HTTPRequestParams,
-) -> tuple[str, bytes | None]:
-    """The ``(url, body)`` the run database stores for *http_request*.
+) -> SerializedRequest:
+    """The ``(url, body, body_is_form)`` the run database stores.
 
     Query params are folded into the URL (see :func:`_fold_params_into_url`)
     and the body is :func:`encode_body`'s. The queue's write path and
     replay's fallback-key derivation both go through this function.
+
+    The form flag comes back alongside the body because ``encode_body``
+    produces both in one pass, and the caller that stores the body stores
+    the flag with it: asking for them separately reads (and seeks back) a
+    file-like body twice.
     """
-    return (
+    body, body_is_form = encode_body(http_request.data)
+    return SerializedRequest(
         _fold_params_into_url(http_request.url, http_request.params),
-        encode_body(http_request.data)[0],
+        body,
+        body_is_form,
     )
 
 
