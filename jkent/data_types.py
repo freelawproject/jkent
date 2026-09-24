@@ -17,6 +17,11 @@ from __future__ import annotations
 
 from jkent.common.decorator_metadata import DEFAULT_PRIORITY
 from jkent.common.incidental import IncidentalMatch, Multiple, Singular
+from jkent.common.rate_limits import (
+    DEFAULT_RATE_LIMIT,
+    NO_RATE_LIMIT,
+    RateLimitTable,
+)
 from jkent.common.request import (
     ARCHIVE_DEFAULT_PRIORITY,
     SPECULATION_SOFT_FAILURE_STATUS,
@@ -68,6 +73,8 @@ __all__ = [
     "ARCHIVE_DEFAULT_PRIORITY",
     "CSS",
     "DEFAULT_PRIORITY",
+    "DEFAULT_RATE_LIMIT",
+    "NO_RATE_LIMIT",
     "SPECULATION_SOFT_FAILURE_STATUS",
     "ArchiveDecision",
     "ArchiveResponse",
@@ -89,6 +96,7 @@ __all__ = [
     "ParsedData",
     "ProxiesType",
     "QueryParams",
+    "RateLimitTable",
     "Request",
     "RequestData",
     "Response",

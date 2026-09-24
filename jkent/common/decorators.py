@@ -21,7 +21,7 @@ The decorator also handles:
 
 - Attaching priority metadata to functions
 - Attaching encoding metadata for drivers to optionally use
-- Auto-resolving Callable continuations to string names
+- Auto-resolving Callable steps to string names
 - Automatic yielding from wrapped generators
 
 The @entry decorator marks scraper methods as entry points with typed
@@ -204,7 +204,7 @@ def _parse_page_element(
         # get_active_observer() contextvar (activated per-resume in the step
         # wrapper), not through the PageElement — see SelectorObserver.
         # An observer already active here was injected by a caller running
-        # the continuation under its own (possibly subclassed) observer —
+        # the step under its own (possibly subclassed) observer —
         # e.g. jent's annotation/residual analysis — so reuse it instead of
         # shadowing it with a fresh one. Under the driver no observer is
         # active at parse time, so each execution gets its own as before.
@@ -225,10 +225,12 @@ def _parse_page_element(
 
 
 def _process_yielded_request(yielded: Any) -> Any:
-    """Process a yielded Request to resolve Callable continuations.
+    """Process a yielded Request to resolve Callable steps.
 
-    When a decorated function yields a Request with a Callable continuation,
-    this resolves it to the function name and attaches the target step's priority.
+    When a decorated function yields a Request with a Callable step, this
+    resolves it to the function name and fills in what the request left
+    unset from the target step's metadata: its priority and its rate-limit
+    lane.
 
     Args:
         yielded: The value yielded by the step.
@@ -236,20 +238,29 @@ def _process_yielded_request(yielded: Any) -> Any:
     Returns:
         The processed yield value.
     """
-    if isinstance(yielded, Request) and callable(yielded.continuation):
+    if isinstance(yielded, Request) and callable(yielded.step):
         # Get the target function's step metadata (if decorated with @step)
-        target_metadata = get_step_metadata(yielded.continuation)
+        target_metadata = get_step_metadata(yielded.step)
 
         # Resolve Callable to function name
-        func_name = yielded.continuation.__name__
+        func_name = yielded.step.__name__
         # Note: We use object.__setattr__ because dataclasses are frozen
-        object.__setattr__(yielded, "continuation", func_name)
+        object.__setattr__(yielded, "step", func_name)
 
         # If the yielded request doesn't have a priority set,
         # inherit from the target step's metadata. Explicit priorities
         # (including an explicit 9) are kept.
         if yielded.priority is None and target_metadata is not None:
             object.__setattr__(yielded, "priority", target_metadata.priority)
+        # Same rule for the rate-limit lane: unset inherits, explicit wins.
+        if (
+            yielded.rate_limit is None
+            and target_metadata is not None
+            and target_metadata.rate_limit is not None
+        ):
+            object.__setattr__(
+                yielded, "rate_limit", target_metadata.rate_limit
+            )
 
     return yielded
 
@@ -279,6 +290,7 @@ def step(
     await_list: list[WaitCondition] | None = ...,
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
+    rate_limit: str | None = ...,
 ) -> StepMethod[StepScraper, StepYield]: ...
 @overload
 def step(
@@ -289,6 +301,7 @@ def step(
     await_list: list[WaitCondition] | None = ...,
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
+    rate_limit: str | None = ...,
 ) -> Callable[
     [StepFunction[StepScraper, StepYield]], StepMethod[StepScraper, StepYield]
 ]: ...
@@ -300,6 +313,7 @@ def step(
     await_list: list[WaitCondition] | None = None,
     auto_await_timeout: int | None = None,
     preprocess: Callable[[str], str] | None = None,
+    rate_limit: str | None = None,
 ) -> (
     StepMethod[StepScraper, StepYield]
     | Callable[
@@ -339,10 +353,10 @@ def step(
 
         @step
         def parse_with_callable(self, text: str):
-            # Can yield requests with Callable continuations
+            # Can yield requests with Callable steps
             yield Request(
                 url="/next",
-                continuation=self.parse_next_page  # Callable!
+                step=self.parse_next_page  # Callable!
             )
 
     Args:
@@ -364,6 +378,12 @@ def step(
             unclosed ``<style>`` tags swallowing the document) *before* lxml
             parses it, while still receiving a normal ``page`` with its
             selector observer wired up. ``json_content`` is unaffected.
+        rate_limit: Rate-limit lane for requests routed to this step — a
+            name from the scraper's ``named_rate_limits``, or ``"none"`` for
+            no limit. A yielded Request whose own ``rate_limit`` is unset
+            inherits it (an explicit value on the request wins), the way
+            ``priority`` is inherited. None leaves requests in the default
+            lane.
 
     Returns:
         Decorated function with automatic argument injection.
@@ -386,6 +406,7 @@ def step(
             encoding=encoding,
             await_list=await_list,
             auto_await_timeout=auto_await_timeout,
+            rate_limit=rate_limit,
         )
 
         @wraps(fn)

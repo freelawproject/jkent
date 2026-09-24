@@ -28,7 +28,7 @@ def make_request(
 ) -> Request:
     return Request(
         request=HTTPRequestParams(method=method, url=url),
-        continuation="parse",
+        step="parse",
         **request_kwargs,
     )
 

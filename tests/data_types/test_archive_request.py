@@ -42,24 +42,24 @@ class TestArchive:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
         )
 
         assert request.request.url == "/opinions/BCC-2024-001.pdf"
 
-    def test_archive_request_stores_continuation(self):
-        """Archive Request shall store the continuation method name."""
+    def test_archive_request_stores_step(self):
+        """Archive Request shall store the step method name."""
         request = Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
         )
 
-        assert request.continuation == "archive_opinion"
+        assert request.step == "archive_opinion"
 
     def test_archive_request_stores_expected_type(self):
         """Archive Request shall store the expected file type."""
@@ -68,7 +68,7 @@ class TestArchive:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
             expected_type="pdf",
         )
@@ -82,7 +82,7 @@ class TestArchive:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
         )
 
@@ -95,7 +95,7 @@ class TestArchive:
                 method=HttpMethod.GET,
                 url="http://bugcourt.example.com/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -110,7 +110,7 @@ class TestArchive:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
             expected_type="pdf",
         )
@@ -122,7 +122,7 @@ class TestArchive:
             resolved.request.url
             == "http://bugcourt.example.com/opinions/BCC-2024-001.pdf"
         )
-        assert resolved.continuation == "archive_opinion"
+        assert resolved.step == "archive_opinion"
         assert resolved.expected_type == "pdf"
         assert (
             resolved.current_location
@@ -134,8 +134,8 @@ class TestArchive:
 
         Regression test: prior to the fix in resolve_request_from, only
         url/method/headers/params/data/cookies/verify were copied across,
-        which silently reset timeout (and json/files/auth/allow_redirects/
-        proxies/stream/cert) to their dataclass defaults. The Nevada
+        which silently reset timeout (and json) to their dataclass
+        defaults. The Nevada
         Supreme Court scraper hit this with a ``timeout=360.0`` on an
         archive request that was reverted to ``None`` before the request
         manager ever saw it, causing downloads to hang indefinitely.
@@ -148,14 +148,8 @@ class TestArchive:
             json={"k": "v"},
             headers={"Accept": "application/pdf"},
             cookies={"session": "abc"},
-            files={"upload": "file.txt"},
-            auth=("user", "pass"),
             timeout=360.0,
-            allow_redirects=False,
-            proxies={"http": "http://proxy.example:3128"},
             verify=False,
-            stream=True,
-            cert="/path/to/cert.pem",
         )
 
         base_request = Request(
@@ -163,7 +157,7 @@ class TestArchive:
                 method=HttpMethod.GET,
                 url="http://bugcourt.example.com/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -175,7 +169,7 @@ class TestArchive:
         )
         archive_request = Request(
             request=original_params,
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
             expected_type="pdf",
         )
@@ -194,16 +188,8 @@ class TestArchive:
         assert resolved.request.json == original_params.json
         assert resolved.request.headers == original_params.headers
         assert resolved.request.cookies == original_params.cookies
-        assert resolved.request.files == original_params.files
-        assert resolved.request.auth == original_params.auth
         assert resolved.request.timeout == original_params.timeout
-        assert (
-            resolved.request.allow_redirects == original_params.allow_redirects
-        )
-        assert resolved.request.proxies == original_params.proxies
         assert resolved.request.verify == original_params.verify
-        assert resolved.request.stream == original_params.stream
-        assert resolved.request.cert == original_params.cert
 
 
 class TestArchiveResponse:
@@ -216,7 +202,7 @@ class TestArchiveResponse:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
         )
         response = ArchiveResponse(
@@ -238,7 +224,7 @@ class TestArchiveResponse:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
         )
         response = ArchiveResponse(
@@ -260,7 +246,7 @@ class TestArchiveResponse:
                 method=HttpMethod.GET,
                 url="/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
         )
         response = ArchiveResponse(
@@ -287,13 +273,13 @@ class TestBugCourtScraperWithArchive:
     """Tests for the BugCourtScraperWithArchive class."""
 
     @pytest.fixture
-    def scraper(self, server_url: str) -> BugCourtScraperWithArchive:
+    async def scraper(self, server_url: str) -> BugCourtScraperWithArchive:
         """Create a BugCourtScraperWithArchive instance."""
         scraper = BugCourtScraperWithArchive()
         scraper.BASE_URL = server_url
         return scraper
 
-    def test_parse_detail_yields_archive_requests_for_opinions(
+    async def test_parse_detail_yields_archive_requests_for_opinions(
         self, scraper: BugCourtScraperWithArchive, server_url: str
     ):
         """The scraper shall yield archive Request for PDF opinions."""
@@ -305,7 +291,7 @@ class TestBugCourtScraperWithArchive:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases/{case.docket}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -329,10 +315,10 @@ class TestBugCourtScraperWithArchive:
             r for r in archive_requests if "opinions" in r.request.url
         ][0]
         assert isinstance(opinion_request, Request) and opinion_request.archive
-        assert opinion_request.continuation == "archive_opinion"
+        assert opinion_request.step == "archive_opinion"
         assert opinion_request.expected_type == "pdf"
 
-    def test_parse_detail_yields_archive_requests_for_oral_arguments(
+    async def test_parse_detail_yields_archive_requests_for_oral_arguments(
         self, scraper: BugCourtScraperWithArchive, server_url: str
     ):
         """The scraper shall yield archive Request for MP3 oral arguments."""
@@ -344,7 +330,7 @@ class TestBugCourtScraperWithArchive:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases/{case.docket}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -370,10 +356,10 @@ class TestBugCourtScraperWithArchive:
         assert (
             isinstance(oral_arg_request, Request) and oral_arg_request.archive
         )
-        assert oral_arg_request.continuation == "archive_oral_argument"
+        assert oral_arg_request.step == "archive_oral_argument"
         assert oral_arg_request.expected_type == "audio"
 
-    def test_parse_detail_yields_parsed_data_when_no_files(
+    async def test_parse_detail_yields_parsed_data_when_no_files(
         self, scraper: BugCourtScraperWithArchive, server_url: str
     ):
         """The scraper shall yield ParsedData when no files are available."""
@@ -387,7 +373,7 @@ class TestBugCourtScraperWithArchive:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases/{case.docket}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -415,7 +401,7 @@ class TestBugCourtScraperWithArchive:
                 method=HttpMethod.GET,
                 url="http://bugcourt.example.com/opinions/BCC-2024-001.pdf",
             ),
-            continuation="archive_opinion",
+            step="archive_opinion",
             archive=True,
             current_location="http://bugcourt.example.com/cases/BCC-2024-001",
         )

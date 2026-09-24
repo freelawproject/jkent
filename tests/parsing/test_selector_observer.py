@@ -560,7 +560,7 @@ def test_max_sample_length():
 def _step_response(url: str, html_content: str):
     request = Request(
         request=HTTPRequestParams(method=HttpMethod.GET, url=url),
-        continuation="parse",
+        step="parse",
     )
     return Response(
         status_code=200,

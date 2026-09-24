@@ -22,7 +22,7 @@ def test_via_field_on_base_request():
         request=HTTPRequestParams(
             url="https://example.com/page", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
     )
 
     assert request.via is None
@@ -39,7 +39,7 @@ def test_via_link_on_navigating_request():
         request=HTTPRequestParams(
             url="https://example.com/page", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         via=via,
     )
 
@@ -62,7 +62,7 @@ def test_via_form_submit_on_navigating_request():
         request=HTTPRequestParams(
             url="https://example.com/search", method=HttpMethod.POST
         ),
-        continuation="parse_results",
+        step="parse_results",
         via=via,
     )
 
@@ -84,7 +84,7 @@ def test_via_propagates_through_resolve_from_response():
         request=HTTPRequestParams(
             url="https://example.com/page1", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         current_location="https://example.com/",
         via=via,
     )
@@ -104,7 +104,7 @@ def test_via_propagates_through_resolve_from_response():
         request=HTTPRequestParams(
             url="https://example.com/page2", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         via=via,
     )
 
@@ -128,7 +128,7 @@ def test_via_propagates_through_nonnavigating_request():
         request=HTTPRequestParams(
             url="https://example.com/api", method=HttpMethod.POST
         ),
-        continuation="parse_api_response",
+        step="parse_api_response",
         via=via,
         nonnavigating=True,
     )
@@ -149,7 +149,7 @@ def test_via_propagates_through_nonnavigating_resolve():
         request=HTTPRequestParams(
             url="https://example.com/page", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         current_location="https://example.com/",
     )
 
@@ -164,7 +164,7 @@ def test_via_propagates_through_nonnavigating_resolve():
 
     non_nav_request = Request(
         request=HTTPRequestParams(url="/api/filter", method=HttpMethod.POST),
-        continuation="parse_filter_response",
+        step="parse_filter_response",
         via=via,
         nonnavigating=True,
     )
@@ -182,7 +182,7 @@ def test_via_none_preserved():
         request=HTTPRequestParams(
             url="https://example.com/page", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         current_location="https://example.com/",
         via=None,
     )
@@ -200,7 +200,7 @@ def test_via_none_preserved():
         request=HTTPRequestParams(
             url="https://example.com/page2", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         via=None,
     )
 
@@ -224,7 +224,7 @@ def test_via_different_for_different_requests():
         request=HTTPRequestParams(
             url="https://example.com/page1", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         via=via1,
     )
 
@@ -232,7 +232,7 @@ def test_via_different_for_different_requests():
         request=HTTPRequestParams(
             url="https://example.com/page2", method=HttpMethod.GET
         ),
-        continuation="parse_page",
+        step="parse_page",
         via=via2,
     )
 
@@ -254,7 +254,7 @@ def test_via_preserved_in_speculative_request():
         request=HTTPRequestParams(
             url="https://example.com/detail/123", method=HttpMethod.GET
         ),
-        continuation="parse_detail",
+        step="parse_detail",
         via=via,
     )
 
