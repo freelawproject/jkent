@@ -7,9 +7,14 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import sqlalchemy as sa
 from sqlalchemy import select
 
-from jkent.driver.database_engine.errors import ErrorRecord, build_error
+from jkent.driver.database_engine.errors import (
+    ErrorRecord,
+    build_error,
+    error_message,
+)
 from jkent.driver.database_engine.models import Error, Request
 from jkent.driver.database_engine.sql_manager._base import SQLManagerBase
+from jkent.driver.database_engine.sql_manager._requests import mark_failed
 
 if TYPE_CHECKING:
     from sqlalchemy.sql import Select
@@ -78,6 +83,29 @@ class ErrorsMixin(SQLManagerBase):
             error_id = error.id
             await session.commit()
 
+        return error_id if error_id else 0
+
+    async def fail_request(
+        self,
+        request_id: int,
+        exc: Exception,
+        request_url: str | None = None,
+    ) -> int:
+        """Mark ``request_id`` FAILED and store ``exc`` against it, atomically.
+
+        One transaction for both, so a FAILED row always has its ``errors``
+        row and neither lands without the other.
+
+        Returns:
+            The database ID of the stored error.
+        """
+        error = build_error(exc, request_id, request_url)
+        async with self._write_session() as session:
+            await session.execute(mark_failed(request_id, error_message(exc)))
+            session.add(error)
+            await session.flush()
+            error_id = error.id
+            await session.commit()
         return error_id if error_id else 0
 
     async def get_error(self, error_id: int) -> ErrorRecord | None:
