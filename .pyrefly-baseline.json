@@ -1,6 +1,13 @@
 {
   "errors": [
     {
+      "column": 26,
+      "path": "tests/data_types/test_field_resolvers.py",
+      "name": "bad-argument-type",
+      "concise_description": "Argument `None` is not assignable to parameter `db` with type `SQLManager` in function `jkent.driver.unified_driver.persistence.RequestQueue.__init__`",
+      "severity": "error"
+    },
+    {
       "column": 39,
       "path": "tests/decorators/test_entry.py",
       "name": "bad-argument-type",
