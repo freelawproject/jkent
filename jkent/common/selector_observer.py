@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 from lxml.html import HtmlElement
 from pydantic import Field, TypeAdapter
 
+from jkent.common.selectors import Selector
+
 if TYPE_CHECKING:
     from types import TracebackType
 
@@ -409,36 +411,12 @@ class SelectorObserver:
             # Mixed types - can't compose
             return None
 
-        selector_type = selectors[0][0]
-
-        if selector_type == "xpath":
-            # Compose XPath selectors
-            # The first selector is the root (absolute), subsequent ones are relative
-            result = selectors[0][1]  # Root selector
-
-            for i in range(1, len(selectors)):
-                _, sel = selectors[i]
-                # Strip leading "./" or "." from relative selectors
-                if sel.startswith(".//"):
-                    # ".//tr" becomes "//tr" - descendant
-                    result += sel[1:]  # Keep the "//" part
-                elif sel.startswith("./"):
-                    # "./tr" becomes "/tr" - child
-                    result += sel[1:]
-                elif sel.startswith("."):
-                    # Rare case, just strip the dot
-                    result += sel[1:]
-                else:
-                    # Not relative - join with //
-                    result += "//" + sel
-
-            return result
-
-        elif selector_type == "css":
-            # Compose CSS selectors: join with a space (descendant combinator).
-            return " ".join(sel for _, sel in selectors)
-
-        return None
+        # Composition is grammar-specific, so it is the grammar's own method
+        # (see jkent.common.selectors); an unrecognized one composes to None.
+        grammar = Selector.grammar_class(selectors[0][0])
+        if grammar is None:
+            return None
+        return grammar.compose([sel for _, sel in selectors])
 
 
 def get_active_observer() -> SelectorObserver | None:

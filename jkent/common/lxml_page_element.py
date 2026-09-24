@@ -1,15 +1,18 @@
-"""LxmlPageElement: the count-validated PageElement implementation backed by lxml.
+"""LxmlPageElement: the count-validated page element backed by lxml.
 
-This is the single, standard ``PageElement`` implementation used by all
+This is the single, standard page element (exported to scrapers as
+``jkent.common.page_element.PageElement``) used by all
 drivers. It wraps a raw lxml ``HtmlElement`` directly (``self._element``) and
 provides:
 
-- the high-level ``PageElement`` API scrapers use — ``query(XPath(...))`` /
+- the high-level API scrapers use — ``query(XPath(...))`` /
   ``query(CSS(...))``, ``query_strings``, ``find_form``, ``find_links`` —
   which takes explicit :class:`~jkent.data_types.Selector` values, and
-- the low-level, count-validated ``checked_xpath``/``checked_css`` engine
-  those methods route through (string selector + expected-count validation;
-  scrapers rarely call it directly).
+- the low-level ``checked_xpath``/``checked_css`` string-selector forms
+  (scrapers rarely call them directly).
+
+Every one of them routes through ``_checked``, the single count-validated
+query engine.
 
 Element results are re-wrapped as ``LxmlPageElement`` so a query on a page
 element yields page elements — there is no separate wrapper object and no
@@ -22,7 +25,6 @@ report to it, so this class holds no observer state.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any, cast, overload
 from urllib.parse import urljoin
 
@@ -33,19 +35,14 @@ from jkent.common.exceptions import (
     HTMLStructuralAssumptionException,
     ScraperConfigError,
 )
-from jkent.common.page_element import (
-    Form,
-    FormField,
-    Link,
-    PageElement,
-)
+from jkent.common.page_element import Form, FormField, Link
 from jkent.common.selector_observer import get_active_observer
+from jkent.common.selectors import CSS, Selector, XPath
 from jkent.contracts import ensure, require
-from jkent.data_types import Selector, XPath
 
 
-class LxmlPageElement(PageElement):
-    """PageElement implementation backed by a raw lxml ``HtmlElement``.
+class LxmlPageElement:
+    """Page element backed by a raw lxml ``HtmlElement``.
 
     Holds the wrapped element as ``self._element`` and the base URL as
     ``self._request_url`` (used both for error context and as the base for
@@ -84,20 +81,6 @@ class LxmlPageElement(PageElement):
         max_count: int | None = None,
     ) -> list[LxmlPageElement]: ...
 
-    @require(
-        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
-            min_count >= 0 and (max_count is None or max_count >= min_count)
-        ),
-        "expected-count bounds form a valid (possibly open) interval",
-    )
-    @ensure(
-        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
-            min_count <= len(result)
-            and (max_count is None or len(result) <= max_count)
-        ),
-        "a returned result list always satisfies the caller's bounds — "
-        "out-of-bounds counts raise instead",
-    )
     def checked_xpath(
         self,
         xpath: str,
@@ -136,88 +119,14 @@ class LxmlPageElement(PageElement):
             # Get text/attributes
             hrefs = tree.checked_xpath("//a/@href", "links", type=str)
         """
-        try:
-            raw = self._element.xpath(xpath)
-        except Exception as e:
-            # A selector that doesn't parse is a bug in the scraper, not
-            # a change in the website — never report it as structural.
-            raise ScraperConfigError(
-                f"Invalid XPath selector {xpath!r} for "
-                f"'{description}' (url: {self._request_url}): {e}"
-            ) from e
+        return self._checked(
+            XPath(xpath),
+            description,
+            min_count,
+            max_count,
+            strings=type is str,
+        )
 
-        # A nodeset XPath (//a/@href) returns a list; a scalar XPath
-        # (string()/count()/concat()/normalize-space()/boolean()/…) returns a
-        # bare value — a str subclass, float, or bool — not a list. Wrap the
-        # scalar so it counts as one result; iterating a bare str would count
-        # its characters (a 2+ digit count() would report len(str) results and
-        # spuriously trip the count check).
-        results = raw if isinstance(raw, list) else [raw]
-
-        if type is str:
-            # Return only string results
-            typed_results: list[str] | list[LxmlPageElement] = [
-                r for r in results if isinstance(r, str)
-            ]
-            is_element_query = False
-        else:
-            # Wrap element results so nested queries return page elements.
-            typed_results = [
-                LxmlPageElement(r, self._request_url)
-                for r in results
-                if isinstance(r, HtmlElement)
-            ]
-            is_element_query = True
-
-        actual_count = len(typed_results)
-
-        # Report to the active observer using the post-filter results, so the
-        # recorded match_count matches the count the structural check below
-        # enforces. Recording the raw results would make simple_tree() show
-        # ✓ for a query that just raised "found 0" — e.g. a string-returning
-        # XPath called without type=str, whose string results are filtered out
-        # here.
-        observer = get_active_observer()
-        if observer is not None:
-            observer.record_query(
-                selector=xpath,
-                selector_type="xpath",
-                description=description,
-                results=typed_results,
-                expected_min=min_count,
-                expected_max=max_count,
-                parent_element=self._element,
-            )
-
-        if actual_count < min_count or (
-            max_count is not None and actual_count > max_count
-        ):
-            raise HTMLStructuralAssumptionException(
-                selector=xpath,
-                selector_type="xpath",
-                description=description,
-                expected_min=min_count,
-                expected_max=max_count,
-                actual_count=actual_count,
-                request_url=self._request_url,
-                is_element_query=is_element_query,
-            )
-        return typed_results
-
-    @require(
-        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
-            min_count >= 0 and (max_count is None or max_count >= min_count)
-        ),
-        "expected-count bounds form a valid (possibly open) interval",
-    )
-    @ensure(
-        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
-            min_count <= len(result)
-            and (max_count is None or len(result) <= max_count)
-        ),
-        "a returned result list always satisfies the caller's bounds — "
-        "out-of-bounds counts raise instead",
-    )
     def checked_css(
         self,
         selector: str,
@@ -251,53 +160,112 @@ class LxmlPageElement(PageElement):
             for case in cases:
                 title = case.checked_css("h2.title", "title", min_count=1)
         """
-        # Use lxml's built-in cssselect() method
+        return self._checked(CSS(selector), description, min_count, max_count)
+
+    @require(
+        lambda min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
+            min_count >= 0 and (max_count is None or max_count >= min_count)
+        ),
+        "expected-count bounds form a valid (possibly open) interval",
+    )
+    @ensure(
+        lambda result, min_count, max_count: (  # pyrefly: ignore[implicit-any-lambda]
+            min_count <= len(result)
+            and (max_count is None or len(result) <= max_count)
+        ),
+        "a returned result list always satisfies the caller's bounds — "
+        "out-of-bounds counts raise instead",
+    )
+    def _checked(
+        self,
+        selector: Selector,
+        description: str,
+        min_count: int,
+        max_count: int | None,
+        *,
+        strings: bool = False,
+    ) -> list[Any]:
+        """The count-validated query engine behind every selector method.
+
+        Runs ``selector`` in its own grammar, keeps only results of the
+        requested kind (strings, or elements wrapped as page elements),
+        reports them to the active observer, and enforces the bounds.
+        Filtering happens before the count, so the observer's recorded
+        match count is the count the bounds were checked against.
+        """
         try:
-            results = self._element.cssselect(selector)
+            raw = selector.query(self._element)
         except Exception as e:
             # A selector that doesn't parse is a bug in the scraper, not
             # a change in the website — never report it as structural.
             raise ScraperConfigError(
-                f"Invalid CSS selector {selector!r} for "
+                f"Invalid {selector.label} selector {selector.value!r} for "
                 f"'{description}' (url: {self._request_url}): {e}"
             ) from e
 
-        # Report to active observer if present
+        # A nodeset XPath (//a/@href) returns a list; a scalar XPath
+        # (string()/count()/concat()/normalize-space()/boolean()/…) returns a
+        # bare value — a str subclass, float, or bool — not a list. Wrap the
+        # scalar so it counts as one result; iterating a bare str would count
+        # its characters (a 2+ digit count() would report len(str) results and
+        # spuriously trip the count check).
+        results = raw if isinstance(raw, list) else [raw]
+        typed_results: list[Any] = (
+            [r for r in results if isinstance(r, str)]
+            if strings
+            else [
+                LxmlPageElement(r, self._request_url)
+                for r in results
+                if isinstance(r, HtmlElement)
+            ]
+        )
+
         observer = get_active_observer()
         if observer is not None:
-            # Pin the element arm of QueryResults: cssselect yields raw
-            # HtmlElements, so without the annotation the checker tries the
-            # Sequence[str] arm first and rejects the list.
-            css_results: Sequence[HtmlElement] = list(results)
             observer.record_query(
-                selector=selector,
-                selector_type="css",
+                selector=selector.value,
+                selector_type=selector.grammar,
                 description=description,
-                results=css_results,
+                results=typed_results,
                 expected_min=min_count,
                 expected_max=max_count,
                 parent_element=self._element,
             )
 
-        actual_count = len(results)
+        self._enforce_count(
+            selector,
+            description,
+            len(typed_results),
+            min_count,
+            max_count,
+            is_element_query=not strings,
+        )
+        return typed_results
+
+    def _enforce_count(
+        self,
+        selector: Selector,
+        description: str,
+        actual_count: int,
+        min_count: int,
+        max_count: int | None,
+        *,
+        is_element_query: bool = True,
+    ) -> None:
+        """Raise :class:`HTMLStructuralAssumptionException` if out of bounds."""
         if actual_count < min_count or (
             max_count is not None and actual_count > max_count
         ):
             raise HTMLStructuralAssumptionException(
-                selector=selector,
-                selector_type="css",
+                selector=selector.value,
+                selector_type=selector.grammar,
                 description=description,
                 expected_min=min_count,
                 expected_max=max_count,
                 actual_count=actual_count,
                 request_url=self._request_url,
+                is_element_query=is_element_query,
             )
-
-        # CSS selectors always return elements (never text/attributes); wrap
-        # each so nested queries return page elements.
-        return [
-            LxmlPageElement(result, self._request_url) for result in results
-        ]
 
     def query(
         self,
@@ -308,8 +276,8 @@ class LxmlPageElement(PageElement):
     ) -> list[LxmlPageElement]:
         """Query elements by selector, dispatching on its grammar.
 
-        Routes to the count-validated ``checked_xpath``/``checked_css`` engine
-        off ``selector.grammar``. The caller wraps the selector in
+        Runs the count-validated engine in ``selector.grammar``. The caller
+        wraps the selector in
         ``Selector.XPath``/``Selector.CSS``, so the grammar is explicit — no
         prefix heuristic to guess it back, and no bare string can slip in.
 
@@ -325,13 +293,7 @@ class LxmlPageElement(PageElement):
         Raises:
             HTMLStructuralAssumptionException: If count doesn't match expectations.
         """
-        if selector.grammar == "xpath":
-            return self.checked_xpath(
-                selector.value, description, min_count, max_count
-            )
-        return self.checked_css(
-            selector.value, description, min_count, max_count
-        )
+        return self._checked(selector, description, min_count, max_count)
 
     def query_strings(
         self,
@@ -357,8 +319,8 @@ class LxmlPageElement(PageElement):
         Raises:
             HTMLStructuralAssumptionException: If count doesn't match expectations.
         """
-        return self.checked_xpath(
-            selector.value, description, min_count, max_count, type=str
+        return self._checked(
+            selector, description, min_count, max_count, strings=True
         )
 
     def text_content(self) -> str:
@@ -675,18 +637,9 @@ class LxmlPageElement(PageElement):
         # Validate the bounds against the links actually returned: a page
         # that swaps real anchors for href-less JS handlers must fail the
         # structural contract, not silently return fewer links.
-        if len(links) < min_count or (
-            max_count is not None and len(links) > max_count
-        ):
-            raise HTMLStructuralAssumptionException(
-                selector=selector.value,
-                selector_type=selector.grammar,
-                description=description,
-                expected_min=min_count,
-                expected_max=max_count,
-                actual_count=len(links),
-                request_url=self._request_url,
-            )
+        self._enforce_count(
+            selector, description, len(links), min_count, max_count
+        )
 
         return links
 

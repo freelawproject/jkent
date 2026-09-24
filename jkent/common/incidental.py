@@ -2,7 +2,7 @@
 
 A browser navigation fires sub-requests (XHR, fetch) the scraper may want as
 a response of its own. :class:`IncidentalMatch` is the allowlist spec a
-:class:`~jkent.data_types.Request` carries in ``incidental=`` to pick one
+:class:`~jkent.common.request.Request` carries in ``incidental=`` to pick one
 (:class:`Singular`) or every (:class:`Multiple`) matching capture.
 
 A leaf: stdlib only.
@@ -16,6 +16,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+__all__ = ["IncidentalMatch", "Multiple", "Singular"]
 
 
 def _json_deep_contains(actual: object, expected: object) -> bool:
@@ -180,6 +182,6 @@ class Multiple(IncidentalMatch):
     """Promote every captured incidental that matches (one child each).
 
     The transport enqueues one promoted request per match and lets the
-    continuation disambiguate by inspecting each response. Zero matches raises
+    step disambiguate by inspecting each response. Zero matches raises
     :class:`~jkent.common.exceptions.IncidentalRequestAssumptionException`.
     """

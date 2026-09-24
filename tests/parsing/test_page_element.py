@@ -1,7 +1,4 @@
-"""Tests for the PageElement ABC and value objects.
-
-Tests interface conformance and value object behavior.
-"""
+"""Tests for the page-element value objects (Form, FormField, Link)."""
 
 from typing import Any
 
@@ -226,7 +223,7 @@ def test_link_follow_accepts_request_kwargs():
     """Link.follow should pass request kwargs through, like Form.submit.
 
     Request is frozen, so follow() is the caller's only chance to set
-    the continuation — without the passthrough every follow()-built
+    the step — without the passthrough every follow()-built
     request enters the queue with step="".
     """
     link = Link(
@@ -247,7 +244,7 @@ def test_link_follow_accepts_request_kwargs():
     assert isinstance(request.via, ViaLink)
 
 
-def test_link_follow_callable_continuation_resolved_by_step():
+def test_link_follow_callable_step_resolved_by_name():
     """A followed link yielded from a @step resolves its Callable.
 
     This is the real authoring pattern: yield link.follow(
