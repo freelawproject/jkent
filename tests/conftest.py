@@ -6,8 +6,9 @@ Three families, each with one home:
   → base URL) and ``bug_court_server`` / ``server_url`` (the mock court
   site). Both run in the test's own event loop via :mod:`tests.servers`; a
   test that needs one is therefore ``async``.
-- **Databases** — ``db_path`` / ``initialized_db`` for a real SQLite
-  *file* (what the run and the replay ``SourceIndex`` open); ``memory_session_factory`` for an in-memory
+- **Databases** — ``db_path`` / ``initialized_db`` / ``sql_manager`` /
+  ``insert_request`` for a real SQLite *file* (what the run and the replay
+  ``SourceIndex`` open); ``memory_session_factory`` for an in-memory
   StaticPool schema when a test only needs sessions; ``schema_template`` for
   a once-built empty DB file the generative rigs copy per example.
 - **Hypothesis** profiles.
@@ -23,7 +24,7 @@ os.environ.setdefault("JKENT_ENFORCE_CONTRACTS", "1")
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from aiohttp import web
@@ -31,11 +32,14 @@ from hypothesis import settings as _hyp_settings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.database import (
     create_engine_and_init,
     get_session_factory,
     init_database,
 )
+from jkent.driver.database_engine.enums import RequestType
+from jkent.driver.database_engine.sql_manager import RequestInsert, SQLManager
 from tests.mock_server import (
     create_app,
     generate_cases_html,
@@ -137,6 +141,42 @@ async def initialized_db(db_path: Path) -> AsyncIterator[_InitializedDB]:
     engine, session_factory = await init_database(db_path)
     yield engine, session_factory
     await engine.dispose()
+
+
+@pytest.fixture
+async def sql_manager(initialized_db: _InitializedDB) -> SQLManager:
+    """A :class:`SQLManager` over ``initialized_db``."""
+    engine, session_factory = initialized_db
+    return SQLManager(engine, session_factory)
+
+
+@pytest.fixture
+def insert_request(
+    sql_manager: SQLManager,
+) -> Callable[..., Awaitable[int]]:
+    """Factory that inserts a request with sensible defaults.
+
+    Most tests only vary ``url``/``deduplication_key``/``priority``/
+    ``step``; override only what the test cares about::
+
+        req_id = await insert_request(
+            url="https://example.com/1", deduplication_key="1"
+        )
+    """
+
+    async def _insert(**overrides: Any) -> int:
+        params: dict[str, Any] = {
+            "priority": 5,
+            "request_type": RequestType.NAVIGATING,
+            "method": HttpMethod.GET,
+            "url": "https://example.com/test",
+            "step": "parse",
+        }
+        params.update(overrides)
+        inserted = await sql_manager.insert_request(RequestInsert(**params))
+        return inserted.request_id
+
+    return _insert
 
 
 @pytest.fixture
