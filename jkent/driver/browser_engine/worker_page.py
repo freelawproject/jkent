@@ -1,6 +1,10 @@
 """WorkerPage - a Playwright page bound to a single worker.
 
-Used by the unified driver's Playwright transport.
+Used by the unified driver's Playwright transport. Alongside it,
+:func:`serve_cached_parent`, which is the other half of this module's
+subject: driving a page's ``route`` layer. :class:`WorkerPage` intercepts
+to *record* (and to block) what the page fetches; ``serve_cached_parent``
+intercepts to *answer* one navigation from bytes already in hand.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from jkent.driver.database_engine.sql_manager import IncidentalCapture
 from jkent.driver.handles import WorkerHandle
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
     from playwright.async_api import Page, Request, Response, Route
 
@@ -45,6 +49,41 @@ _BLOCKABLE_URL_RE = re.compile(
     r"|mp4|webm|ogg|mp3|wav|m4a)(?:[?#]|$)",
     re.IGNORECASE,
 )
+
+
+async def serve_cached_parent(
+    page: Page,
+    *,
+    url: str,
+    body: bytes,
+    headers: Mapping[str, str],
+    status: int,
+    timeout_ms: float | None = None,
+) -> None:
+    """Serve a cached response into the tab via route intercept.
+
+    Navigates ``page`` to ``url`` while a one-shot route fulfills it with the
+    given body/headers/status, so the tab sits on the real origin showing the
+    cached document (ready for a via click/submit). A ``content-type`` header
+    is defaulted to HTML when absent. ``timeout_ms`` bounds the staging goto;
+    ``None`` leaves Playwright's default in place.
+
+    Takes the parent response as already-decompressed values: the caller owns
+    the read, so this stays page-level (the transport reads the run database,
+    a host reads whatever view it keeps).
+    """
+    fulfill_headers = dict(headers)
+    if "content-type" not in {k.lower() for k in fulfill_headers}:
+        fulfill_headers["content-type"] = "text/html; charset=utf-8"
+
+    async def _intercept_handler(route: Route) -> None:
+        await route.fulfill(status=status, headers=fulfill_headers, body=body)
+
+    await page.route(url, _intercept_handler, times=1)
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    finally:
+        await page.unroute(url, _intercept_handler)
 
 
 class WorkerPage(WorkerHandle):
