@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 #: The schema this jkent reads and writes. A database stamped at any other
 #: version is refused at open: there is no migration runner, so the only
 #: supported answer is to recreate the run database.
-BASELINE_VERSION = 3
+BASELINE_VERSION = 1
 
 
 class UnsupportedSchemaVersionError(RuntimeError):
