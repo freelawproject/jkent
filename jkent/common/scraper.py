@@ -23,10 +23,16 @@ from pyrate_limiter import Rate
 
 from jkent.common.decorator_metadata import (
     EntryMetadata,
+    StepMetadata,
     get_entry_metadata,
     get_step_metadata,
 )
 from jkent.common.exceptions import ScraperConfigError
+from jkent.common.rate_limits import (
+    RESERVED_RATE_LIMIT_NAMES,
+    validate_named_rate_limits,
+    validate_rate_limits,
+)
 from jkent.common.request import Request
 from jkent.common.response import Response
 from jkent.common.speculative import Speculative
@@ -115,7 +121,7 @@ class StepInfo:
     (via :meth:`BaseScraper.list_steps`) — e.g. jent's repo nodes.
 
     Attributes:
-        name: The method name (continuation string).
+        name: The method name (step string).
         priority: Priority hint for queue ordering (lower = higher priority).
         encoding: Character encoding for text/HTML decoding.
     """
@@ -146,6 +152,10 @@ class BaseScraper(Generic[ScraperReturnType]):
         oldest_record: Earliest date for which records are available.
         requires_auth: Whether authentication is required.
         rate_limits: pyrate_limiter Rate objects defining rate ceilings for this scraper.
+        named_rate_limits: Extra rate-limit lanes by name, for requests that
+            should be paced separately from the default (``Request(rate_limit=
+            name)`` / ``@step(rate_limit=name)``). See
+            :mod:`jkent.common.rate_limits`.
         default_headers: Baseline HTTP headers for every httpx request.
     """
 
@@ -173,6 +183,13 @@ class BaseScraper(Generic[ScraperReturnType]):
     # Optional metadata
     requires_auth: ClassVar[bool] = False
     rate_limits: ClassVar[list[Rate] | None] = None
+
+    # Additional rate-limit lanes, by name. The framework supplies "default"
+    # (= rate_limits) and "none" (unlimited); anything here is stored in the
+    # run database as 2 + its position, so APPEND lanes — never insert or
+    # reorder — or a resumed run gates its pending rows at the wrong rate.
+    # Validated in __init_subclass__.
+    named_rate_limits: ClassVar[Mapping[str, list[Rate]]] = {}
 
     # Baseline HTTP headers the httpx transport sends with every request.
     # A per-request header with the same name (matched case-insensitively,
@@ -278,6 +295,46 @@ class BaseScraper(Generic[ScraperReturnType]):
             f"or use @entry decorators"
         )
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Only when the subclass declares (or re-declares) them: a scraper
+        # that inherits its parent's rates was already checked with it.
+        if "rate_limits" in cls.__dict__:
+            validate_rate_limits(cls.rate_limits, owner=cls.__name__)
+        if "named_rate_limits" in cls.__dict__:
+            validate_named_rate_limits(
+                cls.named_rate_limits, owner=cls.__name__
+            )
+        cls._check_step_lanes()
+
+    @classmethod
+    def _check_step_lanes(cls) -> None:
+        """Reject a ``@step(rate_limit=...)`` naming a lane cls lacks.
+
+        Otherwise the failure lands at the first enqueue of a request to
+        that step, possibly hours into a run. Walks the MRO's ``__dict__``s
+        rather than ``dir(cls)`` so no descriptor runs at class definition,
+        and re-checks inherited steps: a subclass may redeclare
+        ``named_rate_limits`` without a lane its parent's steps use.
+        """
+        lanes = set(RESERVED_RATE_LIMIT_NAMES) | set(cls.named_rate_limits)
+        seen: set[str] = set()
+        for klass in cls.__mro__:
+            for name, attr in vars(klass).items():
+                if name in seen:
+                    continue
+                seen.add(name)
+                metadata = getattr(attr, "_step_metadata", None)
+                if not isinstance(metadata, StepMetadata):
+                    continue
+                lane = metadata.rate_limit
+                if lane is not None and lane not in lanes:
+                    raise ScraperConfigError(
+                        f"{cls.__name__}.{name}: @step(rate_limit={lane!r}) "
+                        f"names a lane this scraper does not declare; its "
+                        f"lanes are {sorted(lanes)}"
+                    )
+
     @classmethod
     def get_ssl_context(cls) -> ssl.SSLContext | None:
         """Return an SSL context for HTTPS connections, if needed.
@@ -374,33 +431,31 @@ class BaseScraper(Generic[ScraperReturnType]):
         code_type = cls.active_http_code_types().get(status_code)
         return code_type is None or code_type is HTTPCodeType.PERSISTENT
 
-    def get_continuation(
+    def get_step(
         self, name: str
     ) -> Callable[
         [Response],
         Generator[ScraperYield[ScraperReturnType], bool | None, None],
     ]:
-        """Resolve a continuation name to the actual method.
+        """Resolve a step name to the actual method.
 
-        This method looks up a continuation by name and returns the
-        bound method. It provides a single point for continuation
+        This method looks up a step by name and returns the
+        bound method. It provides a single point for step
         resolution, making it easy to add validation or caching later.
 
         Args:
-            name: The name of the continuation method.
+            name: The name of the step method.
 
         Returns:
             The bound method that can be called with a Response.
 
         Raises:
-            ScraperConfigError: If the continuation method doesn't exist.
+            ScraperConfigError: If the step method doesn't exist.
         """
         try:
             method = getattr(self, name)
         except AttributeError:
-            raise ScraperConfigError(
-                "Nonexistent continuation referenced"
-            ) from None
+            raise ScraperConfigError("Nonexistent step referenced") from None
         return method
 
     @staticmethod

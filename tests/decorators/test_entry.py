@@ -90,7 +90,7 @@ class SimpleScraper(BaseScraper[FakeData]):
             request=HTTPRequestParams(
                 method=HttpMethod.GET, url=f"/search?name={name}"
             ),
-            continuation="parse_results",
+            step="parse_results",
         )
 
     @entry(FakeData)
@@ -102,7 +102,7 @@ class SimpleScraper(BaseScraper[FakeData]):
                 method=HttpMethod.GET,
                 url=f"/search?start={date_range.start}&end={date_range.end}",
             ),
-            continuation="parse_results",
+            step="parse_results",
         )
 
     @entry(FakeData)
@@ -112,7 +112,7 @@ class SimpleScraper(BaseScraper[FakeData]):
                 method=HttpMethod.GET,
                 url=f"/record/{rid.record_id}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
 
@@ -123,7 +123,7 @@ class MultiTypeScraper(BaseScraper[FakeData]):
     ) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/opinions"),
-            continuation="parse_opinions",
+            step="parse_opinions",
         )
 
     @entry(FakeData)
@@ -132,7 +132,7 @@ class MultiTypeScraper(BaseScraper[FakeData]):
     ) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/filings"),
-            continuation="parse_filings",
+            step="parse_filings",
         )
 
     @entry(FakeData)
@@ -141,7 +141,7 @@ class MultiTypeScraper(BaseScraper[FakeData]):
             request=HTTPRequestParams(
                 method=HttpMethod.GET, url=f"/search?count={count}"
             ),
-            continuation="parse_results",
+            step="parse_results",
         )
 
 
@@ -485,7 +485,7 @@ class TestEntryDecoratorErrors:
                         request=HTTPRequestParams(
                             method=HttpMethod.GET, url="/"
                         ),
-                        continuation="x",
+                        step="x",
                     )
 
     def test_unannotated_param_rejected(self):
@@ -512,7 +512,7 @@ class TestEntryDecoratorErrors:
                         request=HTTPRequestParams(
                             method=HttpMethod.GET, url="/"
                         ),
-                        continuation="x",
+                        step="x",
                     )
 
 
@@ -533,7 +533,7 @@ class TestRelaxedParamTypes:
             ) -> Generator[Request, None, None]:
                 yield Request(
                     request=HTTPRequestParams(method=HttpMethod.GET, url="/"),
-                    continuation="x",
+                    step="x",
                 )
 
         meta = get_entry_metadata(ContainerScraper.by_ids)
@@ -549,7 +549,7 @@ class TestRelaxedParamTypes:
             def by_ids(self, ids: list[str]) -> Generator[Request, None, None]:
                 yield Request(
                     request=HTTPRequestParams(method=HttpMethod.GET, url="/"),
-                    continuation="x",
+                    step="x",
                 )
 
         schema = ContainerScraper.schema()

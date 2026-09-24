@@ -1,8 +1,8 @@
 """Metadata types and accessors for @step and @entry decorated methods.
 
 These live apart from jkent.common.decorators (which attaches them) so that
-jkent.data_types can introspect decorated scraper methods at runtime without
-importing decorators — decorators imports data_types at module level, and a
+jkent.common.scraper can introspect decorated scraper methods without
+importing decorators — decorators imports scraper at module level, and a
 top-level import in the other direction would be circular.
 """
 
@@ -21,16 +21,17 @@ from pydantic import (
 )
 
 if TYPE_CHECKING:
-    # Imported from the leaf wait_conditions module, not data_types: data_types
-    # imports this module to introspect decorated methods, so importing
-    # WaitCondition back from data_types would be a cycle. See the docstring.
     from jkent.common.wait_conditions import WaitCondition
 
 # Effective priority for steps/requests whose author didn't choose one
-# (lower = higher priority). Lives here rather than jkent.data_types so
-# both StepMetadata and data_types can share it without a circular import;
-# data_types re-exports it.
+# (lower = higher priority). Shared by StepMetadata and Request; the
+# authoring facade (jkent.data_types) re-exports it.
 DEFAULT_PRIORITY: Final = 9
+
+#: A request timeout in seconds, or a (connect, read) tuple; None is unset.
+#: Shared by StepMetadata and HTTPRequestParams; the authoring facade
+#: (jkent.data_types) re-exports it.
+TimeoutType = float | tuple[float, float] | None
 
 
 class StepMetadata:
@@ -41,6 +42,13 @@ class StepMetadata:
         encoding: Character encoding for text/HTML decoding.
         await_list: List of wait conditions for Playwright driver (WaitForSelector, etc).
         auto_await_timeout: Optional timeout in milliseconds for autowait retry logic.
+        rate_limit: Rate-limit lane for requests routed to this step, or
+            None to leave the request's own (default-lane) choice alone.
+            Inherited by a yielded Request whose ``rate_limit`` is unset,
+            the way ``priority`` is.
+        timeout: Seconds a request routed to this step waits, or None to
+            leave it to the transport. Inherited by a yielded Request whose
+            ``HTTPRequestParams.timeout`` is unset.
     """
 
     def __init__(
@@ -49,11 +57,15 @@ class StepMetadata:
         encoding: str = "utf-8",
         await_list: list[WaitCondition] | None = None,
         auto_await_timeout: int | None = None,
+        rate_limit: str | None = None,
+        timeout: TimeoutType = None,
     ):
         self.priority = priority
         self.encoding = encoding
         self.await_list = await_list or []
         self.auto_await_timeout = auto_await_timeout
+        self.rate_limit = rate_limit
+        self.timeout = timeout
 
 
 @dataclass(frozen=True)

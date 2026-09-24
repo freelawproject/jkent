@@ -3,7 +3,7 @@
 This test module verifies the multi-page scraping capabilities:
 
 1. Scrapers can yield Request to request additional pages
-2. The driver fetches URLs and calls continuation methods by name
+2. The driver fetches URLs and calls step methods by name
 3. current_location is tracked and updated for relative URL resolution
 4. Pattern matching is used for exhaustive handling of yield types
 
@@ -40,22 +40,22 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
         assert request.request.url == "/cases/BCC-2024-001"
 
-    def test_navigating_request_stores_continuation(self):
-        """Request shall store the continuation method name."""
+    def test_navigating_request_stores_step(self):
+        """Request shall store the step method name."""
         request = Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
-        assert request.continuation == "parse_list"
+        assert request.step == "parse_list"
 
     def test_navigating_request_defaults_to_get(self):
         """Request shall default to GET method."""
@@ -64,7 +64,7 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
         assert request.request.method == HttpMethod.GET
@@ -77,7 +77,7 @@ class TestRequest:
                 url="/search",
                 data={"query": "beetle"},
             ),
-            continuation="parse_results",
+            step="parse_results",
         )
 
         assert request.request.method == HttpMethod.POST
@@ -90,7 +90,7 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="http://other.example.com/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
         resolved = request.resolve_url("http://bugcourt.example.com/")
@@ -104,7 +104,7 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
         resolved = request.resolve_url("http://bugcourt.example.com/cases")
@@ -118,29 +118,49 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
         resolved = request.resolve_url("http://bugcourt.example.com/cases/")
 
         assert resolved == "http://bugcourt.example.com/cases/BCC-2024-001"
 
-    def test_continuation_as_string_is_serializable(self):
-        """Continuation specified as string shall be fully serializable."""
+    def test_deprecated_continuation_keyword_fills_step(self):
+        """``continuation=`` still constructs, warns, and lands in ``step``."""
+        with pytest.warns(DeprecationWarning, match="use step="):
+            request = Request(
+                request=HTTPRequestParams(method=HttpMethod.GET, url="/x"),
+                continuation="parse_detail",
+            )
+        assert request.step == "parse_detail"
+        # The alias is write-only: the InitVar default is what reads back.
+        assert request.continuation is None  # type: ignore[attr-defined]
+
+    def test_step_and_continuation_together_is_an_error(self):
+        """Naming the target twice is a TypeError, not a silent pick."""
+        with pytest.raises(TypeError, match="not both"):
+            Request(
+                request=HTTPRequestParams(method=HttpMethod.GET, url="/x"),
+                step="a",
+                continuation="b",
+            )
+
+    def test_step_as_string_is_serializable(self):
+        """Step specified as string shall be fully serializable."""
         request = Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url="/cases/BCC-2024-001",
                 headers={"Accept": "text/html"},
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
-        # Should be JSON serializable (string continuation, not function)
+        # Should be JSON serializable (string step, not function)
         serialized = json.dumps(
             {
                 "url": request.request.url,
-                "continuation": request.continuation,
+                "step": request.step,
                 "method": request.request.method.value,
                 "headers": request.request.headers,
             }
@@ -148,7 +168,7 @@ class TestRequest:
 
         # Should deserialize correctly
         deserialized = json.loads(serialized)
-        assert deserialized["continuation"] == "parse_detail"
+        assert deserialized["step"] == "parse_detail"
 
 
 class TestResponse:
@@ -161,7 +181,7 @@ class TestResponse:
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         response = Response(
             status_code=200,
@@ -181,7 +201,7 @@ class TestResponse:
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         response = Response(
             status_code=200,
@@ -202,7 +222,7 @@ class TestResponse:
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         html = "<html><body>Hello</body></html>"
         response = Response(
@@ -224,7 +244,7 @@ class TestResponse:
                 method=HttpMethod.GET,
                 url="/old-cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         response = Response(
             status_code=200,
@@ -244,7 +264,7 @@ class TestResponse:
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         response = Response(
             status_code=200,
@@ -300,7 +320,7 @@ class TestBugCourtScraper:
                 method=HttpMethod.GET,
                 url="/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         return Response(
             status_code=200,
@@ -333,16 +353,14 @@ class TestBugCourtScraper:
 
         assert actual_urls == expected_urls
 
-    def test_parse_list_requests_have_correct_continuation(
+    def test_parse_list_requests_have_correct_step(
         self, scraper: BugCourtScraper, list_response: Response
     ):
-        """The scraper shall specify parse_detail as continuation."""
+        """The scraper shall specify parse_detail as step."""
         results = list(scraper.parse_list(list_response))
 
         assert all(
-            r.continuation == "parse_detail"
-            for r in results
-            if isinstance(r, Request)
+            r.step == "parse_detail" for r in results if isinstance(r, Request)
         )
 
     def test_parse_detail_yields_parsed_data(self, scraper: BugCourtScraper):
@@ -354,7 +372,7 @@ class TestBugCourtScraper:
                 method=HttpMethod.GET,
                 url=f"/cases/{case.docket}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -379,7 +397,7 @@ class TestBugCourtScraper:
                 method=HttpMethod.GET,
                 url=f"/cases/{case.docket}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,

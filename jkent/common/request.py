@@ -2,7 +2,7 @@
 
 :class:`HTTPRequestParams` is the wire-level description (method, URL,
 params, body); :class:`Request` wraps it with the driver's bookkeeping —
-continuation, location, ancestry, priority, dedup key, via, incidental match.
+step, location, ancestry, priority, dedup key, via, incidental match.
 The dedup-key hash and the URL re-quoting used by :meth:`Request.resolve_url`
 live here too, as they have no other consumer.
 """
@@ -12,15 +12,18 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import warnings
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import InitVar, dataclass, field, replace
 from typing import Any, BinaryIO, Final
 from urllib.parse import quote, urljoin, urlparse
 
 from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import DEFAULT_PRIORITY
+from jkent.common.headers import merge_headers
 from jkent.common.incidental import Multiple, Singular
+from jkent.common.rate_limits import NO_RATE_LIMIT
 from jkent.common.response import Response
 from jkent.common.via import FieldValue, ViaFormSubmit, ViaLink
 from jkent.contracts import ensure
@@ -299,7 +302,7 @@ class Request:
 
     Attributes:
         request: HTTP request parameters (URL, method, headers, etc.).
-        continuation: The method name to call with the Response, or a Callable.
+        step: The method name to call with the Response, or a Callable.
                      When a Callable is provided, the @step decorator will automatically
                      resolve it to the function's name.
         current_location: The URL context for resolving relative URLs.
@@ -309,7 +312,7 @@ class Request:
         accumulated_data: Data collected across the request chain.
         priority: Priority for request queue ordering (lower = higher
                   priority). None means "unset": the request inherits the
-                  target step's priority when its continuation is a
+                  target step's priority when ``step`` is a
                   Callable, archive requests default to
                   ARCHIVE_DEFAULT_PRIORITY, and the queue falls back to
                   DEFAULT_PRIORITY (see effective_priority). An explicit
@@ -341,9 +344,16 @@ class Request:
              the HTTP transport raises, since it captures no incidentals. Such a
              promoted response is not independently re-fetchable, so these
              requests are treated as non-reseedable.
-        bypass_rate_limit: If True, skip the rate limiter for this request.
-             Useful for time-sensitive requests (e.g., file downloads) where
-             stale server-side state expires quickly and delays cause failures.
+        rate_limit: Which of the scraper's rate-limit lanes gates this
+             request, by name (see :mod:`jkent.common.rate_limits`). None
+             means the default lane (the scraper's ``rate_limits``), unless
+             the target step declares one with ``@step(rate_limit=...)``,
+             which an unset value inherits the way ``priority`` does.
+             ``"none"`` (:data:`~jkent.common.rate_limits.NO_RATE_LIMIT`)
+             is never throttled — for time-sensitive fetches off the scraped
+             origin, such as presigned download links that expire. Any other
+             name must appear in the scraper's ``named_rate_limits``; an
+             unknown one fails at enqueue.
         reseedable: Tri-state marker for whether this request is safe to re-seed in isolation.
              True = stateless; can be re-fetched standalone. False = depends on server-mirrored
              client state (session, ViewState, CSRF token). None = unspecified.
@@ -356,7 +366,7 @@ class Request:
     """
 
     request: HTTPRequestParams
-    continuation: str | Callable[..., Any]
+    step: str | Callable[..., Any] = ""
     current_location: str = ""
     parent_request: Request | None = None
     accumulated_data: dict[str, Any] = field(default_factory=dict)
@@ -368,14 +378,31 @@ class Request:
     speculative_index: int | None = None
     via: ViaLink | ViaFormSubmit | None = None
     incidental: Singular | Multiple | None = None
-    bypass_rate_limit: bool = False
+    rate_limit: str | None = None
     reseedable: bool | None = None
     nonnavigating: bool = False
     archive: bool = False
     expected_type: str | None = None
     archive_hash_header: str | None = None
+    #: Deprecated spelling of ``step``, accepted so scrapers written against
+    #: the old keyword keep constructing; warns once per call site. Remove
+    #: once juriscraper-prs and the hosts have been ported to ``step=``. Note
+    #: the
+    #: default lingers as a class attribute (``dataclasses.replace`` reads it
+    #: back), so ``request.continuation`` is ``None``, never the step.
+    # pyre-ignore[16]: pyre mishandles ``InitVar`` fields on dataclasses.
+    continuation: InitVar[str | Callable[..., Any] | None] = None
+    #: Deprecated spelling of ``rate_limit="none"``; same lifecycle as
+    #: ``continuation``. ``True`` selects the unlimited lane, ``False`` is a
+    #: no-op — both warn once per call site.
+    # pyre-ignore[16]: pyre mishandles ``InitVar`` fields on dataclasses.
+    bypass_rate_limit: InitVar[bool | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(
+        self,
+        continuation: str | Callable[..., Any] | None,
+        bypass_rate_limit: bool | None,
+    ) -> None:
         """Deep copy accumulated_data and permanent to prevent unintended sharing.
 
         When a scraper yields multiple requests from the same method, they might
@@ -391,9 +418,33 @@ class Request:
 
         The deep copy ensures each request gets its own independent copy of the data.
         """
-        assert self.continuation and self.continuation != "", (
-            "Request made without continuation"
-        )
+        if continuation is not None:
+            if self.step:
+                raise TypeError(
+                    "Request takes either step= or the deprecated "
+                    "continuation=, not both"
+                )
+            warnings.warn(
+                "Request(continuation=...) is deprecated; use step=",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            object.__setattr__(self, "step", continuation)
+        if bypass_rate_limit is not None:
+            warnings.warn(
+                "Request(bypass_rate_limit=...) is deprecated; use "
+                'rate_limit="none"',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            if bypass_rate_limit:
+                if self.rate_limit not in (None, NO_RATE_LIMIT):
+                    raise TypeError(
+                        "Request takes either rate_limit= or the deprecated "
+                        "bypass_rate_limit=True, not both"
+                    )
+                object.__setattr__(self, "rate_limit", NO_RATE_LIMIT)
+        assert self.step and self.step != "", "Request made without step"
         # If archive=True and the author didn't choose a priority, default
         # to the higher archive priority for file downloads. An explicit
         # priority — even 9 — is kept.
@@ -438,11 +489,13 @@ class Request:
         merged_headers: dict[str, str] | None = None
         merged_cookies: CookiesType = None
         # Merge headers. Permanent values are the base; an explicit
-        # per-request header for the same key overrides the permanent one.
+        # per-request header for the same name overrides the permanent one
+        # by the transports' rule (case-insensitive, one value per name),
+        # so the request carries the header set that reaches the wire.
         if "headers" in self.permanent:
-            merged_headers = dict(self.permanent["headers"])
-            if req.headers:
-                merged_headers.update(req.headers)
+            merged_headers = merge_headers(
+                self.permanent["headers"], req.headers
+            )
         else:
             merged_headers = req.headers
 
@@ -519,15 +572,23 @@ class Request:
         # Merge permanent data - parent's permanent + this request's
         # permanent. "headers" and "cookies" merge by inner key (child wins
         # on conflicts): a child adding X-Requested-With must not silently
-        # drop the chain's Authorization header.
+        # drop the chain's Authorization header. Header names are
+        # case-insensitive; cookie names are not.
         merged_permanent = {**parent.permanent, **self.permanent}
-        for key in ("headers", "cookies"):
-            parent_value = parent.permanent.get(key)
-            child_value = self.permanent.get(key)
-            if isinstance(parent_value, dict) and isinstance(
-                child_value, dict
-            ):
-                merged_permanent[key] = {**parent_value, **child_value}
+        parent_headers = parent.permanent.get("headers")
+        child_headers = self.permanent.get("headers")
+        if isinstance(parent_headers, dict) and isinstance(
+            child_headers, dict
+        ):
+            merged_permanent["headers"] = merge_headers(
+                parent_headers, child_headers
+            )
+        parent_cookies = parent.permanent.get("cookies")
+        child_cookies = self.permanent.get("cookies")
+        if isinstance(parent_cookies, dict) and isinstance(
+            child_cookies, dict
+        ):
+            merged_permanent["cookies"] = {**parent_cookies, **child_cookies}
         # An auto-generated key was hashed from the still-relative URL at
         # construction time; two "detail.aspx" yields from different pages
         # would collide. Detect auto keys by recomputing the hash for the

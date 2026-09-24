@@ -6,25 +6,19 @@ queue default) apply only to genuinely-unset priorities. An explicit
 priority — including an explicit 9 — is always kept.
 """
 
-from collections.abc import Generator
 from typing import Any
 
-from jkent.common.decorators import step
 from jkent.data_types import (
     ARCHIVE_DEFAULT_PRIORITY,
     DEFAULT_PRIORITY,
-    BaseScraper,
     HttpMethod,
     HTTPRequestParams,
-    ParsedData,
     Request,
-    Response,
-    ScraperYield,
 )
 
 
 def make_request(**kwargs: Any) -> Request:
-    kwargs.setdefault("continuation", "parse")
+    kwargs.setdefault("step", "parse")
     return Request(
         request=HTTPRequestParams(
             method=HttpMethod.GET, url="https://example.com/doc"
@@ -69,63 +63,3 @@ class TestRequestPriority:
         parent = make_request(current_location="https://example.com/list")
         resolved = make_request(priority=4).resolve_from(parent)
         assert resolved.priority == 4
-
-
-class TestStepPriorityInheritance:
-    """Callable continuations inherit the target step's priority."""
-
-    @staticmethod
-    def _run_step(
-        scraper: BaseScraper[dict[str, Any]], step_name: str = "parse_listing"
-    ):
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET, url="https://example.com/list"
-            ),
-            continuation=step_name,
-        )
-        response = Response(
-            status_code=200,
-            headers={},
-            content=b"",
-            text="",
-            url="https://example.com/list",
-            request=request,
-        )
-        return list(getattr(scraper, step_name)(response))
-
-    def test_unset_priority_inherits_target_step_priority(self):
-        class InheritScraper(BaseScraper[dict[str, Any]]):
-            @step
-            def parse_listing(
-                self, response: Response
-            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
-                yield make_request(continuation=self.parse_detail)
-
-            @step(priority=2)
-            def parse_detail(
-                self, response: Response
-            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
-                yield ParsedData({"ok": True})
-
-        yields = self._run_step(InheritScraper())
-        assert yields[0].priority == 2
-
-    def test_explicit_priority_9_not_overridden_by_target_step(self):
-        """An explicit 9 must not be replaced by the target's priority."""
-
-        class ExplicitScraper(BaseScraper[dict[str, Any]]):
-            @step
-            def parse_listing(
-                self, response: Response
-            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
-                yield make_request(continuation=self.parse_detail, priority=9)
-
-            @step(priority=2)
-            def parse_detail(
-                self, response: Response
-            ) -> Generator[ScraperYield[dict[str, Any]], None, None]:
-                yield ParsedData({"ok": True})
-
-        yields = self._run_step(ExplicitScraper())
-        assert yields[0].priority == 9
