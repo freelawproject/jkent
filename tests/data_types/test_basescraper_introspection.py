@@ -40,12 +40,11 @@ from jkent.data_types import (
 class BareMinimumScraper(BaseScraper[dict[str, Any]]):
     """Scraper with no overrides — uses all defaults."""
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -68,12 +67,11 @@ class FullyConfiguredScraper(BaseScraper[dict[str, Any]]):
     requires_auth = True
     rate_limits = [Rate(10, Duration.SECOND)]
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -86,12 +84,11 @@ class FullyConfiguredScraper(BaseScraper[dict[str, Any]]):
 class MultiStepScraper(BaseScraper[dict[str, Any]]):
     """Scraper with multiple @step methods at different priorities."""
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse_listing",
+            step="parse_listing",
         )
 
     @step
@@ -126,12 +123,11 @@ class CustomSSLScraper(BaseScraper[dict[str, Any]]):
         ctx = ssl.create_default_context()
         return ctx
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -267,14 +263,13 @@ class TestGetSSLContext:
         class DirectSSLScraper(BaseScraper[dict[str, Any]]):
             ssl_context = ssl.create_default_context()
 
-            @override
             @entry(dict)
-            def get_entry(self) -> Generator[Request, None, None]:
+            def start(self) -> Generator[Request, None, None]:
                 yield Request(
                     request=HTTPRequestParams(
                         method=HttpMethod.GET, url="/start"
                     ),
-                    continuation="parse",
+                    step="parse",
                 )
 
             @step
@@ -328,20 +323,19 @@ class TestListSteps:
         steps = MultiStepScraper.list_steps()
         step_names = {s.name for s in steps}
         assert "not_a_step" not in step_names
-        assert "get_entry" not in step_names
+        assert "start" not in step_names
 
     def test_empty_scraper_returns_empty_list(self):
         """Scraper with no @step methods returns an empty list."""
 
         class NoStepScraper(BaseScraper[dict[str, Any]]):
-            @override
             @entry(dict)
-            def get_entry(self) -> Generator[Request, None, None]:
+            def start(self) -> Generator[Request, None, None]:
                 yield Request(
                     request=HTTPRequestParams(
                         method=HttpMethod.GET, url="/start"
                     ),
-                    continuation="process",
+                    step="process",
                 )
 
             def process(self, response: Response):
@@ -369,12 +363,11 @@ class BrokenAttrScraper(BaseScraper[dict[str, Any]]):
 
     broken = _RaisingDescriptor()
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -391,12 +384,11 @@ class BrokenPropertyScraper(BaseScraper[dict[str, Any]]):
     def broken(self) -> str:
         raise RuntimeError("broken property")
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -410,16 +402,15 @@ class TestActuallySuccessful:
     """actually_successful() returns True for genuine successes.
 
     Polarity guard: True = genuinely successful, False = hidden error.
-    The driver sets status_code=555 before the speculation callback when
-    this returns False, so an inverted override silently turns soft-404s
-    into real cases.
+    Speculation counts a 2xx probe as a failure when this returns False, so
+    an inverted override silently turns soft-404s into real cases.
     """
 
     @staticmethod
     def _response(text: str, url: str = "https://example.com/case/1"):
         request = Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url=url),
-            continuation="parse",
+            step="parse",
         )
         return Response(
             status_code=200,
@@ -495,8 +486,7 @@ class TestHttpCodeTypeOverrides:
             # 429 is transient by default; treat it as persistent here.
             HTTP_CODE_TYPES = {429: HTTPCodeType.PERSISTENT}
 
-        assert 429 in Scraper.active_persistent_http_error_codes()
-        assert 429 not in Scraper.active_transient_http_error_codes()
+        assert Scraper.classify(429) is HTTPCodeType.PERSISTENT
 
     def test_override_adds_a_nonstandard_code(self):
         class Scraper(BaseScraper[dict[str, Any]]):
@@ -506,9 +496,9 @@ class TestHttpCodeTypeOverrides:
                 430: HTTPCodeType.TRANSIENT,
             }
 
-        assert 450 in Scraper.active_successful_http_codes()
-        assert 429 in Scraper.active_persistent_http_error_codes()
-        assert 430 in Scraper.active_transient_http_error_codes()
+        assert Scraper.classify(450) is HTTPCodeType.SUCCESSFUL
+        assert Scraper.classify(429) is HTTPCodeType.PERSISTENT
+        assert Scraper.classify(430) is HTTPCodeType.TRANSIENT
 
     def test_active_map_is_defaults_with_override_applied(self):
         class Scraper(BaseScraper[dict[str, Any]]):

@@ -48,13 +48,13 @@ from jkent.data_types import (
 
 class MyCourtScraper(BaseScraper[dict]):
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def cases(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url="https://court.example.com/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
     @step
@@ -62,7 +62,7 @@ class MyCourtScraper(BaseScraper[dict]):
         for href in page.query_strings(XPath("//a[@class='case']/@href"), "case links"):
             yield Request(
                 request=HTTPRequestParams(method=HttpMethod.GET, url=href),
-                continuation="parse_detail",
+                step="parse_detail",
             )
 
     @step

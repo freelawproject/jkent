@@ -6,8 +6,7 @@ instead of being repeated as bare literals across the query layer.
 
 Each vocabulary is a :class:`~jkent.common.coded_enum.CodedEnum`: the member is
 handled in Python as its label (a ``str`` subclass, so ``row.status ==
-"pending"`` and ``f"{row.status}"`` behave as they did when the column was a
-plain ``str``) and stored in the database as the small integer in its
+"pending"`` and ``f"{row.status}"`` compare and format as the label) and stored in the database as the small integer in its
 ``.code``. :class:`CodedEnumType` is the SQLAlchemy type that maps between the
 two.
 
@@ -19,8 +18,7 @@ without this module — a raw ``SELECT status FROM requests`` yields ``1``, not
   and is what sibling tooling should use rather than hard-coding integers.
 - :func:`code_check` emits a ``CHECK`` constraint listing the valid codes, so
   the schema still records the size and shape of each vocabulary even though it
-  can no longer record the names. Without it an integer column would document
-  nothing at all.
+  cannot record the names.
 
 Codes are a storage format: they may be appended, never renumbered or recycled.
 See :mod:`jkent.common.coded_enum`.
@@ -36,6 +34,11 @@ from typing_extensions import override
 
 from jkent.common.coded_enum import CodedEnum
 
+# Declared with the exceptions that carry it — the raise sites need it and
+# ``common`` cannot import this package — and re-exported here so the models
+# and query layer reach every stored vocabulary through one module.
+from jkent.common.exceptions import TransientKind
+
 if TYPE_CHECKING:
     from sqlalchemy.engine import Dialect
 
@@ -47,6 +50,7 @@ __all__ = [
     "RunStatus",
     "SelectorType",
     "SpeculationOutcome",
+    "TransientKind",
     "code_check",
 ]
 
@@ -60,22 +64,60 @@ class RequestStatus(CodedEnum):
     #: that dies mid-flight leaves rows here, and the next startup's
     #: ``restore_queue`` resets them to ``PENDING``.
     IN_PROGRESS = (2, "in_progress")
-    #: Continuation ran to completion.
+    #: Step ran to completion.
     COMPLETED = (3, "completed")
     #: Terminal failure — retries exhausted, or a persistent error.
     FAILED = (4, "failed")
-    #: Parked without being dropped: the circuit breaker holds pending work
-    #: here so a tripped run can be resumed rather than restarted.
-    HELD = (5, "held")
     #: Replay-only.
     STUBBED = (6, "stubbed")
+
+    # The status *groups* the query layer and stats reason about. Every
+    # status must sit in exactly one of active / terminal / parked —
+    # ``tests/driver/database_engine/test_enums.py`` fails on a member that
+    # does not, so a new status cannot slip past ``count_active_requests``
+    # or the stats aggregates unnoticed. Classmethods rather than class
+    # attributes: an assignment in an Enum body mints a member, and every
+    # type checker understands a classmethod.
+
+    @classmethod
+    def active(cls) -> frozenset[RequestStatus]:
+        """Work the run still owns: queued or claimed.
+
+        What ``ScrapeRun.status()`` and ``count_active_requests`` mean by
+        "active".
+        """
+        return _ACTIVE
+
+    @classmethod
+    def terminal(cls) -> frozenset[RequestStatus]:
+        """Settled for good; nothing will move these rows again."""
+        return _TERMINAL
+
+    @classmethod
+    def dequeuable(cls) -> frozenset[RequestStatus]:
+        """What ``dequeue_next_request`` may claim."""
+        return _DEQUEUABLE
+
+    @classmethod
+    def parked(cls) -> frozenset[RequestStatus]:
+        """Neither active nor settled.
+
+        ``STUBBED`` is replay's intermediate state, resolved to ``PENDING``
+        by ``finalize_stubs``.
+        """
+        return _PARKED
+
+
+_ACTIVE = frozenset({RequestStatus.PENDING, RequestStatus.IN_PROGRESS})
+_TERMINAL = frozenset({RequestStatus.COMPLETED, RequestStatus.FAILED})
+_DEQUEUABLE = frozenset({RequestStatus.PENDING})
+_PARKED = frozenset({RequestStatus.STUBBED})
 
 
 class RequestType(CodedEnum):
     """Which driver path a request takes, derived from the scraper's flags."""
 
-    #: Default. Advances the scraper's browsing state; the only kind that
-    #: participates in speculation.
+    #: Default. Advances the scraper's browsing state.
     NAVIGATING = (1, "navigating")
     #: ``Request(nonnavigating=True)`` — a side fetch (XHR, API call) that
     #: must not disturb the current location.
@@ -88,16 +130,23 @@ class RequestType(CodedEnum):
 class SpeculationOutcome(CodedEnum):
     """How a speculative request resolved, for tuning the next ceiling.
 
-    NULL on non-speculative requests.
+    NULL on non-speculative requests, and on a probe whose tracking row no
+    loaded template owns.
     """
 
-    #: The speculated resource existed; raises the template's ceiling.
-    SUCCESS = (1, "success")
-    #: The miss that stopped this template's probing.
+    #: The probe found something; raises the template's ceiling. Its step
+    #: ran.
+    HIT = (1, "hit")
+    #: The miss that stopped this template's probing. Stored like a
+    #: :attr:`MISS`.
     STOPPED = (2, "stopped")
-    #: Never dispatched — the template had already stopped when this
-    #: request came up for dispatch.
-    SKIPPED = (3, "skipped")
+    #: Dequeued after its template had stopped; never fetched, so no
+    #: response is stored.
+    TERMINATED_EARLY = (3, "terminated_early")
+    #: The probe found nothing: a persistent HTTP code, or a 2xx the
+    #: scraper's ``actually_successful`` rejects. Its response is stored and
+    #: its step does not run.
+    MISS = (4, "miss")
 
 
 class RunStatus(CodedEnum):
@@ -110,9 +159,11 @@ class RunStatus(CodedEnum):
     RUNNING = (2, "running")
     #: Queue drained normally.
     COMPLETED = (3, "completed")
-    #: The run raised; the exception is in ``error_message``.
+    #: The run raised, or its error budget ran out; ``error_message`` says
+    #: which. Resumable like any other unfinished run.
     ERROR = (4, "error")
-    #: Stopped short on purpose — stop event, or a budget cutoff.
+    #: Stopped short on purpose — the stop event, a cancellation, or an
+    #: interrupt.
     INTERRUPTED = (5, "interrupted")
 
 
@@ -143,29 +194,25 @@ class ErrorType(CodedEnum):
 class SelectorType(CodedEnum):
     """Grammar a selector recorded on a structural error was written in.
 
-    The labels are :attr:`jkent.data_types.Selector.grammar`, so a writer can
-    keep passing ``selector.grammar`` straight through.
+    The labels are :attr:`jkent.common.selectors.Selector.grammar`, so a
+    writer passes ``selector.grammar`` straight through.
     """
 
-    #: :class:`jkent.data_types.CSS`.
+    #: :class:`jkent.common.selectors.CSS`.
     CSS = (1, "css")
-    #: :class:`jkent.data_types.XPath`.
+    #: :class:`jkent.common.selectors.XPath`.
     XPATH = (2, "xpath")
 
 
 class CodedEnumType(TypeDecorator[CodedEnum]):
     """Stores a :class:`CodedEnum` as its integer ``.code``.
 
-    Binds a member — or the label string the query layer still passes in some
-    places — to the integer, and returns the member on load. An unknown value
-    raises rather than persisting: this is the only validation an integer
-    column gets, since a ``CHECK`` on codes cannot catch a *valid* code that
-    means the wrong thing.
-
-    Raw integers are deliberately *not* accepted on bind. A caller holding an
-    integer got it from outside this mapping (a raw ``SELECT``, another
-    process), and silently trusting it is how a code from the wrong vocabulary
-    lands in a column; :meth:`CodedEnum.from_code` is the way in.
+    Binds a member to the integer, and returns the member on load. Only a
+    member of the bound enum is accepted: a label string or a raw integer got
+    there from outside this mapping (a raw ``SELECT``, another process, a
+    literal), and silently trusting it is how a value from the wrong
+    vocabulary lands in a column. The pydantic row models coerce labels at
+    the SQLManager boundary; :meth:`CodedEnum.from_code` decodes raw codes.
     """
 
     impl = sa.Integer
@@ -178,24 +225,16 @@ class CodedEnumType(TypeDecorator[CodedEnum]):
 
     @override
     def process_bind_param(
-        self, value: CodedEnum | str | None, dialect: Dialect
+        self, value: CodedEnum | None, dialect: Dialect
     ) -> int | None:
-        """Member or label in, integer code out."""
+        """Member in, integer code out."""
         if value is None:
             return None
         if isinstance(value, self.enum_class):
             return value.code
-        if isinstance(value, str):
-            try:
-                return self.enum_class(value).code
-            except ValueError:
-                raise LookupError(
-                    f"{value!r} is not a valid {self.enum_class.__name__}; "
-                    f"expected one of {[m.value for m in self.enum_class]}"
-                ) from None
         raise LookupError(
             f"cannot store {value!r} ({type(value).__name__}) as "
-            f"{self.enum_class.__name__}; pass a member or its label "
+            f"{self.enum_class.__name__}; pass a member "
             f"(use {self.enum_class.__name__}.from_code() for a raw code)"
         )
 

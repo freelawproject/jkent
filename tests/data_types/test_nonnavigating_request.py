@@ -41,22 +41,22 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="/api/cases/BCC-2024-001",
             ),
-            continuation="parse_api",
+            step="parse_api",
         )
 
         assert request.request.url == "/api/cases/BCC-2024-001"
 
-    def test_base_request_stores_continuation(self):
-        """Request shall store the continuation method name."""
+    def test_base_request_stores_step(self):
+        """Request shall store the step method name."""
         request = Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url="/api/cases",
             ),
-            continuation="parse_api",
+            step="parse_api",
         )
 
-        assert request.continuation == "parse_api"
+        assert request.step == "parse_api"
 
     def test_base_request_defaults_to_get(self):
         """Request shall default to GET method."""
@@ -65,7 +65,7 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="/api/cases",
             ),
-            continuation="parse_api",
+            step="parse_api",
         )
 
         assert request.request.method == HttpMethod.GET
@@ -78,7 +78,7 @@ class TestRequest:
                 url="/api/search",
                 data={"query": "beetle"},
             ),
-            continuation="parse_results",
+            step="parse_results",
         )
 
         assert request.request.method == HttpMethod.POST
@@ -91,7 +91,7 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="http://other.example.com/api/cases",
             ),
-            continuation="parse_api",
+            step="parse_api",
         )
 
         resolved = request.resolve_url("http://bugcourt.example.com/")
@@ -105,7 +105,7 @@ class TestRequest:
                 method=HttpMethod.GET,
                 url="/api/cases/BCC-2024-001",
             ),
-            continuation="parse_api",
+            step="parse_api",
         )
 
         resolved = request.resolve_url(
@@ -125,7 +125,7 @@ class TestNonNavigating:
                 method=HttpMethod.GET,
                 url="/api/cases/BCC-2024-001",
             ),
-            continuation="parse_api",
+            step="parse_api",
             nonnavigating=True,
         )
 
@@ -138,7 +138,7 @@ class TestNonNavigating:
                 method=HttpMethod.GET,
                 url="http://bugcourt.example.com/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -153,7 +153,7 @@ class TestNonNavigating:
                 method=HttpMethod.GET,
                 url="/api/cases/BCC-2024-001",
             ),
-            continuation="parse_api",
+            step="parse_api",
             nonnavigating=True,
         )
 
@@ -164,7 +164,7 @@ class TestNonNavigating:
             resolved.request.url
             == "http://bugcourt.example.com/api/cases/BCC-2024-001"
         )
-        assert resolved.continuation == "parse_api"
+        assert resolved.step == "parse_api"
         assert (
             resolved.current_location
             == "http://bugcourt.example.com/cases/BCC-2024-001"
@@ -181,7 +181,7 @@ class TestNavigatingRequestResolveFrom:
                 method=HttpMethod.GET,
                 url="http://bugcourt.example.com/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         response = Response(
             status_code=200,
@@ -196,7 +196,7 @@ class TestNavigatingRequestResolveFrom:
                 method=HttpMethod.GET,
                 url="/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
         resolved = detail_request.resolve_from(response)
@@ -212,7 +212,7 @@ class TestRequestCurrentLocation:
     """Tests for current_location tracking in requests."""
 
     @pytest.fixture
-    def scraper(self, server_url: str) -> BugCourtScraperWithAPI:
+    async def scraper(self, server_url: str) -> BugCourtScraperWithAPI:
         """Create a BugCourtScraperWithAPI instance configured for test server."""
         scraper = BugCourtScraperWithAPI()
         scraper.BASE_URL = server_url
@@ -222,12 +222,12 @@ class TestRequestCurrentLocation:
         self, scraper: BugCourtScraperWithAPI
     ):
         """The entry request shall have an empty current_location."""
-        entry = next(scraper.get_entry())
+        entry = next(scraper.start())
 
         assert entry.current_location == ""
         assert entry.parent_request is None
 
-    def test_navigating_request_updates_current_location(
+    async def test_navigating_request_updates_current_location(
         self, server_url: str
     ):
         """Request shall update current_location to the response URL."""
@@ -237,7 +237,7 @@ class TestRequestCurrentLocation:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
         # Create a response
@@ -256,7 +256,7 @@ class TestRequestCurrentLocation:
                 method=HttpMethod.GET,
                 url="/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
 
         resolved = detail_request.resolve_from(response)
@@ -265,7 +265,7 @@ class TestRequestCurrentLocation:
         assert resolved.current_location == f"{server_url}/cases"
         assert resolved.request.url == f"{server_url}/cases/BCC-2024-001"
 
-    def test_non_navigating_request_preserves_current_location(
+    async def test_non_navigating_request_preserves_current_location(
         self, server_url: str
     ):
         """Non-navigating Request shall preserve current_location."""
@@ -275,7 +275,7 @@ class TestRequestCurrentLocation:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases/BCC-2024-001",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
             current_location=f"{server_url}/cases",
         )
 
@@ -294,7 +294,7 @@ class TestRequestCurrentLocation:
                 method=HttpMethod.GET,
                 url="/api/cases/BCC-2024-001",
             ),
-            continuation="parse_api",
+            step="parse_api",
             nonnavigating=True,
         )
 
@@ -309,7 +309,7 @@ class TestBugCourtScraperWithAPI:
     """Tests for the BugCourtScraperWithAPI class."""
 
     @pytest.fixture
-    def scraper(self, server_url: str) -> BugCourtScraperWithAPI:
+    async def scraper(self, server_url: str) -> BugCourtScraperWithAPI:
         """Create a BugCourtScraperWithAPI instance."""
         scraper = BugCourtScraperWithAPI()
         scraper.BASE_URL = server_url
@@ -323,7 +323,7 @@ class TestBugCourtScraperWithAPI:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
         return Response(
             status_code=200,
@@ -343,7 +343,7 @@ class TestBugCourtScraperWithAPI:
         assert len(results) == len(CASES)
         assert all(isinstance(r, Request) for r in results)
 
-    def test_parse_detail_yields_non_navigating_request(
+    async def test_parse_detail_yields_non_navigating_request(
         self, scraper: BugCourtScraperWithAPI, server_url: str
     ):
         """The scraper shall yield non-navigating Request for API call."""
@@ -354,7 +354,7 @@ class TestBugCourtScraperWithAPI:
                 method=HttpMethod.GET,
                 url=f"{server_url}/cases/{case.docket}",
             ),
-            continuation="parse_detail",
+            step="parse_detail",
         )
         response = Response(
             status_code=200,
@@ -371,7 +371,7 @@ class TestBugCourtScraperWithAPI:
         assert isinstance(results[0], Request) and results[0].nonnavigating
         assert "/api/cases/" in results[0].request.url
 
-    def test_parse_api_yields_parsed_data(
+    async def test_parse_api_yields_parsed_data(
         self, scraper: BugCourtScraperWithAPI, server_url: str
     ):
         """The scraper shall yield ParsedData from API response."""
@@ -399,7 +399,7 @@ class TestBugCourtScraperWithAPI:
                 method=HttpMethod.GET,
                 url=f"{server_url}/api/cases/{case.docket}",
             ),
-            continuation="parse_api",
+            step="parse_api",
             nonnavigating=True,
         )
         response = Response(

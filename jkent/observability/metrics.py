@@ -51,7 +51,7 @@ class Phase(str, enum.Enum):
     CIRCUIT_BREAKER_GATE = "circuit_breaker.gate"
     RATE_LIMITER_GATE = "rate_limiter.gate"
     TRANSPORT_RESOLVE = "transport.resolve"
-    CONTINUATION = "continuation"
+    STEP = "step"
     COMPRESS = "compress"
 
 
@@ -66,10 +66,10 @@ class Outcome(str, enum.Enum):
 
     OK = "ok"
     HALT = "halt"
-    SKIP = "skip"
     TRANSIENT = "transient"
     SPECULATION_HTTP = "speculation_http"
     PERSISTENT_HTTP = "persistent_http"
+    PERSISTENT = "persistent"
     ERROR = "error"
 
 
@@ -163,13 +163,22 @@ class _Instruments:
             unit="1",
             description="Circuit-breaker trips (pool-wide transient pile-up).",
         )
+        # Failed probes: an open circuit's half-open probe failed and it
+        # re-opened for a longer window. Counted apart so circuit.opens
+        # stays "trips from closed"; a climbing ratio of reopens to opens is
+        # an outage that outlasts the recovery window.
+        self.circuit_reopens = meter.create_counter(
+            "jkent.circuit.reopens",
+            unit="1",
+            description="Circuit-breaker re-opens after a failed probe.",
+        )
 
         # Per-run state (attrs: scraper, run_inst_id). Gauges, so the last
         # value stands until updated.
         self.worker_active = meter.create_gauge(
             "jkent.worker.active",
             unit="1",
-            description="Live continuation-worker count for a run.",
+            description="Live pool-worker count for a run.",
         )
         self.queue_pending = meter.create_gauge(
             "jkent.queue.pending",

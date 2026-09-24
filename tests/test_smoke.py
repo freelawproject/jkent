@@ -10,4 +10,4 @@ import jkent
 def test_package_imports():
     """The jkent package shall import and carry its docstring."""
     assert jkent.__doc__ is not None
-    assert "Scraper-driver framework" in jkent.__doc__
+    assert "scraper SDK" in jkent.__doc__

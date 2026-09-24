@@ -32,7 +32,7 @@ def _request(
     headers: dict[str, str] | None = None,
     cookies: dict[str, str] | None = None,
     permanent: dict[str, Any] | None = None,
-    continuation: str = "parse",
+    step: str = "parse",
 ) -> Request:
     return Request(
         request=HTTPRequestParams(
@@ -41,7 +41,7 @@ def _request(
             headers=headers,
             cookies=cookies,
         ),
-        continuation=continuation,
+        step=step,
         permanent=permanent or {},
     )
 
@@ -134,11 +134,11 @@ class TestPermanentInheritance:
         """A child without permanent shall inherit the parent's."""
         parent = _request(
             permanent={"headers": {"X-Session": "abc123"}},
-        ).resolve_from(_response_for(_request(continuation="parse_entry")))
+        ).resolve_from(_response_for(_request(step="parse_entry")))
 
-        child = _request(
-            url="/step2", continuation="parse_step2"
-        ).resolve_from(_response_for(parent))
+        child = _request(url="/step2", step="parse_step2").resolve_from(
+            _response_for(parent)
+        )
 
         assert child.permanent == {"headers": {"X-Session": "abc123"}}
         assert child.request.headers is not None
@@ -148,15 +148,15 @@ class TestPermanentInheritance:
         """permanent set once shall reach a grandchild request unchanged."""
         login = _request(
             url="/api/data",
-            continuation="parse_api",
+            step="parse_api",
             permanent={"headers": {"Authorization": "Bearer login-token"}},
         ).resolve_from(
-            _response_for(_request(url="/login", continuation="parse_login"))
+            _response_for(_request(url="/login", step="parse_login"))
         )
 
-        more = _request(
-            url="/api/more", continuation="parse_more"
-        ).resolve_from(_response_for(login))
+        more = _request(url="/api/more", step="parse_more").resolve_from(
+            _response_for(login)
+        )
 
         assert more.permanent == {
             "headers": {"Authorization": "Bearer login-token"}
@@ -168,11 +168,11 @@ class TestPermanentInheritance:
         """The permanent cookies shall be inherited by child requests."""
         parent = _request(
             permanent={"cookies": {"user_id": "12345"}},
-        ).resolve_from(_response_for(_request(continuation="parse_entry")))
+        ).resolve_from(_response_for(_request(step="parse_entry")))
 
-        child = _request(
-            url="/step2", continuation="parse_step2"
-        ).resolve_from(_response_for(parent))
+        child = _request(url="/step2", step="parse_step2").resolve_from(
+            _response_for(parent)
+        )
 
         assert child.permanent == {"cookies": {"user_id": "12345"}}
         assert child.request.cookies == {"user_id": "12345"}
@@ -185,17 +185,41 @@ class TestPermanentMerging:
         """On an inner-key conflict, the child's value shall win."""
         parent = _request(
             permanent={"headers": {"X-Token": "old-token"}},
-        ).resolve_from(_response_for(_request(continuation="parse_entry")))
+        ).resolve_from(_response_for(_request(step="parse_entry")))
 
         child = _request(
             url="/step2",
-            continuation="parse_step2",
+            step="parse_step2",
             permanent={"headers": {"X-Token": "new-token"}},
         ).resolve_from(_response_for(parent))
 
         assert child.permanent == {"headers": {"X-Token": "new-token"}}
         assert child.request.headers is not None
         assert child.request.headers["X-Token"] == "new-token"
+
+    def test_header_names_merge_case_insensitively_across_generations(self):
+        """Two spellings of one header name reach the grandchild once.
+
+        The parent's ``Authorization`` and the child's ``authorization`` are
+        one header; the child's value wins, and a grandchild that sets no
+        headers of its own inherits that one value, not both spellings.
+        """
+        parent = _request(
+            permanent={"headers": {"Authorization": "parent"}},
+        ).resolve_from(_response_for(_request(step="parse_entry")))
+
+        child = _request(
+            url="/step2",
+            step="parse_step2",
+            permanent={"headers": {"authorization": "child"}},
+        ).resolve_from(_response_for(parent))
+
+        grandchild = _request(url="/step3", step="parse_step3").resolve_from(
+            _response_for(child)
+        )
+
+        assert child.permanent["headers"] == {"authorization": "child"}
+        assert grandchild.request.headers == {"authorization": "child"}
 
     def test_parent_headers_survive_child_adding_headers(self):
         """The parent's permanent headers shall survive a child's additions.
@@ -207,11 +231,11 @@ class TestPermanentMerging:
         """
         parent = _request(
             permanent={"headers": {"Authorization": "Bearer abc"}},
-        ).resolve_from(_response_for(_request(continuation="parse_entry")))
+        ).resolve_from(_response_for(_request(step="parse_entry")))
 
         child = _request(
             url="/step2",
-            continuation="parse_step2",
+            step="parse_step2",
             permanent={"headers": {"X-Requested-With": "XMLHttpRequest"}},
         ).resolve_from(_response_for(parent))
 
@@ -229,11 +253,11 @@ class TestPermanentMerging:
         """The parent's permanent cookies shall survive a child's additions."""
         parent = _request(
             permanent={"cookies": {"session": "xyz789"}},
-        ).resolve_from(_response_for(_request(continuation="parse_entry")))
+        ).resolve_from(_response_for(_request(step="parse_entry")))
 
         child = _request(
             url="/step2",
-            continuation="parse_step2",
+            step="parse_step2",
             permanent={"cookies": {"page_pref": "50"}},
         ).resolve_from(_response_for(parent))
 
@@ -249,11 +273,11 @@ class TestPermanentMerging:
         """Parent headers and child cookies shall both survive the merge."""
         parent = _request(
             permanent={"headers": {"Authorization": "Bearer abc"}},
-        ).resolve_from(_response_for(_request(continuation="parse_entry")))
+        ).resolve_from(_response_for(_request(step="parse_entry")))
 
         child = _request(
             url="/step2",
-            continuation="parse_step2",
+            step="parse_step2",
             permanent={"cookies": {"session": "xyz"}},
         ).resolve_from(_response_for(parent))
 

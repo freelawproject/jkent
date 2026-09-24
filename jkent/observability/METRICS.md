@@ -13,7 +13,7 @@ app sets up an sdk properly.
 | Attribute | Values | On |
 |---|---|---|
 | `scraper` | scraper class name | most metrics, request span |
-| `step` | continuation/step name | request metrics, request span; on lock metrics only when the lock is taken inside a request |
+| `step` | step name | request metrics, request span; on lock metrics only when the lock is taken inside a request |
 | `phase` | see [phases](#phases) | `request.duration`, `request.cpu_time` |
 | `kind` | `compress` / `train` / `recompress` | compression + compaction metrics |
 | `outcome` | see [outcomes](#outcomes) | request span only (**not** a metric dimension) |
@@ -80,6 +80,7 @@ the lock is taken inside a request; absent for dequeue / sampler / seed paths.)
 | `jkent.worker.idle` | histogram | s | `scraper` | `PoolWorker._run_loop` (`worker.py`) |
 | `jkent.request.retries` | counter | 1 | `scraper`, `step` | `PoolWorker._handle_transient` (`worker.py`) |
 | `jkent.circuit.opens` | counter | 1 | `scraper`, `step` | `CircuitBreaker.record_failure` (`circuit_breaker.py`) |
+| `jkent.circuit.reopens` | counter | 1 | `scraper`, `step` | `CircuitBreaker.record_failure` (`circuit_breaker.py`) |
 
 `worker.idle` measures time when workers are starved for work, or on the other end
 if we might benefit from adding more. This measures when there's nothing in the queue
@@ -96,6 +97,11 @@ of server backpressure, and a steady increase can be used to help disambiguate b
 a range of requests that are slow for the server to reply to, and general worker
 driven server contention.
 
+`circuit.reopens` counts failed probes: the circuit was half-open, its one probe
+failed, and it re-opened for an escalated window. It is kept apart from
+`circuit.opens`, which counts only trips from closed; many reopens per open is
+an outage that keeps outlasting the recovery window.
+
 ### Compression
 
 | Metric | Type | Unit | Attrs | Emitted from |
@@ -111,11 +117,17 @@ suddenly it's worth looking into (something weird is happening!).
 
 | Metric | Type | Unit | Attrs | Emitted from |
 |---|---|---|---|---|
-| `jkent.worker.active` | gauge | 1 | `scraper`, `run_inst_id` | `ScrapeRun._publish_worker_active` (`run.py`), at spawn/retire |
-| `jkent.queue.pending` | gauge | 1 | `scraper`, `run_inst_id` | `ScrapeRun._sample_queue_gauge` (`run.py`), every 5 s |
+| `jkent.worker.active` | gauge | 1 | `scraper`, `run_inst_id` | `RunGauges.worker_active` (`gauges.py`), called by `WorkerPool` at spawn/retire |
+| `jkent.queue.pending` | gauge | 1 | `scraper`, `run_inst_id` | `RunGauges` sampler (`gauges.py`), every 5 s while `run()` is active |
 
 `worker.active` is the live worker count. This is largely included as a quick reference
 for metrics, and in the future if we decide to introduce dynamic worker pool sizing.
+
+Both gauges carry `run_inst_id`, so each run is its own series. Under cumulative
+temporality a long-lived process that hosts many runs keeps every finished
+run's series, frozen at its last value, for the life of the process: a
+dashboard summing across `run_inst_id` counts those stale values too. Filter
+to live runs, or aggregate by `scraper` over a recent window.
 
 ---
 
@@ -134,7 +146,7 @@ host enables those instrumentors.
 | `jkent.request` | root | `jkent.scraper`, `jkent.step`, `jkent.run_inst_id`, `jkent.outcome` |
 | `jkent.rate_limiter.gate` | `jkent.request` | rate-limiter token wait |
 | `jkent.transport.resolve` | `jkent.request` | the fetch; httpx client spans nest here |
-| `jkent.continuation` | `jkent.request` | response store + scraper continuation; SQLAlchemy spans nest here |
+| `jkent.step` | `jkent.request` | response store + scraper step; SQLAlchemy spans nest here |
 
 ---
 
@@ -151,7 +163,7 @@ defined by the `Phase` enum in `metrics.py`:
 | `circuit_breaker.gate` | waiting for an open circuit breaker to close |
 | `rate_limiter.gate` | waiting for a rate-limiter token |
 | `transport.resolve` | fetching the response (network / browser) |
-| `continuation` | storing the response + running the scraper continuation |
+| `step` | storing the response + running the scraper step |
 | `compress` | the synchronous zstd compress leaf (`cpu_time` only) |
 
 ### Outcomes
@@ -161,12 +173,12 @@ in `metrics.py`:
 
 | `outcome` | Meaning |
 |---|---|
-| `ok` | request completed and continuation ran |
+| `ok` | request completed and step ran |
 | `halt` | `RequestFailedHalt` — propagated, stops the run |
-| `skip` | skipped by an `on_transient_exception` callback |
 | `transient` | transient failure → retried (or failed after max backoff) |
 | `speculation_http` | persistent HTTP on a speculative probe (recorded as a speculation outcome) |
 | `persistent_http` | classifier said the status is persistent → no retry |
+| `persistent` | non-HTTP `PersistentException` (assumption/config violation) → no retry |
 | `error` | unexpected exception → marked failed, error row stored |
 
 ---

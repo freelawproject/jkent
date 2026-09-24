@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import Callable, Generator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
 from typing import Any, ClassVar, Final, Generic, TypeVar, get_origin
@@ -23,13 +23,31 @@ from pyrate_limiter import Rate
 
 from jkent.common.decorator_metadata import (
     EntryMetadata,
+    StepMetadata,
     get_entry_metadata,
     get_step_metadata,
 )
 from jkent.common.exceptions import ScraperConfigError
+from jkent.common.rate_limits import (
+    RESERVED_RATE_LIMIT_NAMES,
+    validate_named_rate_limits,
+    validate_rate_limits,
+)
 from jkent.common.request import Request
 from jkent.common.response import Response
 from jkent.common.speculative import Speculative
+
+__all__ = [
+    "BaseScraper",
+    "DriverRequirement",
+    "HTTPCodeType",
+    "ParsedData",
+    "ScraperReturnType",
+    "ScraperStatus",
+    "ScraperYield",
+    "StepInfo",
+    "T",
+]
 
 T = TypeVar("T")
 ScraperReturnType = TypeVar("ScraperReturnType")
@@ -58,29 +76,35 @@ class DriverRequirement(Enum):
     Scrapers declare these as a ClassVar list on the class body.
     ``jkent run`` reads them to auto-select the driver and browser profile.
 
+    What each one *implies* — browser needed, browser selected, interstitial
+    handler contributed — lives in one table,
+    :data:`~jkent.driver.unified_driver.requirements.REQUIREMENTS`, which is
+    checked against this enum at import: a member added here with no row
+    there fails loudly rather than silently classifying as "plain HTTP is
+    fine".
+
     Values:
-        JS_EVAL: Requires JavaScript evaluation (auto-selects Playwright).
+        JS_EVAL: Requires JavaScript evaluation (auto-selects a browser).
         FF_ALIKE: Requires a Firefox-like browser profile.
         CHROME_ALIKE: Requires a Chrome-like browser profile.
-        HCAP_HANDLER: Requires hCaptcha interstitial handling (auto-selects Camoufox).
         RCAP_HANDLER: Requires reCAPTCHA interstitial handling (auto-selects Camoufox).
-        CFCAP_HANDLER: Requires Cloudflare interstitial handling (auto-selects Playwright).
+        CFCAP_HANDLER: Requires Cloudflare interstitial handling (auto-selects Camoufox).
         H11_HEADER_FIXES: Loosen h11 response-header validation.
         FOLLOW_REDIRECTS: Have httpx follow 3xx redirects automatically.
         STRICTLY_SERIAL: One worker; on transient retry, idle until the
             same request is ready instead of picking up other work
-            (auto-selects Playwright).
+            (auto-selects a browser).
 
-    FF_ALIKE and CHROME_ALIKE are mutually exclusive: a requirement set
-    should contain at most one. This is a convention the driver relies on,
-    not a constraint enforced here — declaring both is unsupported and its
-    behavior is undefined.
+    CHROME_ALIKE is mutually exclusive with FF_ALIKE, RCAP_HANDLER and
+    CFCAP_HANDLER (the handlers run on Camoufox, a Firefox build): declaring
+    it with any of them raises :class:`ScraperConfigError` when the
+    requirements are resolved
+    (:meth:`~jkent.driver.unified_driver.requirements.ResolvedRequirements.of`).
     """
 
     JS_EVAL = "js_eval"
     FF_ALIKE = "ff_alike"
     CHROME_ALIKE = "chrome_alike"
-    HCAP_HANDLER = "hcap_handler"
     RCAP_HANDLER = "rcap_handler"
     CFCAP_HANDLER = "cfcap_handler"
     H11_HEADER_FIXES = "h11_header_fixes"
@@ -112,10 +136,10 @@ class StepInfo:
     """Metadata about a scraper step method.
 
     The introspection surface for hosts that enumerate a scraper's steps
-    (via :meth:`BaseScraper.list_steps`) — e.g. jent's repo nodes.
+    (via :meth:`BaseScraper.list_steps`).
 
     Attributes:
-        name: The method name (continuation string).
+        name: The method name (step string).
         priority: Priority hint for queue ordering (lower = higher priority).
         encoding: Character encoding for text/HTML decoding.
     """
@@ -123,6 +147,38 @@ class StepInfo:
     name: str
     priority: int
     encoding: str
+
+
+def inherit_step_metadata(scraper: object, request: Request) -> Request:
+    """Resolve ``request.step`` to a name and fill in the target's defaults.
+
+    The target step is looked up on ``scraper`` whether ``step`` is spelled
+    as a string or a Callable, and its ``priority``, ``rate_limit`` and
+    ``timeout`` fill whichever the request left unset; an explicit value
+    wins.
+    A string naming no ``@step`` method is left as is, for the driver to
+    reject at dispatch.
+    """
+    name = request.step
+    if isinstance(name, str):
+        target = getattr(scraper, name, None)
+    else:
+        target = name
+        object.__setattr__(request, "step", name.__name__)
+    metadata = get_step_metadata(target) if callable(target) else None
+    if metadata is None:
+        return request
+    if request.priority is None:
+        object.__setattr__(request, "priority", metadata.priority)
+    if request.rate_limit is None and metadata.rate_limit is not None:
+        object.__setattr__(request, "rate_limit", metadata.rate_limit)
+    if request.request.timeout is None and metadata.timeout is not None:
+        object.__setattr__(
+            request,
+            "request",
+            replace(request.request, timeout=metadata.timeout),
+        )
+    return request
 
 
 class BaseScraper(Generic[ScraperReturnType]):
@@ -142,10 +198,15 @@ class BaseScraper(Generic[ScraperReturnType]):
         data_types: Set of data types this scraper produces (opinions, dockets, etc.).
         status: Development lifecycle status (IN_DEVELOPMENT, ACTIVE, RETIRED).
         version: Version string for this scraper (e.g., "2025-01-03").
-        last_verified: Date when scraper was last verified working.
+        last_verified: ISO date string of when the scraper was last verified
+            working.
         oldest_record: Earliest date for which records are available.
         requires_auth: Whether authentication is required.
         rate_limits: pyrate_limiter Rate objects defining rate ceilings for this scraper.
+        named_rate_limits: Extra rate-limit lanes by name, for requests that
+            should be paced separately from the default (``Request(rate_limit=
+            name)`` / ``@step(rate_limit=name)``). See
+            :mod:`jkent.common.rate_limits`.
         default_headers: Baseline HTTP headers for every httpx request.
     """
 
@@ -173,6 +234,13 @@ class BaseScraper(Generic[ScraperReturnType]):
     # Optional metadata
     requires_auth: ClassVar[bool] = False
     rate_limits: ClassVar[list[Rate] | None] = None
+
+    # Additional rate-limit lanes, by name. The framework supplies "default"
+    # (= rate_limits) and "none" (unlimited); anything here is stored in the
+    # run database as 2 + its position, so APPEND lanes — never insert or
+    # reorder — or a resumed run gates its pending rows at the wrong rate.
+    # Validated in __init_subclass__.
+    named_rate_limits: ClassVar[Mapping[str, list[Rate]]] = {}
 
     # Baseline HTTP headers the httpx transport sends with every request.
     # A per-request header with the same name (matched case-insensitively,
@@ -203,10 +271,10 @@ class BaseScraper(Generic[ScraperReturnType]):
     # reclassify per-site codes by shadowing HTTP_CODE_TYPES on the class
     # body. The active map is ``{**defaults, **override}`` (override wins
     # per code), so a code lands in exactly one bucket by construction — no
-    # overlap check needed. The ``is_transient_error`` / ``is_persistent_error``
-    # classmethods (see further down) read this and expose the result to the
-    # worker. A code in no bucket at all is persistent by default — an
-    # unrecognized status fails fast instead of passing through as success.
+    # overlap check needed. The ``classify`` classmethod (see further down)
+    # reads this and is the single verdict the transports consult. A code in
+    # no bucket at all is persistent by default — an unrecognized status
+    # fails fast instead of passing through as success.
 
     DEFAULT_HTTP_CODE_TYPES: Final[Mapping[int, HTTPCodeType]] = {
         **dict.fromkeys(
@@ -264,19 +332,45 @@ class BaseScraper(Generic[ScraperReturnType]):
     # here wins over its DEFAULT_HTTP_CODE_TYPES classification.
     HTTP_CODE_TYPES: ClassVar[Mapping[int, HTTPCodeType]] = {}
 
-    def get_entry(self) -> Generator[Request, None, None]:
-        """Create the initial request(s) to start scraping.
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Only when the subclass declares (or re-declares) them: a scraper
+        # that inherits its parent's rates was already checked with it.
+        if "rate_limits" in cls.__dict__:
+            validate_rate_limits(cls.rate_limits, owner=cls.__name__)
+        if "named_rate_limits" in cls.__dict__:
+            validate_named_rate_limits(
+                cls.named_rate_limits, owner=cls.__name__
+            )
+        cls._check_step_lanes()
 
-        Subclasses should override this method (or use @entry decorators)
-        to yield their entry point(s) and initial continuation method(s).
+    @classmethod
+    def _check_step_lanes(cls) -> None:
+        """Reject a ``@step(rate_limit=...)`` naming a lane cls lacks.
 
-        Yields:
-            Request for each entry point.
+        Otherwise the failure lands at the first enqueue of a request to
+        that step, possibly hours into a run. Walks the MRO's ``__dict__``s
+        rather than ``dir(cls)`` so no descriptor runs at class definition,
+        and re-checks inherited steps: a subclass may redeclare
+        ``named_rate_limits`` without a lane its parent's steps use.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement get_entry() "
-            f"or use @entry decorators"
-        )
+        lanes = set(RESERVED_RATE_LIMIT_NAMES) | set(cls.named_rate_limits)
+        seen: set[str] = set()
+        for klass in cls.__mro__:
+            for name, attr in vars(klass).items():
+                if name in seen:
+                    continue
+                seen.add(name)
+                metadata = getattr(attr, "_step_metadata", None)
+                if not isinstance(metadata, StepMetadata):
+                    continue
+                lane = metadata.rate_limit
+                if lane is not None and lane not in lanes:
+                    raise ScraperConfigError(
+                        f"{cls.__name__}.{name}: @step(rate_limit={lane!r}) "
+                        f"names a lane this scraper does not declare; its "
+                        f"lanes are {sorted(lanes)}"
+                    )
 
     @classmethod
     def get_ssl_context(cls) -> ssl.SSLContext | None:
@@ -312,95 +406,62 @@ class BaseScraper(Generic[ScraperReturnType]):
         return {**cls.DEFAULT_HTTP_CODE_TYPES, **cls.HTTP_CODE_TYPES}
 
     @classmethod
-    def _codes_of_type(cls, type_: HTTPCodeType) -> frozenset[int]:
-        return frozenset(
-            code
-            for code, code_type in cls.active_http_code_types().items()
-            if code_type is type_
-        )
-
-    @classmethod
-    def active_transient_http_error_codes(cls) -> frozenset[int]:
-        """Codes the scraper treats as transient (retryable)."""
-        return cls._codes_of_type(HTTPCodeType.TRANSIENT)
-
-    @classmethod
-    def active_persistent_http_error_codes(cls) -> frozenset[int]:
-        """Codes the scraper treats as persistent (fail-fast, no retry)."""
-        return cls._codes_of_type(HTTPCodeType.PERSISTENT)
-
-    @classmethod
-    def active_successful_http_codes(cls) -> frozenset[int]:
-        """Codes the scraper treats as successful (pass through as Response)."""
-        return cls._codes_of_type(HTTPCodeType.SUCCESSFUL)
-
-    @classmethod
-    def is_transient_error(
+    def classify(
         cls,
         status_code: int,
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
-    ) -> bool:
-        """Is ``status_code`` a transient (retryable) error for this scraper?
+    ) -> HTTPCodeType:
+        """How should this scraper treat ``status_code``?
+
+        The one classification verdict — every transport's ``resolve``
+        routes its observed status through here and maps the result to a
+        response or an exception (see ``Transport.classify_and_raise``).
 
         The default implementation ignores ``headers`` and ``content`` and
-        returns pure set membership. Override in scrapers with dynamic
-        policy (e.g. "503 with body 'maintenance' is transient, anything
-        else is persistent"). ``headers`` and ``content`` may be ``None``
-        when the caller hasn't observed them (for example, on a streaming
-        response whose body hasn't been consumed); dynamic overrides must
-        tolerate that.
+        reads the active code map. Codes absent from it are
+        :attr:`HTTPCodeType.PERSISTENT`: an unrecognized status (a
+        nonstandard 520, a redirect the scraper didn't opt into following)
+        fails fast rather than passing through as success. Reclassify
+        per-site via ``HTTP_CODE_TYPES`` — any code placed in the map
+        escapes that fallback.
+
+        Override for dynamic policy (e.g. "503 with body 'maintenance' is
+        transient, anything else is persistent"). ``headers`` and
+        ``content`` may be ``None`` when the caller hasn't observed them
+        (a streaming response whose body hasn't been consumed) or a
+        reconstruction rather than the raw wire bytes (Playwright's DOM
+        snapshot); overrides must tolerate both.
         """
-        return status_code in cls.active_transient_http_error_codes()
+        return cls.active_http_code_types().get(
+            status_code, HTTPCodeType.PERSISTENT
+        )
 
-    @classmethod
-    def is_persistent_error(
-        cls,
-        status_code: int,
-        headers: Mapping[str, str] | None = None,
-        content: bytes | None = None,
-    ) -> bool:
-        """Is ``status_code`` a persistent (no-retry) error for this scraper?
-
-        Codes absent from the active map are persistent by default: an
-        unrecognized status (a nonstandard 520, a redirect the scraper
-        didn't opt into following) is a fail-fast, not a silent success.
-        Reclassify per-site via ``HTTP_CODE_TYPES`` — any code placed in
-        the map (as SUCCESSFUL or TRANSIENT) escapes this fallback.
-
-        Same semantics for ``headers`` / ``content`` as
-        :meth:`is_transient_error`.
-        """
-        code_type = cls.active_http_code_types().get(status_code)
-        return code_type is None or code_type is HTTPCodeType.PERSISTENT
-
-    def get_continuation(
+    def get_step(
         self, name: str
     ) -> Callable[
         [Response],
         Generator[ScraperYield[ScraperReturnType], bool | None, None],
     ]:
-        """Resolve a continuation name to the actual method.
+        """Resolve a step name to the actual method.
 
-        This method looks up a continuation by name and returns the
-        bound method. It provides a single point for continuation
+        This method looks up a step by name and returns the
+        bound method. It provides a single point for step
         resolution, making it easy to add validation or caching later.
 
         Args:
-            name: The name of the continuation method.
+            name: The name of the step method.
 
         Returns:
             The bound method that can be called with a Response.
 
         Raises:
-            ScraperConfigError: If the continuation method doesn't exist.
+            ScraperConfigError: If the step method doesn't exist.
         """
         try:
             method = getattr(self, name)
         except AttributeError:
-            raise ScraperConfigError(
-                "Nonexistent continuation referenced"
-            ) from None
+            raise ScraperConfigError("Nonexistent step referenced") from None
         return method
 
     @staticmethod
@@ -438,8 +499,8 @@ class BaseScraper(Generic[ScraperReturnType]):
         Introspects the class to find all methods decorated with @step
         and returns their metadata.
 
-        This is useful for the web interface to display available steps,
-        their priorities, and to populate dropdowns for pause_step/resume_step.
+        Introspection for tooling: the steps a scraper defines and their
+        priorities.
 
         Returns:
             List of StepInfo objects for each decorated step method.
@@ -560,7 +621,7 @@ class BaseScraper(Generic[ScraperReturnType]):
                     # Store the validated Speculative model instance as a
                     # template for the driver, alongside the raw seed value
                     # it was validated from (persisted with the speculation
-                    # state so hosts can map state rows back to their seed
+                    # state so hosts can map state rows back to their seed).
                     if not hasattr(self, "_speculation_templates"):
                         self._speculation_templates: dict[
                             str, list[tuple[Speculative, Any]]
@@ -574,7 +635,8 @@ class BaseScraper(Generic[ScraperReturnType]):
                         (template, raw_seed_value)
                     )
                 else:
-                    yield from method(**validated_kwargs)
+                    for request in method(**validated_kwargs):
+                        yield inherit_step_metadata(self, request)
 
     @classmethod
     def schema(cls) -> dict[str, Any]:
@@ -664,9 +726,8 @@ class BaseScraper(Generic[ScraperReturnType]):
         This is primarily used for speculation handling. When a
         speculative request gets a 2xx response, the driver calls this
         method to check if the response actually represents a failure.
-        If this returns False, the driver sets the response status_code to
-        SPECULATION_SOFT_FAILURE_STATUS (555) before calling the speculation
-        callback.
+        If this returns False, speculation counts the probe as a failure
+        toward the template's gap, exactly as it would a non-2xx status.
 
         Args:
             response: The Response object to check for hidden errors.
@@ -704,7 +765,6 @@ class ParsedData(Generic[T]):
     """
 
     data: T
-    __match_args__ = ("data",)
 
     def unwrap(self) -> T:
         return self.data

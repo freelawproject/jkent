@@ -1,7 +1,4 @@
-"""Tests for the PageElement ABC and value objects.
-
-Tests interface conformance and value object behavior.
-"""
+"""Tests for the page-element value objects (Form, FormField, Link)."""
 
 from typing import Any
 
@@ -63,7 +60,7 @@ def test_form_submit_post():
         selector=Selector.XPath("//form[@id='login']"),
     )
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
 
     assert request.request.url == "https://example.com/login"
     assert request.request.method == HttpMethod.POST
@@ -87,7 +84,7 @@ def test_form_submit_with_overrides():
         selector=Selector.XPath("//form[@id='login']"),
     )
 
-    request = form.submit(data={"password": "newsecret"}, continuation="test")
+    request = form.submit(data={"password": "newsecret"}, step="test")
 
     assert request.via is not None
     assert isinstance(request.via, ViaFormSubmit)
@@ -111,7 +108,7 @@ def test_form_submit_with_submit_selector():
     )
 
     request = form.submit(
-        submit_selector=".//button[@name='submit']", continuation="test"
+        submit_selector=".//button[@name='submit']", step="test"
     )
 
     assert request.via is not None
@@ -136,7 +133,7 @@ def test_form_submit_with_css_submit_selector():
 
     request = form.submit(
         submit_selector=Selector.CSS("input[name='btnFind']"),
-        continuation="test",
+        step="test",
     )
 
     assert isinstance(request.via, ViaFormSubmit)
@@ -163,7 +160,7 @@ def test_form_submit_with_xpath_submit_selector_object():
 
     request = form.submit(
         submit_selector=Selector.XPath("//input[@name='btnFind']"),
-        continuation="test",
+        step="test",
     )
 
     assert isinstance(request.via, ViaFormSubmit)
@@ -193,7 +190,7 @@ def test_form_submit_with_selector_wrapped_data_keys():
             Selector.CSS("ctl00$cphMain$tbPartyNames"): "query",
             Selector.XPath("ctl00$cphMain$ddlFindParty"): "FindOR",
         },
-        continuation="test",
+        step="test",
     )
 
     assert isinstance(request.via, ViaFormSubmit)
@@ -211,7 +208,7 @@ def test_link_follow():
         selector=Selector.XPath("//a[@class='case-link'][1]"),
     )
 
-    request = link.follow(continuation="testing")
+    request = link.follow(step="testing")
 
     assert request.request.url == "https://example.com/detail/123"
     assert request.request.method == HttpMethod.GET
@@ -226,8 +223,8 @@ def test_link_follow_accepts_request_kwargs():
     """Link.follow should pass request kwargs through, like Form.submit.
 
     Request is frozen, so follow() is the caller's only chance to set
-    the continuation — without the passthrough every follow()-built
-    request enters the queue with continuation="".
+    the step — without the passthrough every follow()-built
+    request enters the queue with step="".
     """
     link = Link(
         url="https://example.com/detail/123",
@@ -236,22 +233,22 @@ def test_link_follow_accepts_request_kwargs():
     )
 
     request = link.follow(
-        continuation="parse_detail",
+        step="parse_detail",
         accumulated_data={"case_name": "Ant v. Bee"},
         priority=3,
     )
 
-    assert request.continuation == "parse_detail"
+    assert request.step == "parse_detail"
     assert request.accumulated_data == {"case_name": "Ant v. Bee"}
     assert request.priority == 3
     assert isinstance(request.via, ViaLink)
 
 
-def test_link_follow_callable_continuation_resolved_by_step():
+def test_link_follow_callable_step_resolved_by_name():
     """A followed link yielded from a @step resolves its Callable.
 
     This is the real authoring pattern: yield link.follow(
-    continuation=self.parse_detail) and let the step machinery resolve
+    step=self.parse_detail) and let the step machinery resolve
     the name and inherit the target step's priority.
     """
 
@@ -263,7 +260,7 @@ def test_link_follow_callable_continuation_resolved_by_step():
                 text="Case",
                 selector=Selector.XPath("//a[1]"),
             )
-            yield link.follow(continuation=self.parse_detail)
+            yield link.follow(step=self.parse_detail)
 
         @step(priority=2)
         def parse_detail(self, response: Response):
@@ -274,7 +271,7 @@ def test_link_follow_callable_continuation_resolved_by_step():
         request=HTTPRequestParams(
             method=HttpMethod.GET, url="https://example.com/list"
         ),
-        continuation="parse_listing",
+        step="parse_listing",
     )
     response = Response(
         status_code=200,
@@ -288,7 +285,7 @@ def test_link_follow_callable_continuation_resolved_by_step():
     yields = list(scraper.parse_listing(response))
 
     assert len(yields) == 1
-    assert yields[0].continuation == "parse_detail"
+    assert yields[0].step == "parse_detail"
     assert yields[0].priority == 2  # inherited from the target step
 
 

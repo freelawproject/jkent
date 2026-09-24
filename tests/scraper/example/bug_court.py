@@ -21,7 +21,6 @@ from typing import Any
 from lxml import html
 from lxml.html import HtmlElement
 from pydantic import Field, HttpUrl
-from typing_extensions import override
 
 from jkent.common.data_models import ScrapedData
 from jkent.common.decorators import entry
@@ -49,7 +48,7 @@ class BugCourtScraper(BaseScraper[dict[str, Any]]):
     - A scraper as a class (to bundle multiple methods)
     - Yielding Request to fetch detail pages
     - Yielding ParsedData with complete case information
-    - Continuation methods specified by name (for serializability)
+    - Step methods specified by name (for serializability)
 
     The scraper visits two types of pages:
     1. List page (/cases) - contains basic case info and links to details
@@ -58,16 +57,15 @@ class BugCourtScraper(BaseScraper[dict[str, Any]]):
 
     BASE_URL = "http://127.0.0.1"
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
         yield Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url=f"{self.BASE_URL}/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
     def parse_list(
@@ -101,7 +99,7 @@ class BugCourtScraper(BaseScraper[dict[str, Any]]):
                         method=HttpMethod.GET,
                         url=f"/cases/{docket}",
                     ),
-                    continuation="parse_detail",
+                    step="parse_detail",
                 )
 
     def parse_detail(
@@ -170,16 +168,15 @@ class BugCourtScraperWithAPI(BaseScraper[dict[str, Any]]):
 
     BASE_URL = "http://127.0.0.1"
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
         yield Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url=f"{self.BASE_URL}/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
     def parse_list(
@@ -205,7 +202,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict[str, Any]]):
                         method=HttpMethod.GET,
                         url=f"/cases/{docket}",
                     ),
-                    continuation="parse_detail",
+                    step="parse_detail",
                 )
 
     def parse_detail(
@@ -233,7 +230,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict[str, Any]]):
                 method=HttpMethod.GET,
                 url=f"/api/cases/{docket}",
             ),
-            continuation="parse_api",
+            step="parse_api",
             nonnavigating=True,
         )
 
@@ -341,16 +338,15 @@ class BugCourtScraperWithArchive(BaseScraper[dict[str, Any]]):
 
     BASE_URL = "http://127.0.0.1"
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
         yield Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url=f"{self.BASE_URL}/cases",
             ),
-            continuation="parse_list",
+            step="parse_list",
         )
 
     def parse_list(
@@ -376,7 +372,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict[str, Any]]):
                         method=HttpMethod.GET,
                         url=f"/cases/{docket}",
                     ),
-                    continuation="parse_detail",
+                    step="parse_detail",
                 )
 
     def parse_detail(
@@ -408,7 +404,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict[str, Any]]):
                     method=HttpMethod.GET,
                     url=opinion_links[0],
                 ),
-                continuation="archive_opinion",
+                step="archive_opinion",
                 archive=True,
                 expected_type="pdf",
             )
@@ -424,7 +420,7 @@ class BugCourtScraperWithArchive(BaseScraper[dict[str, Any]]):
                     method=HttpMethod.GET,
                     url=oral_arg_links[0],
                 ),
-                continuation="archive_oral_argument",
+                step="archive_oral_argument",
                 archive=True,
                 expected_type="audio",
             )

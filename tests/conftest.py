@@ -1,4 +1,18 @@
-"""Shared fixtures for the test suite."""
+"""Shared fixtures for the test suite.
+
+Three families, each with one home:
+
+- **Servers** — ``serve_routes`` (a factory: ``await serve({path: handler})``
+  → base URL) and ``bug_court_server`` / ``server_url`` (the mock court
+  site). Both run in the test's own event loop via :mod:`tests.servers`; a
+  test that needs one is therefore ``async``.
+- **Databases** — ``db_path`` / ``initialized_db`` / ``sql_manager`` /
+  ``insert_request`` for a real SQLite *file* (what the run and the replay
+  ``SourceIndex`` open); ``memory_session_factory`` for an in-memory
+  StaticPool schema when a test only needs sessions; ``schema_template`` for
+  a once-built empty DB file the generative rigs copy per example.
+- **Hypothesis** profiles.
+"""
 
 import os
 
@@ -8,20 +22,32 @@ import os
 os.environ.setdefault("JKENT_ENFORCE_CONTRACTS", "1")
 
 import asyncio
-import socket
-import threading
-import time
-from collections.abc import Generator
-from contextlib import closing, suppress
+from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from aiohttp import web
 from hypothesis import settings as _hyp_settings
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from jkent.data_types import HttpMethod
+from jkent.driver.database_engine.database import (
+    create_engine_and_init,
+    get_session_factory,
+    init_database,
+)
+from jkent.driver.database_engine.enums import RequestType
+from jkent.driver.database_engine.sql_manager import RequestInsert, SQLManager
 from tests.mock_server import (
     create_app,
     generate_cases_html,
 )
+from tests.servers import RouteHandler, StartedServer, start_app
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 # Hypothesis profiles — select with ``--hypothesis-profile NAME`` or
 # ``HYPOTHESIS_PROFILE=NAME``. Tests that pin their own ``max_examples`` are
@@ -45,105 +71,145 @@ def cases_html() -> str:
 
 
 # =============================================================================
-# Step 2: aiohttp test server fixtures
+# Servers
 # =============================================================================
 
 
-def find_free_port() -> int:
-    """Find a free port on localhost.
+@pytest.fixture
+async def serve_routes() -> AsyncIterator[
+    Callable[[dict[str, RouteHandler]], Awaitable[str]]
+]:
+    """Factory that starts an ephemeral-port aiohttp server per call.
 
-    Returns:
-        An available port number.
+    Yields an async ``serve({path: handler})`` returning the server's base
+    URL; every server it starts is torn down at fixture teardown.
     """
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(("", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
+    servers: list[StartedServer] = []
 
+    async def _serve(routes: dict[str, RouteHandler]) -> str:
+        app = web.Application()
+        for path, handler in routes.items():
+            app.router.add_get(path, handler)
+        server = await start_app(app)
+        servers.append(server)
+        return server.base_url
 
-class AioHttpTestServer:
-    """Wrapper to run aiohttp server in a background thread."""
-
-    def __init__(self, app: web.Application, port: int) -> None:
-        self.app = app
-        self.port = port
-        self.host = "127.0.0.1"
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._runner: web.AppRunner | None = None
-        self._thread: threading.Thread | None = None
-
-    @property
-    def url(self) -> str:
-        """Get the base URL of the server."""
-        return f"http://{self.host}:{self.port}"
-
-    def start(self) -> None:
-        """Start the server in a background thread."""
-        self._thread = threading.Thread(target=self._run_server, daemon=True)
-        self._thread.start()
-        # Give the server time to start
-        time.sleep(0.1)
-
-    def _run_server(self) -> None:
-        """Run the server in an asyncio event loop."""
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-
-        async def start() -> None:
-            self._runner = web.AppRunner(self.app)
-            await self._runner.setup()
-            site = web.TCPSite(self._runner, self.host, self.port)
-            await site.start()
-
-        self._loop.run_until_complete(start())
-        self._loop.run_forever()
-
-    def stop(self) -> None:
-        """Stop the server and clean up resources."""
-        if self._loop and self._runner:
-            # Schedule cleanup in the event loop
-            async def cleanup() -> None:
-                await (
-                    self._runner.cleanup()
-                ) if self._runner is not None else None
-
-            future = asyncio.run_coroutine_threadsafe(cleanup(), self._loop)
-            with suppress(Exception):  # Best effort cleanup
-                future.result(timeout=2.0)
-
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-
-        if self._thread:
-            self._thread.join(timeout=2.0)
+    try:
+        yield _serve
+    finally:
+        results = await asyncio.gather(
+            *(server.aclose() for server in servers), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
 
 @pytest.fixture
-def bug_court_server() -> Generator[AioHttpTestServer, None, None]:
-    """Create and start an aiohttp test server running the Bug Court app.
-
-    This fixture starts a real HTTP server on a random port that can be
-    used for integration testing with real HTTP requests.
-
-    Yields:
-        AioHttpTestServer instance with the Bug Court app running.
-    """
-    app = create_app()
-    port = find_free_port()
-    server = AioHttpTestServer(app, port)
-    server.start()
-    yield server
-    server.stop()
+async def bug_court_server() -> AsyncIterator[StartedServer]:
+    """The Bug Court mock site, served on an ephemeral port in this loop."""
+    server = await start_app(create_app())
+    try:
+        yield server
+    finally:
+        await server.aclose()
 
 
 @pytest.fixture
-def server_url(bug_court_server: AioHttpTestServer) -> str:
-    """Get the base URL of the test server.
+def server_url(bug_court_server: StartedServer) -> str:
+    """Base URL of the Bug Court server (e.g. ``http://127.0.0.1:54321``)."""
+    return bug_court_server.base_url
 
-    Args:
-        bug_court_server: The test server fixture.
 
-    Returns:
-        The base URL string (e.g., "http://127.0.0.1:8080").
+# =============================================================================
+# Databases
+# =============================================================================
+
+# What the initialized_db fixture resolves to for its consumers.
+_InitializedDB = tuple["AsyncEngine", async_sessionmaker[AsyncSession]]
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    """A temporary database path."""
+    return tmp_path / "test.db"
+
+
+@pytest.fixture
+async def initialized_db(db_path: Path) -> AsyncIterator[_InitializedDB]:
+    """An initialized (schema-built) engine + session factory on a file."""
+    engine, session_factory = await init_database(db_path)
+    yield engine, session_factory
+    await engine.dispose()
+
+
+@pytest.fixture
+async def sql_manager(initialized_db: _InitializedDB) -> SQLManager:
+    """A :class:`SQLManager` over ``initialized_db``."""
+    engine, session_factory = initialized_db
+    return SQLManager(engine, session_factory)
+
+
+@pytest.fixture
+def insert_request(
+    sql_manager: SQLManager,
+) -> Callable[..., Awaitable[int]]:
+    """Factory that inserts a request with sensible defaults.
+
+    Most tests only vary ``url``/``deduplication_key``/``priority``/
+    ``step``; override only what the test cares about::
+
+        req_id = await insert_request(
+            url="https://example.com/1", deduplication_key="1"
+        )
     """
-    return bug_court_server.url
+
+    async def _insert(**overrides: Any) -> int:
+        params: dict[str, Any] = {
+            "priority": 5,
+            "request_type": RequestType.NAVIGATING,
+            "method": HttpMethod.GET,
+            "url": "https://example.com/test",
+            "step": "parse",
+        }
+        params.update(overrides)
+        inserted = await sql_manager.insert_request(RequestInsert(**params))
+        return inserted.request_id
+
+    return _insert
+
+
+@pytest.fixture
+async def memory_session_factory() -> AsyncIterator[
+    async_sessionmaker[AsyncSession]
+]:
+    """An initialized in-memory SQLite DB, shared across sessions.
+
+    Built by :func:`create_engine_and_init`, so it has production's
+    connection pragmas and ``BEGIN IMMEDIATE`` writer transactions.
+    """
+    engine = await create_engine_and_init(
+        Path(":memory:"), poolclass=StaticPool
+    )
+
+    try:
+        yield get_session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def schema_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A once-built, empty, fully-migrated DB file to copy per example.
+
+    The replay/archive rigs copy it per hypothesis example (the replay
+    ``SourceIndex`` opens source DBs read-only, so they must be real files).
+    """
+    path = tmp_path_factory.mktemp("schema_template") / "template.db"
+
+    async def build() -> None:
+        engine, _ = await init_database(path)
+        await engine.dispose()
+
+    asyncio.run(build())
+    return path

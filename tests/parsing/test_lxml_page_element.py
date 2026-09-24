@@ -370,13 +370,13 @@ def test_link_follow_creates_navigating_request(links_page: LxmlPageElement):
     )
     link = links[0]
 
-    request = link.follow(continuation="testing")
+    request = link.follow(step="testing")
 
     assert request.request.url == "https://example.com/page1"
     assert request.via is not None
     assert isinstance(request.via, ViaLink)
     assert "nav-link" in request.via.selector.value
-    assert request.continuation == "testing"
+    assert request.step == "testing"
 
 
 def test_find_form_raises_on_no_match(simple_page: LxmlPageElement):
@@ -402,7 +402,7 @@ def test_unchecked_checkbox_with_value_is_omitted():
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
     assert form.get_field("cb") is None
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, Mapping)
     assert "cb" not in data
@@ -420,7 +420,7 @@ def test_checked_checkbox_with_value_is_submitted():
     field = form.get_field("cb")
     assert field is not None
     assert field.value == "yes"
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["cb"] == "yes"
@@ -438,7 +438,7 @@ def test_checked_checkbox_without_value_defaults_to_on():
     field = form.get_field("cb")
     assert field is not None
     assert field.value == "on"
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["cb"] == "on"
@@ -454,7 +454,7 @@ def test_unchecked_checkbox_without_value_is_omitted():
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
     assert form.get_field("cb") is None
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, Mapping)
     assert "cb" not in data
@@ -473,7 +473,7 @@ def test_mixed_checkboxes_only_checked_submitted():
     cb_fields = [f for f in form.fields if f.name == "cb"]
     assert len(cb_fields) == 1
     assert cb_fields[0].value == "b"
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["cb"] == "b"
@@ -491,7 +491,7 @@ def test_checked_radio_without_value_defaults_to_on():
     field = form.get_field("choice")
     assert field is not None
     assert field.value == "on"
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["choice"] == "on"
@@ -508,7 +508,7 @@ def test_radio_group_only_checked_submitted():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["choice"] == "b"
@@ -534,7 +534,7 @@ def test_option_with_empty_value_submits_empty_string():
     assert field is not None
     assert field.value == ""
     assert field.options == ["", "civil"]
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["case_type"] == ""
@@ -552,7 +552,7 @@ def test_option_without_value_attribute_uses_label():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["category"] == "News"
@@ -573,7 +573,7 @@ def test_only_first_submit_button_is_submitted():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["q"] == "bees"
@@ -605,7 +605,7 @@ def test_submit_selector_activates_input_submit_by_id():
     }
     assert submit_ids == {"btn_search", "btn_clear"}
 
-    request = form.submit(submit_selector="#btn_clear", continuation="test")
+    request = form.submit(submit_selector="#btn_clear", step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["q"] == "bees"
@@ -629,9 +629,7 @@ def test_submit_selector_resolves_input_submit_by_value_css():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(
-        submit_selector='input[value="clear"]', continuation="test"
-    )
+    request = form.submit(submit_selector='input[value="clear"]', step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["action"] == "clear"
@@ -649,7 +647,7 @@ def test_submit_selector_resolves_input_submit_by_value_xpath():
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
     request = form.submit(
-        submit_selector='.//input[@value="clear"]', continuation="test"
+        submit_selector='.//input[@value="clear"]', step="test"
     )
     data = request.request.data
     assert isinstance(data, dict)
@@ -672,9 +670,7 @@ def test_submit_selector_by_name_excludes_other_button():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(
-        submit_selector='[name="clear"]', continuation="test"
-    )
+    request = form.submit(submit_selector='[name="clear"]', step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["clear"] == "Clear"
@@ -694,7 +690,7 @@ def test_submit_selector_unresolvable_falls_back_to_first():
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
     request = form.submit(
-        submit_selector="(.//input[@type='submit'])[2]", continuation="test"
+        submit_selector="(.//input[@type='submit'])[2]", step="test"
     )
     data = request.request.data
     assert isinstance(data, dict)
@@ -711,7 +707,7 @@ def test_button_element_participates_in_submission():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["action"] == "search"
@@ -730,7 +726,7 @@ def test_button_type_button_and_reset_not_submitted():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data == {"q": "bees"}
@@ -749,7 +745,7 @@ def test_checkbox_group_submits_all_checked_values():
 
     court_fields = [f for f in form.fields if f.name == "court"]
     assert [f.value for f in court_fields] == ["ca1", "ca3"]
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["court"] == ["ca1", "ca3"]
@@ -768,7 +764,7 @@ def test_select_multiple_submits_all_selected_options():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["court"] == ["ca1", "ca3"]
@@ -787,7 +783,7 @@ def test_select_multiple_nothing_selected_submits_nothing():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(continuation="test")
+    request = form.submit(step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert "court" not in data
