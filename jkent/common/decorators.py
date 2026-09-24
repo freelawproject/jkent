@@ -20,12 +20,14 @@ The @entry decorator marks scraper methods as entry points with typed
 parameters; it is the only way a scraper declares where a run starts.
 """
 
+import collections.abc
 import inspect
 import re
 from collections.abc import Callable, Generator
 from functools import wraps
 from typing import (
     Any,
+    Final,
     NamedTuple,
     ParamSpec,
     TypeVar,
@@ -71,6 +73,14 @@ from jkent.common.speculative import Speculative
 from jkent.common.wait_conditions import WaitCondition
 
 T = TypeVar("T")
+
+#: Return annotations that mean "this entry yields" — rejected for a
+#: speculative entry, which the driver calls for one Request at a time.
+_GENERATOR_ORIGINS: Final = (
+    collections.abc.Generator,
+    collections.abc.Iterator,
+    collections.abc.Iterable,
+)
 
 
 def _apply_encoding(response: Response, encoding: str | None) -> None:
@@ -698,6 +708,60 @@ EntryParams = ParamSpec("EntryParams")
 EntryReturn = TypeVar("EntryReturn")
 
 
+def _check_speculative_entry(
+    fn: Callable[..., Any],
+    speculative_param: str,
+    param_types: dict[str, Any],
+    return_hint: Any,
+) -> None:
+    """Reject speculative entry shapes the driver cannot drive.
+
+    The driver rebuilds a speculative entry's call itself, once per probe
+    ID: ``fn(**{speculative_param: template.from_int(n)})``, and takes the
+    single Request back. So the speculative param has to be the only one,
+    since nothing else reaches the probe, and the entry has to return one
+    Request rather than yield, as non-speculative entries do.
+
+    Args:
+        fn: The entry function being decorated.
+        speculative_param: Name of its Speculative parameter.
+        param_types: Every parameter the entry declares.
+        return_hint: Its resolved return annotation, if any.
+
+    Raises:
+        TypeError: The entry takes parameters besides the speculative one,
+            or it yields instead of returning a Request.
+    """
+    siblings = [name for name in param_types if name != speculative_param]
+    if siblings:
+        raise TypeError(
+            f"Speculative entry function '{fn.__name__}' takes parameters "
+            f"besides its Speculative one '{speculative_param}': "
+            f"{siblings}. The driver calls a speculative entry with that "
+            "parameter alone, so every other parameter either falls back "
+            "to its default or raises TypeError on the probe; put them on "
+            "the Speculative model instead, where from_int carries them to "
+            "every probe."
+        )
+    # The annotation is a courtesy; the function object is the fact. Check
+    # both, because an unannotated generator is the easier mistake to make
+    # and the harder one to read off a traceback.
+    if (
+        inspect.isgeneratorfunction(fn)
+        or get_origin(return_hint) in _GENERATOR_ORIGINS
+    ):
+        shape = (
+            "yields"
+            if inspect.isgeneratorfunction(fn)
+            else f"is annotated as returning {return_hint!r}"
+        )
+        raise TypeError(
+            f"Speculative entry function '{fn.__name__}' {shape}. A "
+            "speculative entry returns a single Request for the probe ID "
+            "it is called with; only non-speculative entries yield."
+        )
+
+
 def entry(
     return_type: type,
 ) -> Callable[
@@ -827,6 +891,11 @@ def entry(
                 speculative_param = param_name
 
             param_types[param_name] = param_type
+
+        if speculative_param is not None:
+            _check_speculative_entry(
+                fn, speculative_param, param_types, hints.get("return")
+            )
 
         metadata = EntryMetadata(
             return_type=return_type,
