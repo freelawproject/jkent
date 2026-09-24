@@ -1,0 +1,7 @@
+# The build context is this directory. The Dockerfile only COPYs
+# entrypoint.sh, so exclude everything else — in particular `runs/`, which
+# holds run databases and downloaded archives (hundreds of GB) and is
+# bind-mounted at runtime, not baked in.
+*
+!Dockerfile
+!entrypoint.sh
