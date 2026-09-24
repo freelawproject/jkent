@@ -36,7 +36,7 @@ from icontract import ViolationError
 from jkent.common.rate_limits import RateLimitTable
 from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.enums import RequestType
-from jkent.driver.database_engine.queue import RequestQueueDB
+from jkent.driver.database_engine.queue import RequestQueue
 from jkent.driver.database_engine.sql_manager import DequeuedRow
 
 _BASE: dict[str, Any] = {
@@ -100,8 +100,8 @@ class _StubDB:
         self.failed.append((request_id, error_message))
 
 
-def _queue(db: _StubDB) -> RequestQueueDB:
-    return RequestQueueDB(db, rate_limits=RateLimitTable.bare())  # type: ignore[arg-type]
+def _queue(db: _StubDB) -> RequestQueue:
+    return RequestQueue(db, rate_limits=RateLimitTable.bare())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -219,7 +219,7 @@ async def test_an_unpaired_release_is_logged_and_floored(
     queue = _queue(_StubDB(None))
 
     with caplog.at_level(logging.ERROR):
-        inspect.unwrap(RequestQueueDB.request_done)(queue)
+        inspect.unwrap(RequestQueue.request_done)(queue)
 
     assert queue.in_flight_count == 0
     assert "never taken" in caplog.text

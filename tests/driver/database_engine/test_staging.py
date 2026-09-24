@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import icontract
 import pytest
 
 from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.enums import RequestStatus, RequestType
-from jkent.driver.database_engine.queue import EnqueuedEvent
 from jkent.driver.database_engine.sql_manager import (
+    IllegalTransitionError,
     RequestInsert,
     SQLManager,
 )
@@ -24,7 +23,7 @@ if TYPE_CHECKING:
     InsertRequest = Callable[..., Awaitable[int]]
 
 
-async def test_raising_callback_does_not_lose_later_callbacks_or_events(
+async def test_raising_callback_does_not_lose_later_callbacks(
     sql_manager: SQLManager,
     insert_request: InsertRequest,
     caplog: pytest.LogCaptureFixture,
@@ -32,8 +31,7 @@ async def test_raising_callback_does_not_lose_later_callbacks_or_events(
     """A callback raising after commit is logged; the rest still fire.
 
     The rows are already durable when the callbacks run, so the parent is
-    completed either way. Propagating would drop the later callbacks and the
-    progress events for children that *were* inserted.
+    completed either way. Propagating would drop the later callbacks.
     """
     parent_id = await insert_request()
     # ``flush`` is only ever reached for a request its worker holds, so the
@@ -52,9 +50,6 @@ async def test_raising_callback_does_not_lose_later_callbacks_or_events(
             deduplication_key="child",
             parent_request_id=parent_id,
         ),
-        progress_event=EnqueuedEvent(
-            url="https://example.com/child", step="parse", priority=5
-        ),
     )
     fired: list[str] = []
 
@@ -69,13 +64,8 @@ async def test_raising_callback_does_not_lose_later_callbacks_or_events(
     staged.stage_callback(after)
 
     with caplog.at_level(logging.ERROR):
-        events = await staged.flush(sql_manager)
+        await staged.flush(sql_manager)
 
-    assert events == [
-        EnqueuedEvent(
-            url="https://example.com/child", step="parse", priority=5
-        )
-    ]
     assert fired == ["boom", "after"]
     assert "on_data blew up" in caplog.text
     parent = await get_request_row(sql_manager, parent_id)
@@ -108,7 +98,7 @@ async def test_flushing_an_in_progress_parent_is_allowed(
     await sql_manager.dequeue_next_request()
 
     staged = await _staged_for(parent_id)
-    assert await staged.flush(sql_manager) == []
+    await staged.flush(sql_manager)
 
     row = await get_request_row(sql_manager, parent_id)
     assert row is not None
@@ -124,7 +114,7 @@ async def test_flushing_a_failed_parent_is_refused(
     await sql_manager.mark_request_failed(parent_id, "timed out")
 
     staged = await _staged_for(parent_id)
-    with pytest.raises(icontract.ViolationError, match="in_progress"):
+    with pytest.raises(IllegalTransitionError, match="in_progress"):
         await staged.flush(sql_manager)
 
     row = await get_request_row(sql_manager, parent_id)
@@ -141,7 +131,7 @@ async def test_flushing_a_completed_parent_is_refused(
     await sql_manager.dequeue_next_request()
     await (await _staged_for(parent_id)).flush(sql_manager)
 
-    with pytest.raises(icontract.ViolationError, match="in_progress"):
+    with pytest.raises(IllegalTransitionError, match="in_progress"):
         await (await _staged_for(parent_id)).flush(sql_manager)
 
 
@@ -152,7 +142,7 @@ async def test_flushing_a_pending_parent_is_refused(
     parent_id = await insert_request()
 
     staged = await _staged_for(parent_id)
-    with pytest.raises(icontract.ViolationError, match="in_progress"):
+    with pytest.raises(IllegalTransitionError, match="in_progress"):
         await staged.flush(sql_manager)
 
 
@@ -161,5 +151,5 @@ async def test_flushing_a_request_that_does_not_exist_is_refused(
 ) -> None:
     """The other silent pass: an UPDATE that matches no rows at all."""
     staged = await _staged_for(9999)
-    with pytest.raises(icontract.ViolationError, match="in_progress"):
+    with pytest.raises(IllegalTransitionError, match="in_progress"):
         await staged.flush(sql_manager)

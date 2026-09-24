@@ -65,7 +65,7 @@ from jkent.data_types import (
     HTTPRequestParams,
     Request,
 )
-from jkent.driver.database_engine.queue import RequestQueueDB
+from jkent.driver.database_engine.queue import RequestQueue
 from jkent.driver.database_engine.sql_manager import DequeuedRow
 
 pytestmark = pytest.mark.generative
@@ -85,9 +85,9 @@ class _LaneScraper(BaseScraper[Any]):
 _TABLE = RateLimitTable.for_scraper(_LaneScraper)
 
 
-def _queue() -> RequestQueueDB:
+def _queue() -> RequestQueue:
     """A queue with the lane table and no database (none is needed)."""
-    return RequestQueueDB(None, rate_limits=_TABLE)  # type: ignore[arg-type]
+    return RequestQueue(None, rate_limits=_TABLE)  # type: ignore[arg-type]
 
 
 def _trip(request: Request) -> Request:

@@ -21,6 +21,7 @@ from jkent.driver.database_engine.models import (
     RunStatus,
 )
 from jkent.driver.database_engine.sql_manager._base import SQLManagerBase
+from jkent.driver.database_engine.sql_manager._requests import transition_stmt
 from jkent.driver.database_engine.sql_manager._types import RowModel
 from jkent.driver.database_engine.timestamps import now
 
@@ -187,9 +188,7 @@ class RunMetadataMixin(SQLManagerBase):
     async def _release_in_progress(session: AsyncSession) -> None:
         """Reset in_progress requests to pending (they were interrupted)."""
         await session.execute(
-            update(Request)
-            .where(Request.status == RequestStatus.IN_PROGRESS)
-            .values(status=RequestStatus.PENDING)
+            transition_stmt(RequestStatus.IN_PROGRESS, RequestStatus.PENDING)
         )
 
     async def restore_queue(self) -> int:

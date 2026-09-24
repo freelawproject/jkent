@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import sqlalchemy as sa
 from aiohttp import web
 from hypothesis import settings as _hyp_settings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -48,7 +49,8 @@ from jkent.driver.database_engine.database import (
     get_session_factory,
     init_database,
 )
-from jkent.driver.database_engine.enums import RequestType
+from jkent.driver.database_engine.enums import RequestStatus, RequestType
+from jkent.driver.database_engine.models import Request as RequestModel
 from jkent.driver.database_engine.sql_manager import RequestInsert, SQLManager
 from tests.mock_server import (
     create_app,
@@ -187,6 +189,26 @@ def insert_request(
         return inserted.request_id
 
     return _insert
+
+
+@pytest.fixture
+def claim(sql_manager: SQLManager) -> Callable[[int], Awaitable[None]]:
+    """Put a row IN_PROGRESS, as a worker's dequeue would.
+
+    Ignores priority and retry backoff, so a test can claim the row it
+    means to, or re-claim one it just scheduled for retry, without waiting.
+    """
+
+    async def _claim(request_id: int) -> None:
+        async with sql_manager.session_factory() as session:
+            await session.execute(
+                sa.update(RequestModel)
+                .where(RequestModel.id == request_id)
+                .values(status=RequestStatus.IN_PROGRESS)
+            )
+            await session.commit()
+
+    return _claim
 
 
 @pytest.fixture
