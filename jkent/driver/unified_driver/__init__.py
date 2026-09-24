@@ -32,6 +32,7 @@ from jkent.driver.unified_driver.rate_limiter import (
     RateLimiter,
     RateLimiters,
 )
+from jkent.driver.unified_driver.steps import StepExecutor
 from jkent.driver.unified_driver.transport import (
     ArchiveStream,
     AwaitCondition,
@@ -53,6 +54,7 @@ __all__ = [
     "Compactor",
     "Compactors",
     "DEFAULT_ADAPTIVE_LADDER",
+    "StepExecutor",
     "ErrorBudget",
     "ErrorSink",
     "HttpxTransport",
