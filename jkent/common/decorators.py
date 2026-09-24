@@ -45,7 +45,6 @@ from jkent.common.decorator_metadata import (
     StepMetadata,
     attach_entry_metadata,
     attach_step_metadata,
-    get_step_metadata,
 )
 from jkent.common.exceptions import (
     ScraperAssumptionException,
@@ -53,9 +52,13 @@ from jkent.common.exceptions import (
 from jkent.common.lxml_page_element import (
     LxmlPageElement,
 )
-from jkent.common.request import Request
+from jkent.common.request import Request, TimeoutType
 from jkent.common.response import ArchiveResponse, Response
-from jkent.common.scraper import BaseScraper, ScraperYield
+from jkent.common.scraper import (
+    BaseScraper,
+    ScraperYield,
+    inherit_step_metadata,
+)
 from jkent.common.selector_observer import (
     SelectorObserver,
     get_active_observer,
@@ -71,7 +74,8 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
 
     Args:
         response: The HTTP response.
-        encoding: Character encoding for decoding undecoded content.
+        encoding: Fallback charset when neither the document nor the
+            ``Content-Type`` header declares one.
 
     Returns:
         Parsed JSON data (dict, list, or other JSON types).
@@ -80,8 +84,7 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
         ScraperAssumptionException: If JSON parsing fails.
     """
     try:
-        text = response.text or response.content.decode(encoding)
-        return from_json(text)
+        return from_json(response.decode(fallback=encoding))
     except Exception as e:
         raise ScraperAssumptionException(
             f"Failed to parse JSON: {e}",
@@ -93,22 +96,20 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
 def _parse_html(
     response: Response, encoding: str = "utf-8", *, text: str | None = None
 ) -> LxmlPageElement:
-    """Parse HTML from response content (or preprocessed text).
+    """Parse HTML from the response text (or preprocessed text).
 
-    Passes raw bytes to lxml so it can auto-detect encoding from the HTML
-    meta charset tag (e.g., <meta charset="windows-1252">). This handles
-    pages that declare non-UTF-8 encodings correctly.
+    The document is decoded once, by :func:`_get_text` — the derivation
+    ``response.text`` uses, with ``encoding`` as the fallback — and handed
+    to lxml as UTF-8 with the encoding forced, so libxml2's own sniffing
+    (which ignores an XML declaration's encoding and defaults to
+    ISO-8859-1) never gets a vote.
 
     Args:
         response: The HTTP response.
-        encoding: NOT used for parsing — lxml auto-detects from the raw
-            bytes (BOM, XML declaration, meta charset). Only recorded in
-            the exception context for debugging. The @step encoding
-            governs ``text`` injection, not ``lxml_tree``/``page``.
+        encoding: The ``@step`` encoding: the charset used when neither the
+            document nor the ``Content-Type`` header declares one.
         text: Already-decoded (typically ``preprocess``-repaired) document
-            text to parse instead of the response bytes. When set, lxml's
-            byte-level encoding auto-detection is moot — the text was
-            decoded with the @step encoding before repair.
+            text to parse instead of the response's.
 
     Returns:
         LxmlPageElement parsed from response content.
@@ -116,14 +117,11 @@ def _parse_html(
     Raises:
         ScraperAssumptionException: If HTML parsing fails.
     """
+    source = text if text is not None else _get_text(response, encoding)
     try:
-        # Pass raw bytes to lxml - it will detect encoding from:
-        # 1. BOM
-        # 2. XML declaration
-        # 3. <meta charset="..."> or <meta http-equiv="Content-Type" content="...">
-        # 4. Falls back to default if nothing found
-        source = text if text is not None else response.content
-        return LxmlPageElement(lxml_html.fromstring(source), response.url)
+        parser = lxml_html.HTMLParser(encoding="utf-8")
+        tree = lxml_html.fromstring(source.encode("utf-8"), parser=parser)
+        return LxmlPageElement(tree, response.url)
     except Exception as e:
         raise ScraperAssumptionException(
             f"Failed to parse HTML: {e}",
@@ -133,34 +131,21 @@ def _parse_html(
 
 
 def _get_text(response: Response, encoding: str = "utf-8") -> str:
-    """Get text content from response.
+    """The response as text, for ``text`` injection and ``preprocess``.
 
-    Args:
-        response: The HTTP response.
-        encoding: Character encoding for decoding.
-
-    Returns:
-        Response text as string.
+    :meth:`Response.decode` — the same derivation as ``response.text`` —
+    with the step's ``encoding`` as the fallback when neither the document
+    nor the ``Content-Type`` header declares a charset.
 
     Raises:
-        ScraperAssumptionException: If the content can't be decoded with the
-            given encoding.
+        ScraperAssumptionException: If ``encoding`` names a codec Python
+            does not know.
     """
-    # Falsy check, matching _parse_json: an empty text with non-empty
-    # content (a synthetic Response built from raw bytes) means "not
-    # decoded yet", so decode with the step's encoding rather than
-    # injecting "".
-    if response.text:
-        return response.text
     try:
-        return response.content.decode(encoding)
-    except UnicodeDecodeError as e:
-        # Wrap in the assumption taxonomy like _parse_json/_parse_html, so an
-        # unexpected encoding routes to the assumption-violation path instead
-        # of the worker's unknown-exception branch.
+        return response.decode(fallback=encoding)
+    except LookupError as e:
         raise ScraperAssumptionException(
-            f"Failed to decode response content with encoding "
-            f"{encoding!r}: {e}",
+            f"Unknown @step encoding {encoding!r}: {e}",
             request_url=response.url,
             context={"encoding": encoding, "error": str(e)},
         ) from e
@@ -173,7 +158,8 @@ def _parse_page_element(
 
     Args:
         response: The HTTP response.
-        encoding: Fallback encoding if lxml can't detect one.
+        encoding: Fallback charset when neither the document nor the
+            ``Content-Type`` header declares one.
         text: Already-decoded (typically ``preprocess``-repaired) document
             text to parse instead of the response bytes.
 
@@ -195,7 +181,7 @@ def _parse_page_element(
         # the step under its own (possibly subclassed) observer —
         # e.g. a host's selector-coverage analysis — so reuse it instead of
         # shadowing it with a fresh one. Under the driver no observer is
-        # active at parse time, so each execution gets its own as before.
+        # active at parse time, so each execution gets its own.
         observer = get_active_observer() or SelectorObserver()
 
         return page_element, observer
@@ -281,9 +267,6 @@ def register_injector(
     doc: str,
 ) -> None:
     """Register a ``@step`` parameter name and what to inject for it.
-
-    Hosts embedding jkent (a replay worker, for one) register their own
-    injections here rather than patching the decorator.
 
     Args:
         name: The parameter name a step declares to receive this value.
@@ -377,44 +360,10 @@ register_injector(
 )
 
 
-def _process_yielded_request(yielded: Any) -> Any:
-    """Process a yielded Request to resolve Callable steps.
-
-    When a decorated function yields a Request with a Callable step, this
-    resolves it to the function name and fills in what the request left
-    unset from the target step's metadata: its priority and its rate-limit
-    lane.
-
-    Args:
-        yielded: The value yielded by the step.
-
-    Returns:
-        The processed yield value.
-    """
-    if isinstance(yielded, Request) and callable(yielded.step):
-        # Get the target function's step metadata (if decorated with @step)
-        target_metadata = get_step_metadata(yielded.step)
-
-        # Resolve Callable to function name
-        func_name = yielded.step.__name__
-        # Note: We use object.__setattr__ because dataclasses are frozen
-        object.__setattr__(yielded, "step", func_name)
-
-        # If the yielded request doesn't have a priority set,
-        # inherit from the target step's metadata. Explicit priorities
-        # (including an explicit 9) are kept.
-        if yielded.priority is None and target_metadata is not None:
-            object.__setattr__(yielded, "priority", target_metadata.priority)
-        # Same rule for the rate-limit lane: unset inherits, explicit wins.
-        if (
-            yielded.rate_limit is None
-            and target_metadata is not None
-            and target_metadata.rate_limit is not None
-        ):
-            object.__setattr__(
-                yielded, "rate_limit", target_metadata.rate_limit
-            )
-
+def _resolve_yield(scraper_self: Any, yielded: Any) -> Any:
+    """Pass a yielded Request through :func:`inherit_step_metadata`."""
+    if isinstance(yielded, Request):
+        return inherit_step_metadata(scraper_self, yielded)
     return yielded
 
 
@@ -444,6 +393,7 @@ def step(
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
     rate_limit: str | None = ...,
+    timeout: TimeoutType = ...,
 ) -> StepMethod[StepScraper, StepYield]: ...
 @overload
 def step(
@@ -455,6 +405,7 @@ def step(
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
     rate_limit: str | None = ...,
+    timeout: TimeoutType = ...,
 ) -> Callable[
     [StepFunction[StepScraper, StepYield]], StepMethod[StepScraper, StepYield]
 ]: ...
@@ -467,6 +418,7 @@ def step(
     auto_await_timeout: int | None = None,
     preprocess: Callable[[str], str] | None = None,
     rate_limit: str | None = None,
+    timeout: TimeoutType = None,
 ) -> (
     StepMethod[StepScraper, StepYield]
     | Callable[
@@ -508,9 +460,9 @@ def step(
     Args:
         func: The scraper step method to decorate (when used without parens).
         priority: Priority hint for queue ordering (lower = higher priority).
-        encoding: Character encoding for ``text`` injection (and JSON
-            decoding fallback). HTML parsing (``lxml_tree``/``page``)
-            auto-detects encoding from the raw bytes and ignores this.
+        encoding: Fallback charset for the ``text``, ``json_content``,
+            ``lxml_tree`` and ``page`` injections, used when neither the
+            document nor the ``Content-Type`` header declares one.
         await_list: Optional list of wait conditions for Playwright driver
             (WaitForSelector, WaitForLoadState, WaitForURL, WaitForTimeout).
             HTTP driver ignores this parameter.
@@ -530,6 +482,10 @@ def step(
             inherits it (an explicit value on the request wins), the way
             ``priority`` is inherited. None leaves requests in the default
             lane.
+        timeout: Seconds a request routed to this step waits, as a float or
+            a (connect, read) tuple. A yielded Request whose own
+            ``HTTPRequestParams.timeout`` is unset inherits it. None leaves
+            it to the transport's timeout.
 
     Returns:
         Decorated function with automatic argument injection.
@@ -556,6 +512,7 @@ def step(
             await_list=await_list,
             auto_await_timeout=auto_await_timeout,
             rate_limit=rate_limit,
+            timeout=timeout,
         )
 
         @wraps(fn)
@@ -584,7 +541,7 @@ def step(
             # into each other's observers.
             if observer is None:
                 for yielded in gen:
-                    yield _process_yielded_request(yielded)
+                    yield _resolve_yield(scraper_self, yielded)
             else:
                 while True:
                     with observer:
@@ -592,7 +549,7 @@ def step(
                             yielded = next(gen)
                         except StopIteration:
                             break
-                    yield _process_yielded_request(yielded)
+                    yield _resolve_yield(scraper_self, yielded)
 
         # Attach metadata to the wrapper
         attach_step_metadata(wrapper, metadata)
