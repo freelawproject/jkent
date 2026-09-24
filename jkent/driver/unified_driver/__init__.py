@@ -1,0 +1,26 @@
+"""Unified driver — a transport-agnostic driver stack.
+
+The driver core owns orchestration (queue, workers, storage, retries); a
+:class:`Transport` owns request execution and the lifecycle of whatever
+resource that execution needs.
+
+The package holds the concrete pieces: the transports, the rate limiter,
+the orchestration substrate (queue, storage, step executor), and
+the compactor.
+"""
+
+from __future__ import annotations
+
+from jkent.driver.unified_driver.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerPolicy,
+)
+from jkent.driver.unified_driver.lifecycle import AsyncLifecycle
+from jkent.driver.unified_driver.pool import WorkerPool
+
+__all__ = [
+    "AsyncLifecycle",
+    "CircuitBreaker",
+    "CircuitBreakerPolicy",
+    "WorkerPool",
+]
