@@ -1,7 +1,7 @@
 """How a request was produced — the ``via`` models.
 
 A via records the browser action that yielded a
-:class:`~jkent.data_types.Request` (following a link, submitting a form)
+:class:`~jkent.common.request.Request` (following a link, submitting a form)
 so the Playwright transport can replay it; the HTTP transport reads only the
 request itself. ``via_json`` is the stored form and :func:`via_from_json` its
 one reader.
@@ -11,40 +11,55 @@ A leaf: imports only :mod:`jkent.common.selectors`.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from typing import Annotated, Literal
+
+from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ConfigDict, Field, TypeAdapter
 
 from jkent.common.selectors import Selector
 
+__all__ = [
+    "FieldResolver",
+    "FieldValue",
+    "Via",
+    "ViaFormSubmit",
+    "ViaLink",
+    "via_from_json",
+]
 
-@dataclass(frozen=True)
-class ViaLink:
+
+class _ViaBase(PydanticBaseModel):
+    """Shared config for the via models.
+
+    Frozen: a via describes an action already taken, so nothing should
+    rewrite one after the fact.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    def to_json(self) -> str:
+        """This via as the ``via_json`` wire format (see :func:`via_from_json`)."""
+        return self.model_dump_json()
+
+
+class ViaLink(_ViaBase):
     """Describes a request produced by following a link.
 
     Enables the Playwright driver to replay the browser action that corresponds
     to the request (clicking the link). The HTTP driver ignores this field.
 
     Attributes:
+        type: Discriminator for the ``via_json`` union.
         selector: The :class:`Selector` that found the <a> element. Its grammar
             lets the driver route it to Playwright's engine without re-running
             the prefix heuristic.
         description: Human-readable description of the link.
     """
 
+    type: Literal["link"] = "link"
     selector: Selector
     description: str
-
-    def to_json(self) -> str:
-        """This via as the ``via_json`` wire format (see :func:`via_from_json`)."""
-        return json.dumps(
-            {
-                "type": "link",
-                "selector": self.selector.value,
-                "selector_type": self.selector.grammar,
-                "description": self.description,
-            }
-        )
 
 
 # A form field's submitted value, or an async resolver for one. A resolver
@@ -56,14 +71,14 @@ FieldValue = str | list[str]
 FieldResolver = Callable[[], Awaitable[FieldValue]]
 
 
-@dataclass(frozen=True)
-class ViaFormSubmit:
+class ViaFormSubmit(_ViaBase):
     """Describes a request produced by submitting a form.
 
     Enables the Http and Browser based transports to have a unified interface for
     submitting a form.
 
     Attributes:
+        type: Discriminator for the ``via_json`` union.
         form_selector: The :class:`Selector` that found the <form> element. Its
             grammar lets the driver route it to Playwright's engine without
             re-running the prefix heuristic.
@@ -71,42 +86,24 @@ class ViaFormSubmit:
         field_data: Merged field values (defaults + overrides). A list value
             means repeated keys (checkbox groups, multi-selects). A
             :data:`FieldResolver` value is awaited at enqueue time (see
-            :meth:`Request.resolve_deferred_fields`).
+            :meth:`Request.resolve_deferred_fields`) — serializing one is an
+            error, which is why the driver resolves them before storing.
         description: Human-readable description of the form.
     """
 
+    type: Literal["form_submit"] = "form_submit"
     form_selector: Selector
     submit_selector: str | None
     field_data: dict[str, FieldValue | FieldResolver]
     description: str
 
-    def to_json(self) -> str:
-        """This via as the ``via_json`` wire format (see :func:`via_from_json`).
 
-        Requires concrete ``field_data`` values — a still-unresolved
-        :data:`FieldResolver` is not JSON-serializable (the driver resolves
-        them at enqueue time, before serialization).
-        """
-        return json.dumps(
-            {
-                "type": "form_submit",
-                "form_selector": self.form_selector.value,
-                "selector_type": self.form_selector.grammar,
-                "submit_selector": self.submit_selector,
-                "field_data": self.field_data,
-                "description": self.description,
-            }
-        )
+#: The ``via_json`` column's content: one of the via models, told apart by
+#: their ``type`` field. A third via is one more class and one more literal —
+#: the writer and the reader both follow from the union.
+Via = Annotated[ViaLink | ViaFormSubmit, Field(discriminator="type")]
 
-
-def _selector_grammar(selector: str) -> str:
-    """Best-effort selector grammar for legacy via rows lacking selector_type.
-
-    Mirrors ``find_form``/``find_links``: unambiguous XPath prefixes are
-    "xpath", everything else "css". Only used as a fallback — rows written
-    after selector_type was added carry the real value.
-    """
-    return "xpath" if selector.startswith(("//", "./", "(")) else "css"
+_VIA_ADAPTER: TypeAdapter[Via] = TypeAdapter(Via)
 
 
 def via_from_json(raw: str) -> ViaLink | ViaFormSubmit:
@@ -114,36 +111,16 @@ def via_from_json(raw: str) -> ViaLink | ViaFormSubmit:
 
     The inverse of :meth:`ViaLink.to_json` / :meth:`ViaFormSubmit.to_json` —
     the single reader for the ``via_json`` column consumers store and inspect
-    (the driver's queue, jent's reconstruction). Shape:
-    link → ``{type, selector, selector_type, description}``; form_submit →
-    ``{type, form_selector, selector_type, submit_selector, field_data,
-    description}``. Rows written before ``selector_type`` existed fall back
-    to the prefix heuristic.
+    (the driver's queue, a host's request reconstruction). Shape:
+    link → ``{type, selector, description}``; form_submit →
+    ``{type, form_selector, submit_selector, field_data, description}``, where
+    each selector is ``{value, grammar}``.
+
+    The reader is strict about that shape: a flat
+    ``selector``/``selector_type`` pair is rejected rather than parsed by
+    guessing the grammar from the selector's prefix.
 
     Raises:
-        ValueError: On an unknown ``type``.
+        ValueError: The JSON does not match either via shape.
     """
-    data = json.loads(raw)
-    kind = data.get("type")
-    if kind == "form_submit":
-        return ViaFormSubmit(
-            form_selector=Selector.of(
-                data["form_selector"],
-                data.get(
-                    "selector_type",
-                    _selector_grammar(data["form_selector"]),
-                ),
-            ),
-            submit_selector=data.get("submit_selector"),
-            field_data=data["field_data"],
-            description=data["description"],
-        )
-    if kind == "link":
-        return ViaLink(
-            selector=Selector.of(
-                data["selector"],
-                data.get("selector_type", _selector_grammar(data["selector"])),
-            ),
-            description=data["description"],
-        )
-    raise ValueError(f"unknown via type {kind!r} in via_json")
+    return _VIA_ADAPTER.validate_json(raw)

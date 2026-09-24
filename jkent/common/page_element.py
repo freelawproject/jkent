@@ -1,35 +1,33 @@
-"""PageElement ABC for unified data extraction across drivers.
+"""Page-element value objects (``Form``, ``FormField``, ``Link``) and the
+public ``PageElement`` name.
 
-This module provides a driver-agnostic interface for querying HTML elements,
-extracting text and attributes, and navigating the DOM. PageElement is always
-backed by static parsed HTML (LXML). The driver is responsible for obtaining
-the HTML, whether via HTTP or by serializing a rendered Playwright DOM.
+A page element is always backed by static parsed HTML (LXML). The driver is
+responsible for obtaining the HTML, whether via HTTP or by serializing a
+rendered Playwright DOM. The one implementation is
+:class:`~jkent.common.lxml_page_element.LxmlPageElement`; ``PageElement`` is
+its scraper-facing alias.
 """
 
 from __future__ import annotations
 
 import re
-from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any, TypeGuard
-
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 # ViaLink and ViaFormSubmit are defined in data_types so that Request.via can be
 # typed directly (data_types cannot import from this module). They are imported
 # here because the page-element API is where scrapers produce them.
-from jkent.data_types import (
-    FieldResolver,
-    FieldValue,
-    HttpMethod,
-    HTTPRequestParams,
-    Request,
-    Selector,
-    ViaFormSubmit,
-    ViaLink,
-    XPath,
-)
+from jkent.common.request import HttpMethod, HTTPRequestParams, Request
+from jkent.common.selectors import Selector
+from jkent.common.via import FieldResolver, FieldValue, ViaFormSubmit, ViaLink
+
+if TYPE_CHECKING:
+    # Type checkers see ``PageElement`` here; at runtime it resolves through
+    # the module ``__getattr__`` at the bottom.
+    from jkent.common.lxml_page_element import (  # noqa: F401
+        LxmlPageElement as PageElement,
+    )
 
 # A ``submit_selector`` picks the activated submit control. We resolve it
 # against the parsed FormFields, which retain only the id, name and value
@@ -72,8 +70,7 @@ def _normalize_submit_selector(
     :func:`_submit_selector_predicates` is unaffected by the engine prefix.
     """
     if isinstance(submit_selector, Selector):
-        engine = "xpath" if submit_selector.grammar == "xpath" else "css"
-        return f"{engine}={submit_selector.value}"
+        return submit_selector.for_playwright()
     return submit_selector
 
 
@@ -385,155 +382,15 @@ class Link:
         )
 
 
-class PageElement(ABC):
-    """Abstract base for driver-agnostic data extraction from HTML elements.
+if not TYPE_CHECKING:
 
-    PageElement is always backed by static parsed HTML (LXML). The driver is
-    responsible for obtaining the HTML, whether via HTTP or by serializing a
-    rendered Playwright DOM.
+    def __getattr__(name: str) -> Any:
+        # ``PageElement`` resolves lazily: lxml_page_element imports the value
+        # objects above, so an eager import here would be circular.
+        if name == "PageElement":
+            from jkent.common.lxml_page_element import (  # noqa: PLC0415
+                LxmlPageElement,
+            )
 
-    All query methods support count validation and raise
-    HTMLStructuralAssumptionException if the actual count doesn't match
-    expectations.
-    """
-
-    @abstractmethod
-    def query(
-        self,
-        selector: Selector,
-        description: str,
-        min_count: int = 1,
-        max_count: int | None = None,
-    ) -> list[Self]:
-        """Query elements by selector, dispatching on its grammar.
-
-        Accepts ``Selector.XPath``/``Selector.CSS`` and routes to the matching
-        engine off ``selector.grammar`` — callers no longer pick the method
-        (``query_xpath``/``query_css``) by hand, and a bare string can't reach
-        this entry point.
-
-        Args:
-            selector: ``Selector.XPath``/``Selector.CSS`` to execute.
-            description: Human-readable description of what's being selected.
-            min_count: Minimum number of elements expected (default: 1).
-            max_count: Maximum number of elements expected (None = unlimited).
-
-        Returns:
-            List of matching PageElement instances.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
-        """
-        ...
-
-    @abstractmethod
-    def query_strings(
-        self,
-        selector: XPath,
-        description: str,
-        min_count: int = 1,
-        max_count: int | None = None,
-    ) -> list[str]:
-        """Query string values by XPath selector.
-
-        Useful for extracting text nodes or attribute values directly. Only
-        XPath can yield strings (CSS selectors always match elements), so this
-        requires a :class:`~jkent.data_types.XPath` selector — a CSS selector is
-        rejected by the type checker rather than silently matching nothing.
-
-        Args:
-            selector: ``Selector.XPath`` returning strings (text nodes, attributes).
-            description: Human-readable description of what's being selected.
-            min_count: Minimum number of strings expected (default: 1).
-            max_count: Maximum number of strings expected (None = unlimited).
-
-        Returns:
-            List of matching string values.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
-        """
-        ...
-
-    @abstractmethod
-    def text_content(self) -> str:
-        """Extract the visible text content.
-
-        Returns:
-            Visible text content of the element and its descendants.
-        """
-        ...
-
-    @abstractmethod
-    def get_attribute(self, name: str) -> str | None:
-        """Extract an attribute value.
-
-        Args:
-            name: Name of the attribute.
-
-        Returns:
-            Value of the attribute, or None if it doesn't exist.
-        """
-        ...
-
-    @abstractmethod
-    def inner_html(self) -> str:
-        """Get the inner HTML content.
-
-        Returns:
-            Inner HTML content of the element as a string.
-        """
-        ...
-
-    @abstractmethod
-    def tag_name(self) -> str:
-        """Get the element's tag name.
-
-        Returns:
-            Tag name as a lowercase string (e.g., "div", "a", "form").
-        """
-        ...
-
-    @abstractmethod
-    def find_form(
-        self,
-        selector: Selector,
-        description: str,
-    ) -> Form:
-        """Find a form by selector.
-
-        Args:
-            selector: ``Selector.XPath``/``Selector.CSS`` locating the form.
-            description: Human-readable description of the form.
-
-        Returns:
-            Form value object with action, method, and fields.
-
-        Raises:
-            HTMLStructuralAssumptionException: If no form matches the selector.
-        """
-        ...
-
-    @abstractmethod
-    def find_links(
-        self,
-        selector: Selector,
-        description: str,
-        min_count: int = 1,
-        max_count: int | None = None,
-    ) -> list[Link]:
-        """Find links matching a selector.
-
-        Args:
-            selector: ``Selector.XPath``/``Selector.CSS`` locating <a> elements.
-            description: Human-readable description of the links.
-            min_count: Minimum number of links expected (default: 1).
-            max_count: Maximum number of links expected (None = unlimited).
-
-        Returns:
-            List of Link value objects with resolved URLs and text.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
-        """
-        ...
+            return LxmlPageElement
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
