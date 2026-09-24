@@ -13,6 +13,34 @@
       "name": "bad-argument-type",
       "concise_description": "Argument `None` is not assignable to parameter `params` with type `list[dict[str, dict[str, JsonValue]]]` in function `jkent.common.scraper.BaseScraper.initial_seed`",
       "severity": "error"
+    },
+    {
+      "column": 15,
+      "path": "tests/driver/unified/test_playwright_transport.py",
+      "name": "bad-override",
+      "concise_description": "Class member `PlaywrightArchiveConformance.test_resolve_archive_metadata_and_chunks` overrides parent class `TransportConformance` in an inconsistent manner",
+      "severity": "error"
+    },
+    {
+      "column": 15,
+      "path": "tests/driver/unified/test_playwright_transport.py",
+      "name": "missing-override-decorator",
+      "concise_description": "Class member `PlaywrightArchiveConformance.test_resolve_archive_metadata_and_chunks` overrides a member in a parent class but is missing an `@override` decorator",
+      "severity": "error"
+    },
+    {
+      "column": 15,
+      "path": "tests/driver/unified/test_playwright_transport.py",
+      "name": "bad-override",
+      "concise_description": "Class member `PlaywrightArchiveConformance.test_finish_archiving_is_no_throw` overrides parent class `TransportConformance` in an inconsistent manner",
+      "severity": "error"
+    },
+    {
+      "column": 15,
+      "path": "tests/driver/unified/test_playwright_transport.py",
+      "name": "missing-override-decorator",
+      "concise_description": "Class member `PlaywrightArchiveConformance.test_finish_archiving_is_no_throw` overrides a member in a parent class but is missing an `@override` decorator",
+      "severity": "error"
     }
   ]
 }
