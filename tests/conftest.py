@@ -21,6 +21,13 @@ import os
 # whole test run enforces contracts; production leaves them off.
 os.environ.setdefault("JKENT_ENFORCE_CONTRACTS", "1")
 
+# Every test server is on loopback; keep httpx (trust_env) from routing to
+# them through a host proxy. A macOS system proxy otherwise turns a refused
+# connection into the proxy's 502.
+os.environ["NO_PROXY"] = ",".join(
+    filter(None, [os.environ.get("NO_PROXY"), "127.0.0.1", "localhost"])
+)
+
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
