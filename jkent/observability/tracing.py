@@ -6,9 +6,8 @@ so the ``with`` blocks below are cheap no-ops that still run their timing math
 (a few ``time.monotonic()`` calls) — negligible per request.
 
 ``run_inst_id`` is read from OpenTelemetry **baggage**, which the host sets
-before invoking the run (see ``EN_BANC_OTEL.md``). It is attached to spans and
-the per-run gauges for cross-run correlation, but never to the high-volume
-histograms.
+before invoking the run. It is attached to spans and the per-run gauges for
+cross-run correlation, but never to the high-volume histograms.
 """
 
 from __future__ import annotations
