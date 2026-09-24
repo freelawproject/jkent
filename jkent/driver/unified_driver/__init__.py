@@ -11,6 +11,11 @@ the compactor.
 
 from __future__ import annotations
 
+from jkent.driver.unified_driver.bootstrap import (
+    RunBootstrapper,
+    build_transport,
+    resolve_browser_profile,
+)
 from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerPolicy,
@@ -77,10 +82,13 @@ __all__ = [
     "RateLimiters",
     "RequestQueue",
     "ResponseStorage",
+    "RunBootstrapper",
     "RunCollaborators",
     "RunConfig",
     "RunHooks",
     "ScrapeRun",
+    "build_transport",
+    "resolve_browser_profile",
     "Transport",
     "WorkerHandle",
     "WorkerPool",
