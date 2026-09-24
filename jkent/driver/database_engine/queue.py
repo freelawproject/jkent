@@ -1,4 +1,4 @@
-"""RequestQueueDB - DB-backed request queue operations for the unified driver."""
+"""RequestQueue - DB-backed request queue operations for the unified driver."""
 
 from __future__ import annotations
 
@@ -33,8 +33,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "Dequeued",
-    "EnqueuedEvent",
-    "RequestQueueDB",
+    "RequestQueue",
     "serialize_url_and_body",
 ]
 
@@ -49,7 +48,7 @@ if TYPE_CHECKING:
 
 
 class Dequeued(NamedTuple):
-    """What :meth:`RequestQueueDB.get_next_request` hands the worker."""
+    """What :meth:`RequestQueue.get_next_request` hands the worker."""
 
     request_id: int
     request: Request
@@ -57,34 +56,6 @@ class Dequeued(NamedTuple):
     #: True when the row already carries its response (promoted from a
     #: captured incidental), so the worker skips the transport.
     preresolved: bool
-
-
-class EnqueuedEvent(NamedTuple):
-    """The ``request_enqueued`` progress event for one enqueued request.
-
-    A named shape rather than a bare dict so the three hops it makes — built
-    in :meth:`RequestQueueDB._prepare_enqueue`, buffered by
-    :class:`~jkent.driver.database_engine.staging.StagedWrites`, returned by
-    its ``flush`` — are checked instead of stringly-keyed.
-    :meth:`payload` is the untyped form the
-    :data:`~jkent.driver.unified_driver.persistence.ProgressCallback`
-    boundary takes, built in one place.
-
-    ``url`` and ``step`` are both ``str``, so build one by keyword: a
-    positional call that transposes the two still type-checks.
-    """
-
-    url: str
-    step: str
-    priority: int
-
-    def payload(self) -> dict[str, Any]:
-        """The event as a progress callback's ``data`` mapping.
-
-        Returns:
-            The event's fields, keyed by name.
-        """
-        return self._asdict()
 
 
 def _step_name(step: str | Callable[..., Any]) -> str:
@@ -115,7 +86,7 @@ def _step_name(step: str | Callable[..., Any]) -> str:
     return name
 
 
-def _row_round_trips(queue: RequestQueueDB, row: RequestInsert) -> bool:
+def _row_round_trips(queue: RequestQueue, row: RequestInsert) -> bool:
     """Whether *row* survives the trip through the database and back.
 
     This is intended for runs only under the dev-time contract gate (see
@@ -144,7 +115,7 @@ def _row_round_trips(queue: RequestQueueDB, row: RequestInsert) -> bool:
     return again == row
 
 
-class RequestQueueDB:
+class RequestQueue:
     """DB-backed queue: enqueue (staged), dequeue, (de)serialization.
 
     Provides methods for persisting requests to SQLite with deduplication
@@ -201,13 +172,8 @@ class RequestQueueDB:
         new_request: Request,
         context: Response | Request,
         parent_request_id: int | None,
-    ) -> tuple[RequestInsert, EnqueuedEvent]:
+    ) -> RequestInsert:
         """Resolve, serialize, and dedup/parent-resolve a request for enqueue.
-
-        The shared core of both enqueue paths — the immediate
-        ``RequestQueue.enqueue_request`` and the staged
-        ``_stage_enqueue_request`` — so the two cannot drift on serialization,
-        the dedup-key / priority / parent-id rules, or the progress payload.
 
         Args:
             new_request: The request a step yielded.
@@ -216,10 +182,9 @@ class RequestQueueDB:
                 ``None``.
 
         Returns:
-            ``(request_data, progress_event)``, where ``request_data``
-            already carries the effective ``priority``,
+            The row to insert, already carrying the effective ``priority``,
             ``deduplication_key``, and ``parent_request_id``, ready for
-            ``insert_request`` / ``stage_request``.
+            ``stage_request``.
         """
         # Await any async field resolvers first: serialization needs concrete
         # values, and the regenerated dedup key must hash them.
@@ -228,13 +193,7 @@ class RequestQueueDB:
 
         request_data = self._insert_payload(resolved_request)
         request_data.parent_request_id = parent_request_id
-
-        progress_event = EnqueuedEvent(
-            url=request_data.url,
-            step=request_data.step,
-            priority=resolved_request.effective_priority,
-        )
-        return request_data, progress_event
+        return request_data
 
     async def insert_root_request(
         self, request: Request, *, deduplicate: bool = True
@@ -271,8 +230,8 @@ class RequestQueueDB:
         """The serialized row with the effective priority and dedup key.
 
         The single funnel for every ``requests`` insert — the staged
-        enqueue, the immediate one, and the root/probe path all build their
-        payload here — so the round-trip postcondition covers all three.
+        enqueue and the root/probe path both build their payload here — so
+        the round-trip postcondition covers both.
         See :func:`_row_round_trips`.
 
         Args:
@@ -296,17 +255,15 @@ class RequestQueueDB:
     ) -> None:
         """Stage an enqueue for the parent step's flush.
 
-        Mirrors ``enqueue_request`` but defers the DB insert and progress
-        event until ``staged.flush()`` is called. When ``preresolved_response``
-        is set the row is inserted pre-resolved (response stored, worker skips
-        the transport).
+        The DB insert is deferred until ``staged.flush()`` is called. When
+        ``preresolved_response`` is set the row is inserted pre-resolved
+        (response stored, worker skips the transport).
         """
-        request_data, progress_event = await self._prepare_enqueue(
+        request_data = await self._prepare_enqueue(
             new_request, context, parent_request_id
         )
         staged.stage_request(
             request_data=request_data,
-            progress_event=progress_event,
             preresolved_response=preresolved_response,
         )
 

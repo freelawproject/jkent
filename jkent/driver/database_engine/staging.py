@@ -11,12 +11,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from jkent.contracts import require
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from jkent.driver.database_engine.queue import EnqueuedEvent
     from jkent.driver.database_engine.sql_manager import (
         RequestInsert,
         ResultInsert,
@@ -25,35 +22,6 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
-
-
-async def _parent_is_in_progress(self: StagedWrites, db: SQLManager) -> bool:
-    """Whether the row :meth:`StagedWrites.flush` is about to complete is live.
-
-    Dev-time only (see :mod:`jkent.contracts`); production never calls it.
-
-    Args:
-        self: The staged writes about to flush.
-        db: The run database to check against.
-
-    Returns:
-        ``True`` when the parent request is still ``in_progress``.
-    """
-    # Local imports: needed only when contracts are enabled.
-    from sqlalchemy import select  # noqa: PLC0415
-
-    from jkent.driver.database_engine.enums import (  # noqa: PLC0415
-        RequestStatus,
-    )
-    from jkent.driver.database_engine.models import Request  # noqa: PLC0415
-
-    async with db.session_factory() as session:
-        status = (
-            await session.execute(
-                select(Request.status).where(Request.id == self.request_id)
-            )
-        ).scalar()
-    return status == RequestStatus.IN_PROGRESS
 
 
 @dataclass(frozen=True)
@@ -65,7 +33,6 @@ class _StagedRequest:
     """
 
     request_data: RequestInsert
-    progress_event: EnqueuedEvent
     # When set, insert the request pre-resolved: its response columns are
     # populated in the same INSERT and the row is flagged ``preresolved``.
     preresolved_response: StoredResponse | None = None
@@ -81,8 +48,8 @@ class StagedWrites:
 
     request_id: int
     # The three buffers are private and append-only through the ``stage_*``
-    # methods: a caller reaching past them could stage a request without its
-    # progress event, or a callback with no row behind it.
+    # methods: a caller reaching past them could stage a callback with no
+    # row behind it.
     _results: list[ResultInsert] = field(default_factory=list)
     _requests: list[_StagedRequest] = field(default_factory=list)
     # User-visible callbacks (on_data / on_invalid_data) are deferred until
@@ -116,7 +83,6 @@ class StagedWrites:
         self,
         *,
         request_data: RequestInsert,
-        progress_event: EnqueuedEvent,
         preresolved_response: StoredResponse | None = None,
     ) -> None:
         """Stage a request insert.
@@ -132,16 +98,11 @@ class StagedWrites:
         self._requests.append(
             _StagedRequest(
                 request_data=request_data,
-                progress_event=progress_event,
                 preresolved_response=preresolved_response,
             )
         )
 
-    @require(
-        _parent_is_in_progress,
-        "the parent request is in_progress when its step's writes flush",
-    )
-    async def flush(self, db: SQLManager) -> list[EnqueuedEvent]:
+    async def flush(self, db: SQLManager) -> None:
         """Commit all buffered writes and complete the parent request.
 
         The results, the queued requests and the parent's ``completed``
@@ -149,14 +110,7 @@ class StagedWrites:
 
         Args:
             db: The run database to commit into.
-
-        Returns:
-            The progress-event payloads for newly-inserted requests, so the
-            caller can fire them post-commit (deduplicated inserts are
-            omitted).
         """
-        emitted_events: list[EnqueuedEvent] = []
-
         async with db._write_session() as session:
             for result in self._results:
                 await db.store_result_in_session(
@@ -164,13 +118,11 @@ class StagedWrites:
                 )
 
             for q in self._requests:
-                inserted = await db.insert_request_in_session(
+                await db.insert_request_in_session(
                     session,
                     q.request_data,
                     preresolved_response=q.preresolved_response,
                 )
-                if inserted.inserted:
-                    emitted_events.append(q.progress_event)
 
             await db.mark_request_completed_in_session(
                 session, self.request_id
@@ -180,8 +132,7 @@ class StagedWrites:
 
         # User callbacks fire after the rows they relate to are durable. The
         # commit has happened, so one raising cannot undo anything: log it
-        # and keep going, or the later callbacks and the progress events for
-        # children that were inserted are lost.
+        # and keep going, or the later callbacks are lost.
         for cb in self._deferred_callbacks:
             try:
                 await cb()
@@ -190,5 +141,3 @@ class StagedWrites:
                     "Deferred callback for request %d raised after commit",
                     self.request_id,
                 )
-
-        return emitted_events

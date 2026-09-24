@@ -8,6 +8,7 @@ the ``**engine_kwargs`` pass-through hosts use to swap the pool class.
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,6 +17,7 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from jkent.driver.database_engine.database import (
     BASELINE_VERSION,
+    NotARunDatabaseError,
     UnsupportedSchemaVersionError,
     init_database,
 )
@@ -137,3 +139,83 @@ async def test_newer_schema_version_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(UnsupportedSchemaVersionError):
         await init_database(db_path)
+
+
+def _table_names(db_path: Path) -> set[str]:
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    conn.close()
+    return {name for (name,) in rows}
+
+
+async def test_read_only_reads_and_refuses_writes(tmp_path: Path) -> None:
+    db_path = tmp_path / "run.db"
+    engine, _ = await init_database(db_path)
+    await engine.dispose()
+
+    engine, factory = await init_database(db_path, read_only=True)
+    try:
+        async with factory() as session:
+            version = (
+                await session.execute(
+                    sa.text("SELECT version FROM schema_info")
+                )
+            ).scalar()
+            assert version == BASELINE_VERSION
+            with pytest.raises(sa.exc.OperationalError, match="readonly"):
+                await session.execute(
+                    sa.text("INSERT INTO schema_info (version) VALUES (2)")
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_read_only_missing_file_is_not_created(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing.db"
+    with pytest.raises(FileNotFoundError):
+        await init_database(db_path, read_only=True)
+    assert not db_path.exists()
+
+
+async def test_read_only_foreign_database_is_refused_untouched(
+    tmp_path: Path,
+) -> None:
+    """A SQLite file that isn't a run db is refused, and no tables added."""
+    db_path = tmp_path / "other.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unrelated (x INTEGER)")
+    conn.close()
+
+    with pytest.raises(NotARunDatabaseError) as excinfo:
+        await init_database(db_path, read_only=True)
+    assert "schema_info" in excinfo.value.missing
+    assert _table_names(db_path) == {"unrelated"}
+
+
+async def test_read_only_unstamped_database_is_refused(tmp_path: Path) -> None:
+    db_path = tmp_path / "unstamped.db"
+    engine, _ = await init_database(db_path)
+    async with engine.begin() as conn:
+        await conn.execute(sa.text("DELETE FROM schema_info"))
+    await engine.dispose()
+
+    with pytest.raises(NotARunDatabaseError):
+        await init_database(db_path, read_only=True)
+
+
+async def test_read_only_stale_schema_version_is_refused(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "stale.db"
+    engine, _ = await init_database(db_path)
+    async with engine.begin() as conn:
+        await conn.execute(
+            sa.text("UPDATE schema_info SET version = :v"),
+            {"v": BASELINE_VERSION - 1},
+        )
+    await engine.dispose()
+
+    with pytest.raises(UnsupportedSchemaVersionError):
+        await init_database(db_path, read_only=True)

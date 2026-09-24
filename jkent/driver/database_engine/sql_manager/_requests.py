@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Final, NamedTuple
 
 import sqlalchemy as sa
 from sqlalchemy import case, func, insert, or_, select, update
+from typing_extensions import override
 
+from jkent.driver.database_engine.database import execute_rowcount
 from jkent.driver.database_engine.models import Request, RequestStatus
 from jkent.driver.database_engine.sql_manager._base import SQLManagerBase
 from jkent.driver.database_engine.sql_manager._types import (
@@ -37,24 +39,132 @@ logger = logging.getLogger(__name__)
 _DEQUEUED_COLUMNS: Final = model_columns(DequeuedRow, Request).values()
 
 
-def mark_failed(request_id: int, error_message: str) -> sa.Update:
-    """The UPDATE that marks ``request_id`` FAILED with ``error_message``.
+class IllegalTransitionError(RuntimeError):
+    """A status write found its row missing, or not in the status it leaves."""
+
+    def __init__(
+        self,
+        request_id: int,
+        source: RequestStatus,
+        target: RequestStatus,
+        actual: RequestStatus | None,
+    ) -> None:
+        """Describe the refused move.
+
+        Args:
+            request_id: The row the write targeted.
+            source: The status the write requires.
+            target: The status it would have written.
+            actual: The row's status, or ``None`` when the row is missing.
+        """
+        super().__init__(request_id, source, target, actual)
+        self.request_id = request_id
+        self.source = source
+        self.target = target
+        self.actual = actual
+
+    @override
+    def __str__(self) -> str:
+        """The refused move, readable.
+
+        Returns:
+            The row, the move, and what the row actually holds.
+        """
+        found = "missing" if self.actual is None else f"{self.actual}"
+        return (
+            f"request {self.request_id}: cannot move {self.source} -> "
+            f"{self.target}; row is {found}"
+        )
+
+
+def transition_stmt(
+    source: RequestStatus,
+    target: RequestStatus,
+    *where: sa.ColumnElement[bool],
+    **values: object,
+) -> sa.Update:
+    """The guarded UPDATE moving rows from ``source`` to ``target``.
+
+    Every status write goes through here, so each move is checked against
+    :meth:`RequestStatus.transitions`. ``source == target`` writes
+    ``values`` without a status change, under the same guard.
 
     Args:
-        request_id: The row to mark.
-        error_message: What to store as ``last_error``.
+        source: The status a row must be in to match.
+        target: The status to write.
+        *where: Further row filters (the id, for a single-row move).
+        **values: Further columns to write with the move.
 
     Returns:
-        The statement to execute.
+        The UPDATE, for the caller to execute.
+
+    Raises:
+        ValueError: ``source -> target`` is not an allowed transition.
     """
+    if (
+        source != target
+        and (source, target) not in RequestStatus.transitions()
+    ):
+        raise ValueError(f"{source} -> {target} is not a request transition")
     return (
         update(Request)
-        .where(Request.id == request_id)
-        .values(
-            status=RequestStatus.FAILED,
-            completed_at=now(),
-            last_error=error_message,
+        .where(Request.status == source, *where)
+        .values(status=target, **values)
+    )
+
+
+async def transition(
+    session: AsyncSession,
+    request_id: int,
+    source: RequestStatus,
+    target: RequestStatus,
+    **values: object,
+) -> None:
+    """Move ``request_id`` from ``source`` to ``target``, writing ``values``.
+
+    The UPDATE matches only while the row is in ``source``, so a row some
+    other path already moved is never overwritten. A disallowed
+    ``source -> target`` raises ``ValueError`` (see :func:`transition_stmt`).
+
+    Args:
+        session: The open write session (no commit).
+        request_id: The row to move.
+        source: The status the row must be in.
+        target: The status to write; one of
+            :meth:`RequestStatus.transitions` from ``source``.
+        **values: Further columns to write with the move.
+
+    Raises:
+        IllegalTransitionError: The row is missing or not in ``source``.
+    """
+    moved = await execute_rowcount(
+        session,
+        transition_stmt(source, target, Request.id == request_id, **values),
+    )
+    if moved != 1:
+        actual = await session.scalar(
+            select(Request.status).where(Request.id == request_id)
         )
+        raise IllegalTransitionError(request_id, source, target, actual)
+
+
+async def mark_failed(
+    session: AsyncSession, request_id: int, error_message: str
+) -> None:
+    """Move ``request_id`` IN_PROGRESS -> FAILED (no commit).
+
+    Args:
+        session: The open write session.
+        request_id: The row to mark.
+        error_message: What to store as ``last_error``.
+    """
+    await transition(
+        session,
+        request_id,
+        RequestStatus.IN_PROGRESS,
+        RequestStatus.FAILED,
+        completed_at=now(),
+        last_error=error_message,
     )
 
 
@@ -238,15 +348,12 @@ class RequestQueueMixin(SQLManagerBase):
             :class:`DequeuedRow` or None if the queue is empty.
         """
         async with self._write_session() as session:
-            stmt = (
-                update(Request)
-                .where(Request.id == next_pending_id().scalar_subquery())
-                .values(
-                    status=RequestStatus.IN_PROGRESS,
-                    started_at=now(),
-                )
-                .returning(*_DEQUEUED_COLUMNS)
-            )
+            stmt = transition_stmt(
+                RequestStatus.PENDING,
+                RequestStatus.IN_PROGRESS,
+                Request.id == next_pending_id().scalar_subquery(),
+                started_at=now(),
+            ).returning(*_DEQUEUED_COLUMNS)
             result = await session.execute(stmt)
             row = result.first()
             await session.commit()
@@ -266,40 +373,47 @@ class RequestQueueMixin(SQLManagerBase):
                 of a probe completed without storing a response. ``None``
                 leaves the column as it is.
         """
+        extra = (
+            {}
+            if speculation_outcome is None
+            else {"speculation_outcome": speculation_outcome}
+        )
         async with self._write_session() as session:
-            await self.mark_request_completed_in_session(session, request_id)
-            if speculation_outcome is not None:
-                await session.execute(
-                    update(Request)
-                    .where(Request.id == request_id)
-                    .values(speculation_outcome=speculation_outcome)
-                )
+            await self.mark_request_completed_in_session(
+                session, request_id, **extra
+            )
             await session.commit()
 
     async def mark_request_completed_in_session(
-        self, session: AsyncSession, request_id: int
+        self, session: AsyncSession, request_id: int, **values: object
     ) -> None:
-        """Mark a request as completed inside an existing session (no commit)."""
-        await session.execute(
-            update(Request)
-            .where(Request.id == request_id)
-            .values(
-                status=RequestStatus.COMPLETED,
-                completed_at=now(),
-            )
+        """Move a request IN_PROGRESS -> COMPLETED (no commit).
+
+        ``values`` are further columns written with the move. See
+        :func:`transition` for what raises.
+        """
+        await transition(
+            session,
+            request_id,
+            RequestStatus.IN_PROGRESS,
+            RequestStatus.COMPLETED,
+            completed_at=now(),
+            **values,
         )
 
     async def mark_request_failed(
         self, request_id: int, error_message: str
     ) -> None:
-        """Mark a request as failed.
+        """Move a request IN_PROGRESS -> FAILED.
+
+        See :func:`transition` for what raises.
 
         Args:
             request_id: The database ID of the request.
             error_message: Error message describing the failure.
         """
         async with self._write_session() as session:
-            await session.execute(mark_failed(request_id, error_message))
+            await mark_failed(session, request_id, error_message)
             await session.commit()
 
     async def get_retry_state(self, request_id: int) -> RetryState | None:
@@ -375,16 +489,15 @@ class RequestQueueMixin(SQLManagerBase):
                     "cannot be scheduled: SQLite renders its retry time as "
                     "NULL"
                 )
-            await session.execute(
-                update(Request)
-                .where(Request.id == request_id)
-                .values(
-                    status=RequestStatus.PENDING,
-                    retry_count=Request.retry_count + 1,
-                    cumulative_backoff=new_cumulative_backoff,
-                    last_error=error,
-                    started_at=retry_at,
-                )
+            await transition(
+                session,
+                request_id,
+                RequestStatus.IN_PROGRESS,
+                RequestStatus.PENDING,
+                retry_count=Request.retry_count + 1,
+                cumulative_backoff=new_cumulative_backoff,
+                last_error=error,
+                started_at=retry_at,
             )
             await session.commit()
 
@@ -451,14 +564,16 @@ class RequestQueueMixin(SQLManagerBase):
         a DB-derived duration would otherwise include time spent waiting for a
         token. Re-stamping just before execution makes the persisted start
         mark the execute region rather than the queue wait.
+
+        The row must be IN_PROGRESS; see :func:`transition` for what raises.
         """
         async with self._write_session() as session:
-            await session.execute(
-                update(Request)
-                .where(Request.id == request_id)
-                .values(
-                    started_at=now(),
-                )
+            await transition(
+                session,
+                request_id,
+                RequestStatus.IN_PROGRESS,
+                RequestStatus.IN_PROGRESS,
+                started_at=now(),
             )
             await session.commit()
 
