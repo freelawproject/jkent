@@ -8,6 +8,7 @@ and the archive/inline-render servers.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import warnings
 from collections.abc import Generator
 from typing import Any
@@ -99,6 +100,42 @@ def require_browser(browser_launch_failure: str | None) -> None:
     """Skip the requesting test unless a browser engine launches here."""
     if browser_launch_failure is not None:
         pytest.skip(f"no launchable browser engine: {browser_launch_failure}")
+
+
+# --- Camoufox gate --------------------------------------------------------
+#
+# Separate from the gate above: camoufox bundles its own Firefox, which is a
+# ~200MB fetch, so an environment can easily have chromium and not camoufox
+# (CI does, on every interpreter but one). Anything needing a real camoufox
+# must gate on this rather than on ``browser_launch_failure``.
+
+
+async def _camoufox_launch_failure() -> str | None:
+    """Why a real camoufox context can't be brought up here, or None if it can."""
+    transport = PlaywrightTransport(
+        HttpPageScraper(), headless=True, browser_type="camoufox"
+    )
+    try:
+        await transport.open()
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            await transport.aclose()
+        return f"{type(exc).__name__}: {exc}".splitlines()[0]
+    await transport.aclose()
+    return None
+
+
+@pytest.fixture(scope="session")
+def camoufox_launch_failure() -> str | None:
+    """Session-wide: why camoufox doesn't launch in this env, or None."""
+    reason = asyncio.run(_camoufox_launch_failure())
+    if reason is not None:
+        warnings.warn(
+            f"camoufox-gated tests skip: {reason}",
+            RuntimeWarning,
+            stacklevel=1,
+        )
+    return reason
 
 
 async def serve_archive_download(body: bytes) -> StartedServer:

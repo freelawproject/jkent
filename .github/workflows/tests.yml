@@ -48,8 +48,43 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
+      # zstandard and pyyaml publish no cp315 wheels yet, so on 3.15 uv falls
+      # back to their sdists and needs a C toolchain, which the Playwright
+      # image does not carry. libyaml-dev is part of that: without the headers
+      # pyyaml quietly builds without its C extension, and camoufox imports
+      # yaml.CLoader unconditionally. Drop this step once upstream ships cp315
+      # wheels.
+      - name: Install a C toolchain for sdist builds
+        if: matrix.python-version == '3.15'
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential libyaml-dev
+
       - name: Install dependencies
+        # Fail the build rather than silently producing a pyyaml without
+        # CLoader if libyaml ever goes missing again.
+        env:
+          PYYAML_FORCE_LIBYAML: "1"
         run: uv sync
+
+      # Camoufox is not in any public image and is a ~200MB fetch, so take it
+      # on one interpreter only: it bundles its own Firefox and nothing about
+      # it varies by Python version. The other jobs skip the camoufox suite and
+      # the form-transport conformance rig through the shared
+      # `camoufox_launch_failure` gate in tests/driver/unified/conftest.py, so
+      # they stay green and fast. Note that chromium being present is NOT
+      # enough to let the conformance rig run: it compares the two engines, so
+      # it gates on both.
+      - name: Cache camoufox browser
+        if: matrix.python-version == '3.13'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/camoufox
+          key: camoufox-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Fetch camoufox browser
+        if: matrix.python-version == '3.13'
+        run: uv run python -m camoufox fetch
 
       - name: Run tests
         run: uv run pytest -q -n auto
