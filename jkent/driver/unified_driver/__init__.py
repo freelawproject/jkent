@@ -15,6 +15,7 @@ from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerPolicy,
 )
+from jkent.driver.unified_driver.compaction import Compactor, Compactors
 from jkent.driver.unified_driver.persistence import (
     ErrorBudget,
     ErrorSink,
@@ -57,6 +58,8 @@ __all__ = [
     "CappedPaceLimiter",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
+    "Compactor",
+    "Compactors",
     "DEFAULT_ADAPTIVE_LADDER",
     "MAX_RETRY_AFTER_S",
     "ErrorBudget",
