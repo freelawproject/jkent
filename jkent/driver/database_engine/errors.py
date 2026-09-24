@@ -15,13 +15,12 @@ Error Types:
 
 from __future__ import annotations
 
-import json
 import traceback as tb
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import Annotated, Any
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, Field
 
 from jkent.common.exceptions import (
     DataFormatAssumptionException,
@@ -33,20 +32,30 @@ from jkent.common.exceptions import (
     ScraperAssumptionException,
     TransientException,
 )
-from jkent.driver.database_engine.enums import ErrorType, SelectorType
-from jkent.driver.database_engine.models import Error
+from jkent.common.serialization import (
+    JsonColumn,
+    dump_json,
+    dump_json_or_none,
+)
+from jkent.driver.database_engine.enums import (
+    ErrorType,
+    SelectorType,
+    TransientKind,
+)
+from jkent.driver.database_engine.models import Error, RowModel
 
 #: Stand-in for ``errors.request_url`` when neither the exception nor the
 #: caller supplied one. The column is NOT NULL.
 UNKNOWN_URL = "unknown"
 
 
-class ErrorRecord(BaseModel):
+class ErrorRecord(RowModel):
     """Error record from database for listing and display.
 
-    A ``pydantic.BaseModel`` rather than a dataclass so ``model_dump_json``
-    / ``model_validate_json`` handle the web transport, instead of a
-    hand-maintained field list that drifts from the columns.
+    Built straight from an ``errors`` row (``ErrorRecord.model_validate(row)``
+    — the field names are the column names, with the two ``*_json`` columns
+    decoded into ``validation_errors`` / ``failed_doc``), and re-validates
+    from its own ``model_dump_json`` for the web transport.
 
     Attributes:
         id: Database ID of the error.
@@ -67,6 +76,7 @@ class ErrorRecord(BaseModel):
         failed_doc: For validation errors - the document that failed.
         status_code: For transient errors - HTTP status code.
         timeout_seconds: For transient errors - timeout duration.
+        kind: For bare transient errors - which subsystem failed.
         traceback: Full Python stack trace.
         created_at: When the error was recorded. Required: the column is
             typed nullable only because a server default fills it, and a
@@ -86,57 +96,21 @@ class ErrorRecord(BaseModel):
     expected_max: int | None
     actual_count: int | None
     model_name: str | None
-    validation_errors: list[dict[str, Any]] | None
-    failed_doc: dict[str, Any] | None
+    validation_errors: Annotated[list[dict[str, Any]] | None, JsonColumn] = (
+        Field(
+            validation_alias=AliasChoices(
+                "validation_errors", "validation_errors_json"
+            )
+        )
+    )
+    failed_doc: Annotated[dict[str, Any] | None, JsonColumn] = Field(
+        validation_alias=AliasChoices("failed_doc", "failed_doc_json")
+    )
     status_code: int | None
     timeout_seconds: float | None
+    kind: TransientKind | None
     traceback: str | None
     created_at: datetime
-
-    @classmethod
-    def from_model(cls, error: Error) -> ErrorRecord:
-        """Build a record from an ``errors`` row.
-
-        Args:
-            error: Error model instance.
-
-        Returns:
-            The record, with the JSON columns parsed back into objects.
-
-        Raises:
-            pydantic.ValidationError: If the row has no ``created_at``. The
-                column's server default makes that unreachable; the cast
-                below tells the type checker so, and pydantic still checks.
-        """
-        return cls(
-            id=error.id,
-            request_id=error.request_id,
-            error_type=error.error_type,
-            error_class=error.error_class,
-            message=error.message,
-            request_url=error.request_url,
-            context_json=error.context_json,
-            selector=error.selector,
-            selector_type=error.selector_type,
-            expected_min=error.expected_min,
-            expected_max=error.expected_max,
-            actual_count=error.actual_count,
-            model_name=error.model_name,
-            validation_errors=(
-                json.loads(error.validation_errors_json)
-                if error.validation_errors_json
-                else None
-            ),
-            failed_doc=(
-                json.loads(error.failed_doc_json)
-                if error.failed_doc_json
-                else None
-            ),
-            status_code=error.status_code,
-            timeout_seconds=error.timeout_seconds,
-            traceback=error.traceback,
-            created_at=cast(datetime, error.created_at),
-        )
 
 
 @dataclass(frozen=True)
@@ -145,8 +119,7 @@ class ErrorDetails:
 
     Every field maps to a column on :class:`~...models.Error`, so
     :func:`describe_error` can be unpacked straight into the row. Fields the
-    exception type does not carry stay ``None``, which is exactly how the
-    table stores them.
+    exception type does not carry stay ``None`` (NULL).
     """
 
     error_type: ErrorType
@@ -162,14 +135,12 @@ class ErrorDetails:
     failed_doc_json: str | None = None
     status_code: int | None = None
     timeout_seconds: float | None = None
+    kind: TransientKind | None = None
 
 
 def _context_json(exc: ScraperAssumptionException) -> str | None:
-    """JSON of an assumption exception's context dict, or None if empty.
-
-    Dumped with ``default=str``: the context holds arbitrary scraped values.
-    """
-    return json.dumps(exc.context, default=str) if exc.context else None
+    """JSON of an assumption exception's context dict (``'{}'`` when empty)."""
+    return dump_json_or_none(exc.context, bytes_as_repr=True)
 
 
 def describe_error(exc: Exception) -> ErrorDetails:
@@ -209,8 +180,10 @@ def describe_error(exc: Exception) -> ErrorDetails:
                 request_url=exc.request_url,
                 context_json=_context_json(exc),
                 model_name=exc.model_name,
-                validation_errors_json=json.dumps(exc.errors, default=str),
-                failed_doc_json=json.dumps(exc.failed_doc, default=str),
+                validation_errors_json=dump_json(
+                    exc.errors, bytes_as_repr=True
+                ),
+                failed_doc_json=dump_json(exc.failed_doc, bytes_as_repr=True),
             )
         case ScraperAssumptionException():
             return ErrorDetails(
@@ -237,7 +210,14 @@ def describe_error(exc: Exception) -> ErrorDetails:
                 status_code=exc.status_code,
             )
         case TransientException():
-            return ErrorDetails(error_type=ErrorType.TRANSIENT)
+            # The bare-transient arm: no status, no deadline — ``kind`` and
+            # ``url`` are the only structure such a failure has, which is
+            # exactly why they exist.
+            return ErrorDetails(
+                error_type=ErrorType.TRANSIENT,
+                request_url=exc.url,
+                kind=exc.kind,
+            )
         case PersistentException():
             return ErrorDetails(error_type=ErrorType.PERSISTENT)
         case _:
@@ -256,6 +236,15 @@ def classify_error(exc: Exception) -> ErrorType:
         friends keep working.
     """
     return describe_error(exc).error_type
+
+
+def error_message(exc: BaseException) -> str:
+    """``exc``'s message, or its class name when it has none.
+
+    What a request row's ``last_error`` stores: a bare ``TimeoutError()``
+    reads as ``"TimeoutError"``, not as an empty reason.
+    """
+    return str(exc) or type(exc).__name__
 
 
 def build_error(
@@ -277,22 +266,13 @@ def build_error(
     """
     details = describe_error(exc)
     return Error(
+        **{
+            **asdict(details),
+            "request_url": request_url or details.request_url or UNKNOWN_URL,
+        },
         request_id=request_id,
-        error_type=details.error_type,
         error_class=f"{type(exc).__module__}.{type(exc).__name__}",
         message=str(exc),
-        request_url=request_url or details.request_url or UNKNOWN_URL,
-        context_json=details.context_json,
-        selector=details.selector,
-        selector_type=details.selector_type,
-        expected_min=details.expected_min,
-        expected_max=details.expected_max,
-        actual_count=details.actual_count,
-        model_name=details.model_name,
-        validation_errors_json=details.validation_errors_json,
-        failed_doc_json=details.failed_doc_json,
-        status_code=details.status_code,
-        timeout_seconds=details.timeout_seconds,
         traceback="".join(
             tb.format_exception(type(exc), exc, exc.__traceback__)
         ),

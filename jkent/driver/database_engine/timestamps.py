@@ -4,7 +4,8 @@ Every timestamp column holds text in SQLite's default format extended to
 milliseconds — ``2026-08-06 22:58:11.250``, UTC. That format is deliberate:
 
 - It sorts lexicographically in chronological order, so ``ORDER BY created_at``
-  and jent's "most recent wins" comparisons work on the raw column.
+  and a replay index's "most recent wins" comparisons work on the raw
+  column.
 - It is the same shape SQLite's own ``CURRENT_TIMESTAMP`` produces, just with
   a fractional part, so a database read by hand still looks familiar.
 - It is wall clock, which is what makes a timestamp comparable against one
@@ -13,20 +14,14 @@ milliseconds — ``2026-08-06 22:58:11.250``, UTC. That format is deliberate:
 Columns are mapped to :class:`UtcDateTime` (see
 ``models.Base.type_annotation_map``), so they are read as an aware ``datetime``
 even though what is stored is this text, and a value written from Python is
-either in UTC or rejected. Values written by ``server_default`` carry
-three fractional digits, as ``strftime('%f')`` produces; values written from
-Python carry six, as SQLAlchemy's SQLite ``DATETIME`` produces. That mix is
-harmless — the fraction is a decimal expansion either way, so lexicographic
-ordering still agrees with chronological ordering, and ``unixepoch`` accepts
-both — but it is why the format above describes the floor rather than a
-guarantee of exactly three digits.
-
-That last point about wall clock is why the ``requests`` table no longer
-carries a parallel set of ``*_at_ns`` columns. Those held
-``time.monotonic_ns()``, whose epoch is the machine's boot: a difference
-between two of them taken in one process is a valid duration, but the values
-are meaningless anywhere else — including in jent's replay index, which
-compares them *across source databases* to decide which capture is newer.
+either in UTC or rejected. Every writer renders exactly three fractional
+digits: SQLite's ``strftime('%f')`` does by construction, and
+:class:`UtcDateTime` floors a Python value to the millisecond and renders it
+the same way rather than letting SQLAlchemy's SQLite ``DATETIME`` emit six.
+One width is what makes ``ORDER BY`` on the raw text agree with the clock:
+a three-digit rendering is a *prefix* of a six-digit rendering of any
+instant in the same millisecond, so mixing widths sorted a later instant
+first.
 
 Durations are measured with :func:`epoch_seconds`, which uses SQLite's
 ``unixepoch(..., 'subsec')`` rather than ``julianday``. ``julianday`` returns a
@@ -38,6 +33,7 @@ version floor — see :func:`require_subsec_support`.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +43,7 @@ from typing_extensions import override
 if TYPE_CHECKING:
     from sqlalchemy.engine.interfaces import Dialect
     from sqlalchemy.sql.elements import ColumnElement
+    from sqlalchemy.sql.type_api import _BindProcessorType
 
 __all__ = [
     "MIN_SQLITE_VERSION",
@@ -92,10 +89,35 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
 
     Values written by ``server_default``/``onupdate`` never reach this type —
     they are SQL, computed by SQLite from ``'now'``, which is UTC by definition.
+    What this type writes is rendered to the same text they produce — the
+    module's :data:`TIMESTAMP_FORMAT`, three fractional digits — so every row
+    sorts by the clock whichever side wrote it (see the module docstring).
     """
 
     impl = sa.DateTime
     cache_ok = True
+
+    @override
+    def bind_processor(
+        self, dialect: Dialect
+    ) -> _BindProcessorType[datetime] | None:
+        """Render the normalised UTC value as :data:`TIMESTAMP_FORMAT` text.
+
+        Overrides the decorator's default composition (which would hand the
+        datetime to the SQLite ``DATETIME`` type, and get six fractional
+        digits) so the stored text has the same width as a server-written one.
+        The microsecond is floored to the millisecond, as SQLite's own clock
+        reads are.
+        """
+
+        def process(value: datetime | None) -> str | None:
+            normalised = self.process_bind_param(value, dialect)
+            if normalised is None:
+                return None
+            millis = normalised.microsecond // 1000
+            return f"{normalised:%Y-%m-%d %H:%M:%S}.{millis:03d}"
+
+        return process
 
     @override
     def process_bind_param(
@@ -178,7 +200,7 @@ def require_subsec_support() -> None:
     global _subsec_checked
     if _subsec_checked:
         return
-    with sqlite3.connect(":memory:") as conn:
+    with closing(sqlite3.connect(":memory:")) as conn:
         got = conn.execute(
             "SELECT unixepoch('2026-01-01 00:00:00.500', 'subsec')"
         ).fetchone()[0]

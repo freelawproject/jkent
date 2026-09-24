@@ -3,7 +3,7 @@
 Tables:
 - requests: HTTP request queue with status tracking, retry logic, and
   inline response storage (compressed HTTP responses with dictionary refs)
-- compression_dicts: Versioned zstd dictionaries per-continuation
+- compression_dicts: Versioned zstd dictionaries per-step
 - results: Validated scraped data
 - archived_files: Downloaded file metadata
 - run_metadata: Single-row configuration and state
@@ -32,6 +32,10 @@ millisecond text format documented there. Durations are computed with
 ``timestamps.epoch_seconds`` — subtracting two ``DateTime`` columns directly
 compiles to a SQL ``-`` between two TEXT values, which SQLite coerces to 0
 rather than rejecting, so the ORM-native spelling silently returns 0.0.
+
+:class:`RowModel`, the pydantic base for models read from these rows, lives
+here too: ``errors`` and ``sql_manager`` both build on it, and neither can
+import it from the other without a cycle.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import sqlalchemy as sa
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import ForeignKey, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -51,6 +56,7 @@ from jkent.driver.database_engine.enums import (
     RunStatus,
     SelectorType,
     SpeculationOutcome,
+    TransientKind,
     code_check,
 )
 from jkent.driver.database_engine.timestamps import UtcDateTime, now_sql
@@ -67,6 +73,7 @@ __all__ = [
     "RequestStatus",
     "RequestType",
     "Result",
+    "RowModel",
     "RunMetadata",
     "RunStatus",
     "SchemaInfo",
@@ -104,6 +111,12 @@ def json_checks(table: str, *columns: str) -> tuple[sa.CheckConstraint, ...]:
     )
 
 
+class RowModel(BaseModel):
+    """Base for row-shaped models: built from rows/ORM objects, no extras."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
 class Base(DeclarativeBase):
     """Declarative base owning the metadata that ``create_all`` builds from.
 
@@ -117,12 +130,49 @@ class Base(DeclarativeBase):
     type_annotation_map = {datetime: UtcDateTime()}
 
 
+class CompressedPayloadColumns:
+    """The four columns a stored, compressed body occupies.
+
+    Shared by ``requests`` (a response) and ``incidental_request_storage`` (a
+    captured sub-request); ``sql_manager.CompressedPayload`` is the row model
+    with the same fields. Declarative emits mixin columns after the ones the
+    class declares itself, so these land at the end of both tables.
+    """
+
+    content_compressed: Mapped[bytes | None] = mapped_column(
+        LargeBinary,
+        doc=(
+            "zstd-compressed body, using the dictionary named by "
+            "``compression_dict_id`` when one is set. NULL when there is no "
+            "body."
+        ),
+    )
+    content_size_original: Mapped[int | None] = mapped_column(
+        doc="Uncompressed body length in bytes."
+    )
+    content_size_compressed: Mapped[int | None] = mapped_column(
+        doc=(
+            "Stored body length in bytes. Kept alongside the original size "
+            "so compression ratios are reportable without decompressing."
+        )
+    )
+    compression_dict_id: Mapped[int | None] = mapped_column(
+        ForeignKey("compression_dicts.id"),
+        doc=(
+            "Dictionary this body was compressed against. NULL means it was "
+            "compressed without one — for a response, the case before enough "
+            "samples had accumulated for its step to train on."
+        ),
+    )
+
+
 class SchemaInfo(Base):
     """Schema version tracking.
 
     One row per schema version applied to this database. A fresh database is
-    stamped at ``database.BASELINE_VERSION``; there is no migration runner, so
-    in practice this table records provenance rather than driving anything.
+    stamped at ``database.BASELINE_VERSION``, and ``create_engine_and_init``
+    refuses to open one stamped at any other version — there is no migration
+    runner, so the supported answer is to recreate the run database.
     """
 
     __tablename__ = "schema_info"
@@ -137,7 +187,7 @@ class SchemaInfo(Base):
     )
 
 
-class Request(Base):
+class Request(CompressedPayloadColumns, Base):
     """HTTP request queue with status tracking and retry logic.
 
     The central table: one row per request the scraper asked for, carrying the
@@ -154,13 +204,11 @@ class Request(Base):
             name="uq_requests_dedup_key",
             sqlite_on_conflict="IGNORE",
         ),
-        sa.Index(
-            "idx_requests_status_priority",
-            "status",
-            "priority",
-            "queue_counter",
-        ),
-        sa.Index("idx_requests_continuation", "continuation"),
+        # Ties within a priority dequeue FIFO by id. Named explicitly: with
+        # ANALYZE statistics SQLite will not order by the rowid an index
+        # carries implicitly, and falls back to a sort.
+        sa.Index("idx_requests_status_priority", "status", "priority", "id"),
+        sa.Index("idx_requests_step", "step"),
         sa.Index("idx_requests_cache_key", "cache_key"),
         sa.Index("idx_requests_parent", "parent_request_id"),
         sa.Index("idx_requests_response_status_code", "response_status_code"),
@@ -185,10 +233,7 @@ class Request(Base):
             "response_headers_json",
             "via_json",
             "timeout_json",
-            "files_json",
-            "auth_json",
-            "proxies_json",
-            "cert_json",
+            "verify_json",
         ),
     )
 
@@ -212,12 +257,6 @@ class Request(Base):
             "framework default for an unannotated request."
         ),
     )
-    queue_counter: Mapped[int] = mapped_column(
-        doc=(
-            "Monotonic enqueue sequence. Breaks ties within a priority so "
-            "dispatch is FIFO rather than dependent on rowid ordering."
-        )
-    )
     request_type: Mapped[RequestType] = mapped_column(
         CodedEnumType(RequestType),
         default=RequestType.NAVIGATING,
@@ -228,14 +267,14 @@ class Request(Base):
     # HTTP Request
     method: Mapped[HttpMethod] = mapped_column(
         CodedEnumType(HttpMethod),
-        doc="HTTP method; see :class:`jkent.data_types.HttpMethod`.",
+        doc="HTTP method; see :class:`jkent.common.request.HttpMethod`.",
     )
     url: Mapped[str] = mapped_column(
         doc=(
             "Absolute request URL with query params already folded in — "
             "``HTTPRequestParams.params`` is not stored separately, this is "
             "the single source of truth for the target "
-            "(see ``queue.serialize_url_and_body``)."
+            "(see ``jkent.common.request.serialize_url_and_body``)."
         )
     )
     headers_json: Mapped[str | None] = mapped_column(
@@ -247,13 +286,24 @@ class Request(Base):
     body: Mapped[bytes | None] = mapped_column(
         LargeBinary,
         doc=(
-            "Encoded request body, as the transport will send it. NULL for "
-            "bodyless requests."
+            "Request body: raw bytes when ``body_is_form`` is false, the JSON "
+            "of a dict or pair list of form fields when it is true. NULL "
+            "for bodyless requests."
+        ),
+    )
+    body_is_form: Mapped[bool] = mapped_column(
+        default=False,
+        server_default=sa.text("0"),
+        doc=(
+            "``body`` holds form data (a dict or pair list) as JSON, "
+            "rather than raw bytes. "
+            "Without it a raw body that happens to parse as JSON cannot be "
+            "told apart from form data."
         ),
     )
 
     # Scraper context
-    continuation: Mapped[str] = mapped_column(
+    step: Mapped[str] = mapped_column(
         doc=(
             "Name of the scraper method that will be handed the response. "
             "Also the key compression dictionaries are trained per."
@@ -313,21 +363,24 @@ class Request(Base):
         )
     )
 
-    # Rate limit bypass
-    bypass_rate_limit: Mapped[bool] = mapped_column(
-        default=False,
+    # Rate-limit lane
+    rate_limit: Mapped[int] = mapped_column(
+        default=0,
         server_default=sa.text("0"),
         doc=(
-            "Skip the rate-limit gate for this request. Set for fetches that "
-            "do not hit the scraped origin."
+            "Which of the scraper's rate-limit lanes gates this request, as "
+            "the lane's code: 0 is the scraper's default ``rate_limits``, 1 "
+            "is unlimited (fetches that do not hit the scraped origin), and "
+            "2+ index ``named_rate_limits`` in declaration order — see "
+            "``jkent.common.rate_limits.RateLimitTable``. The vocabulary is "
+            "per scraper, so unlike the CodedEnum columns there is no CHECK "
+            "constraint."
         ),
     )
 
     # Timestamps. Wall clock, millisecond resolution, UTC — see
     # ``database_engine.timestamps``. These are both the human-readable record
-    # and what durations are measured from; the parallel ``*_at_ns`` columns
-    # that used to carry monotonic nanoseconds are gone, because their epoch
-    # made them incomparable outside the process that wrote them.
+    # and what durations are measured from.
     created_at: Mapped[datetime | None] = mapped_column(
         server_default=now_sql(),
         doc="Enqueue time (UTC, millisecond resolution).",
@@ -374,7 +427,7 @@ class Request(Base):
     parent_request_id: Mapped[int | None] = mapped_column(
         ForeignKey("requests.id", ondelete="CASCADE"),
         doc=(
-            "Request whose continuation queued this one. NULL on the seed "
+            "Request whose step queued this one. NULL on the seed "
             "requests a run starts from."
         ),
     )
@@ -424,34 +477,6 @@ class Request(Base):
         )
     )
 
-    # Content (compressed)
-    content_compressed: Mapped[bytes | None] = mapped_column(
-        LargeBinary,
-        doc=(
-            "zstd-compressed response body, using the dictionary named by "
-            "``compression_dict_id`` when one is set."
-        ),
-    )
-    content_size_original: Mapped[int | None] = mapped_column(
-        doc="Uncompressed body length in bytes."
-    )
-    content_size_compressed: Mapped[int | None] = mapped_column(
-        doc=(
-            "Stored body length in bytes. Kept alongside the original size "
-            "so compression ratios are reportable without decompressing."
-        )
-    )
-
-    # Compression metadata
-    compression_dict_id: Mapped[int | None] = mapped_column(
-        ForeignKey("compression_dicts.id"),
-        doc=(
-            "Dictionary this body was compressed against. NULL means it was "
-            "compressed without one — the case before enough samples had "
-            "accumulated for this continuation to train on."
-        ),
-    )
-
     # Response timestamps
     response_created_at: Mapped[datetime | None] = mapped_column(
         doc="Response store time, same format as ``created_at``."
@@ -476,17 +501,18 @@ class Request(Base):
     )
 
     # TLS verification override
-    verify: Mapped[str | None] = mapped_column(
+    verify_json: Mapped[str] = mapped_column(
+        default="true",
+        server_default=sa.text("'true'"),
         doc=(
-            'Serialized ``HTTPRequestParams.verify``: ``"true"`` / '
-            '``"false"`` for the bool forms, or a CA bundle path. NULL '
-            "leaves the client default in place."
-        )
+            "JSON ``HTTPRequestParams.verify``: ``true`` / ``false``, or a "
+            "CA bundle path as a JSON string."
+        ),
     )
 
     # --- Remaining HTTPRequestParams fields ---
-    # The full set of HTTPRequestParams that round-trip through the queue:
-    # timeout / json / files / auth / allow_redirects / proxies / stream / cert.
+    # The HTTPRequestParams that round-trip through the queue beyond
+    # url/body/headers/cookies/verify_json: timeout / json.
     # (Scrapers that set e.g. timeout on archive downloads rely on these being
     # persisted, rather than falling back to the httpx client-level default.)
     timeout_json: Mapped[str | None] = mapped_column(
@@ -501,45 +527,6 @@ class Request(Base):
             "Distinct from ``body``, which is already-encoded bytes."
         )
     )
-    files_json: Mapped[str | None] = mapped_column(
-        doc=(
-            "JSON ``HTTPRequestParams.files`` for multipart uploads. Binary "
-            "and file-like content is base64-encoded (see "
-            "``queue._serialize_files``) and reconstructs as bytes."
-        )
-    )
-    auth_json: Mapped[str | None] = mapped_column(
-        doc="JSON ``[username, password]`` for basic auth."
-    )
-    allow_redirects: Mapped[bool] = mapped_column(
-        default=True,
-        server_default=sa.text("1"),
-        doc="Whether the transport follows 3xx responses for this request.",
-    )
-    proxies_json: Mapped[str | None] = mapped_column(
-        doc="JSON scheme-to-proxy-URL mapping."
-    )
-    stream: Mapped[bool] = mapped_column(
-        default=False,
-        server_default=sa.text("0"),
-        doc=(
-            "Read the body incrementally instead of into memory, for large "
-            "archive downloads."
-        ),
-    )
-    cert_json: Mapped[str | None] = mapped_column(
-        doc=("JSON client-certificate path, or a ``[cert, key]`` pair.")
-    )
-
-    # Request-level field (not part of HTTPRequestParams).
-    archive_hash_header: Mapped[str | None] = mapped_column(
-        doc=(
-            "Name of a response header carrying the file's checksum, so an "
-            "archive download can be verified against what the server "
-            "claims. NULL when the site offers no such header."
-        )
-    )
-
     reseedable: Mapped[bool | None] = mapped_column(
         doc=(
             "Scraper hint for whether this request can be re-fetched "
@@ -551,19 +538,21 @@ class Request(Base):
     # A pre-resolved request already carries its response, populated at enqueue
     # time by promoting a captured incidental sub-request (see the driver's
     # ``Request.incidental`` handling). The worker dequeues it like any pending
-    # request but skips the transport entirely and runs the continuation
+    # request but skips the transport entirely and runs the step
     # against the already-stored response. Distinct from "a response happens to
     # be present" — a retry may store a debug snapshot on a still-pending row —
     # so it is an explicit flag rather than inferred from response presence.
-    # Kept LAST so migrations can add it with a plain ALTER ... ADD COLUMN
-    # (appended column) without diverging from create_all's column order.
+    # sort_order=1 puts this after CompressedPayloadColumns' own columns, so
+    # it is the last column of ``requests`` (mixin columns otherwise sort
+    # after every column declared here).
     preresolved: Mapped[bool] = mapped_column(
         default=False,
         server_default=sa.text("0"),
+        sort_order=1,
         doc=(
             "This row's response was populated at enqueue time by promoting "
             "a captured incidental sub-request, so the worker runs the "
-            "continuation and skips the transport entirely. An explicit flag "
+            "step and skips the transport entirely. An explicit flag "
             "rather than inferred from response presence, because a retry "
             "may store a debug snapshot on a still-pending row."
         ),
@@ -571,9 +560,9 @@ class Request(Base):
 
 
 class CompressionDict(Base):
-    """Versioned zstd compression dictionaries per-continuation.
+    """Versioned zstd compression dictionaries per-step.
 
-    Pages fetched by the same continuation share boilerplate, so a dictionary
+    Pages fetched by the same step share boilerplate, so a dictionary
     trained on a sample of them compresses each far better than standalone
     zstd. Rows are versioned rather than replaced: a stored response names the
     dictionary it was compressed against, so retraining must not invalidate
@@ -581,22 +570,21 @@ class CompressionDict(Base):
     """
 
     __tablename__ = "compression_dicts"
-    __table_args__ = (
-        sa.UniqueConstraint("continuation", "version"),
-        sa.Index("idx_compression_dicts_continuation", "continuation"),
-    )
+    # The UNIQUE constraint's automatic index also serves step lookups
+    # (a leading prefix), so a separate index on step would be redundant.
+    __table_args__ = (sa.UniqueConstraint("step", "version"),)
 
     id: Mapped[int] = mapped_column(
         primary_key=True,
         doc="Surrogate key, referenced by the compressed-content columns.",
     )
-    continuation: Mapped[str] = mapped_column(
-        doc="Continuation method name whose responses this was trained on."
+    step: Mapped[str] = mapped_column(
+        doc="Step method name whose responses this was trained on."
     )
     version: Mapped[int] = mapped_column(
         doc=(
-            "Generation counter within a continuation, incremented on each "
-            "retrain. Unique with ``continuation``."
+            "Generation counter within a step, incremented on each "
+            "retrain. Unique with ``step``."
         )
     )
     dictionary_data: Mapped[bytes] = mapped_column(
@@ -614,7 +602,7 @@ class CompressionDict(Base):
 class Result(Base):
     """Validated scraped data results.
 
-    One row per record a continuation emitted. Rows that failed validation are
+    One row per record a step emitted. Rows that failed validation are
     stored too, flagged rather than dropped, so a schema drift shows up as
     inspectable data instead of as an absence.
     """
@@ -630,7 +618,7 @@ class Result(Base):
     request_id: Mapped[int] = mapped_column(
         ForeignKey("requests.id", ondelete="CASCADE"),
         doc=(
-            "Request whose continuation emitted this record. NOT NULL: every "
+            "Request whose step emitted this record. NOT NULL: every "
             "writer already supplies one — ``store_result``, "
             "``store_result_in_session`` and the staging path all take a "
             "non-optional ``request_id`` — and ON DELETE CASCADE means a "
@@ -742,10 +730,7 @@ class RunMetadata(Base):
         code_check("status", RunStatus, "ck_run_metadata_status"),
         *json_checks(
             "run_metadata",
-            "params_json",
             "seed_params_json",
-            "speculation_config_json",
-            "browser_config_json",
             "browser_cookies_json",
         ),
     )
@@ -792,14 +777,10 @@ class RunMetadata(Base):
     )
 
     # Invocation parameters
-    params_json: Mapped[str | None] = mapped_column(
-        doc="JSON of the invocation parameters the run was started with."
-    )
     seed_params_json: Mapped[str | None] = mapped_column(
         doc=(
-            "JSON of the seed parameter sets, rewritten by ``--add-params`` "
-            "so speculation filtering on resume sees templates added to an "
-            "existing run."
+            "JSON of the seed parameter sets the run was created with. "
+            "Written once; a run database is pinned to its seed set."
         )
     )
     jitter: Mapped[float] = mapped_column(
@@ -808,7 +789,7 @@ class RunMetadata(Base):
             "symmetrically — 0.05 spreads each wait across +/-5% of nominal. "
             "Recorded so a corpus says how spread out its retries were; the "
             "drawn value itself is not stored anywhere, it is folded into "
-            "``requests.started_at``. See ``ResponseStorage.handle_retry``."
+            "``requests.started_at``. See ``ResponseStorageDB.handle_retry``."
         )
     )
     num_workers: Mapped[int] = mapped_column(
@@ -818,19 +799,6 @@ class RunMetadata(Base):
         doc=(
             "Ceiling on a request's ``cumulative_backoff`` before retrying "
             "stops."
-        )
-    )
-
-    # Speculation configuration
-    speculation_config_json: Mapped[str | None] = mapped_column(
-        doc="JSON speculation tuning (failure thresholds, ceilings)."
-    )
-
-    # Browser configuration (Playwright driver)
-    browser_config_json: Mapped[str | None] = mapped_column(
-        doc=(
-            "JSON browser configuration for the Playwright driver. NULL for "
-            "an httpx-only run."
         )
     )
 
@@ -858,6 +826,7 @@ class Error(Base):
         sa.Index("idx_errors_type", "error_type"),
         code_check("error_type", ErrorType, "ck_errors_error_type"),
         code_check("selector_type", SelectorType, "ck_errors_selector_type"),
+        code_check("kind", TransientKind, "ck_errors_kind"),
         *json_checks(
             "errors",
             "context_json",
@@ -961,6 +930,15 @@ class Error(Base):
         doc="Store time (UTC, millisecond resolution).",
     )
 
+    kind: Mapped[TransientKind | None] = mapped_column(
+        CodedEnumType(TransientKind),
+        doc=(
+            "Transient errors: which subsystem failed, from "
+            ":class:`TransientKind`. NULL for persistent error types and "
+            "for any transient exception raised without a ``kind``."
+        ),
+    )
+
 
 class SpeculationTracking(Base):
     """Tracks speculation state for Speculative protocol entries.
@@ -971,8 +949,8 @@ class SpeculationTracking(Base):
     """
 
     __tablename__ = "speculation_tracking"
+    # func_name is UNIQUE (below); its automatic index serves the lookups.
     __table_args__ = (
-        sa.Index("idx_speculation_tracking_func", "func_name"),
         *json_checks(
             "speculation_tracking", "template_json", "seed_value_json"
         ),
@@ -988,10 +966,11 @@ class SpeculationTracking(Base):
             "``requests.speculation_tracking_id``."
         ),
     )
-    highest_successful_id: Mapped[int] = mapped_column(
-        default=0,
-        server_default=sa.text("0"),
-        doc="Largest speculated index that came back with a real resource.",
+    highest_successful_id: Mapped[int | None] = mapped_column(
+        doc=(
+            "Largest speculated index that came back with a real resource. "
+            "NULL until one has."
+        ),
     )
     consecutive_failures: Mapped[int] = mapped_column(
         default=0,
@@ -1001,17 +980,19 @@ class SpeculationTracking(Base):
             "threshold sets ``stopped``."
         ),
     )
-    current_ceiling: Mapped[int] = mapped_column(
-        default=0,
-        server_default=sa.text("0"),
-        doc="Highest index probing is currently allowed to reach.",
+    current_ceiling: Mapped[int | None] = mapped_column(
+        doc=(
+            "Highest index probing is currently allowed to reach. NULL "
+            "until the template has been seeded."
+        ),
     )
     stopped: Mapped[bool] = mapped_column(
         default=False,
         server_default=sa.text("0"),
         doc=(
-            "Probing has given up on this template; further requests from it "
-            "are recorded with ``speculation_outcome = 'skipped'``."
+            "Probing has given up on this template; probes from it still "
+            "queued are completed unfetched, with ``speculation_outcome = "
+            "'terminated_early'``."
         ),
     )
     param_index: Mapped[int] = mapped_column(
@@ -1038,8 +1019,7 @@ class SpeculationTracking(Base):
     # The raw (pre-validation) seed value this template came from, as JSON —
     # e.g. the "[cursor_key]" reference string a host seeded with, so the host
     # can map state rows back to its cursor store without re-deriving jkent's
-    # index assignment. Declared last so migration_reset_v010.py's ALTER
-    # append matches create_all's column order.
+    # index assignment.
     seed_value_json: Mapped[str | None] = mapped_column(
         doc=(
             "Raw (pre-validation) seed value this template came from, as JSON."
@@ -1047,12 +1027,19 @@ class SpeculationTracking(Base):
     )
 
 
-class IncidentalRequestStorage(Base):
-    """Deduplicated content storage for incidental browser requests."""
+class IncidentalRequestStorage(CompressedPayloadColumns, Base):
+    """Content-addressed payload storage for incidental browser requests.
+
+    One row per distinct payload in a crawl, identified solely by
+    ``content_md5``. Everything about a *fetch* — url, method, status,
+    resource type, request body, failure text — lives on
+    ``incidental_requests``, because a payload served to twenty page loads
+    is one row here and twenty rows there.
+    """
 
     __tablename__ = "incidental_request_storage"
     __table_args__ = (
-        sa.Index("idx_irs_content_md5", "content_md5"),
+        sa.UniqueConstraint("content_md5", name="uq_irs_content_md5"),
         *json_checks("incidental_request_storage", "response_headers_json"),
     )
 
@@ -1060,59 +1047,21 @@ class IncidentalRequestStorage(Base):
         primary_key=True,
         doc="Surrogate key, referenced by ``incidental_requests.storage_id``.",
     )
-    resource_type: Mapped[str] = mapped_column(
-        doc=(
-            "Playwright's ``request.resource_type`` — ``document``, ``xhr``, "
-            "``fetch``, ``script``, and so on. Left open rather than made an "
-            "enum: the vocabulary is the browser's, not ours."
-        )
-    )
-    url: Mapped[str] = mapped_column(doc="URL the browser requested.")
-    method: Mapped[str] = mapped_column(
-        doc=(
-            "HTTP method the browser used. Deliberately not the "
-            "``http_method`` enum that ``requests.method`` uses: page "
-            "JavaScript can issue an arbitrary method, and a ``CHECK`` here "
-            "would turn odd traffic into a failed scrape."
-        )
-    )
-    body: Mapped[bytes | None] = mapped_column(
-        LargeBinary,
-        doc="Request body, part of this row's identity for deduplication.",
-    )
-    status_code: Mapped[int | None] = mapped_column(
-        doc="Response status. NULL when the request never got a response."
-    )
     response_headers_json: Mapped[str | None] = mapped_column(
-        doc="JSON object of response headers."
-    )
-    content_compressed: Mapped[bytes | None] = mapped_column(
-        LargeBinary, doc="zstd-compressed response body."
-    )
-    content_size_original: Mapped[int | None] = mapped_column(
-        doc="Uncompressed body length in bytes."
-    )
-    content_size_compressed: Mapped[int | None] = mapped_column(
-        doc="Stored body length in bytes."
-    )
-    compression_dict_id: Mapped[int | None] = mapped_column(
-        ForeignKey("compression_dicts.id"),
-        doc="Dictionary this body was compressed against, if any.",
-    )
-    failure_reason: Mapped[str | None] = mapped_column(
         doc=(
-            "Playwright's failure text when the browser request never "
-            "completed. NULL on success."
+            "JSON object of response headers from the capture that stored "
+            "the payload first. Not part of this row's identity: later "
+            "captures of the same bytes may have carried different headers."
         )
     )
-    content_md5: Mapped[bytes | None] = mapped_column(
+    content_md5: Mapped[bytes] = mapped_column(
         LargeBinary,
         doc=(
-            "Raw 16-byte MD5 digest of the uncompressed body. Indexed, and "
-            "used to find an existing row to reuse instead of storing the "
-            "payload again. A BLOB digest rather than hex text: this table "
-            "has one row per distinct payload in a crawl, and hex spends 33 "
-            "bytes a row plus the same again in the index to say nothing new."
+            "Raw 16-byte MD5 digest of the body as delivered, before "
+            "compression — so one payload is one row whatever dictionary "
+            "``content_compressed`` was encoded against. This row's whole "
+            "identity, and unique. NOT NULL: a capture with no body gets no "
+            "row here at all (``incidental_requests.storage_id`` stays NULL)."
         ),
     )
 
@@ -1122,8 +1071,10 @@ class IncidentalRequest(Base):
 
     One row per sub-request a page fired while a scraper request was being
     handled — the traffic the scraper did not ask for but which reveals the
-    APIs behind the page. Content lives in ``incidental_request_storage`` so
-    repeats across a crawl cost a row, not a payload.
+    APIs behind the page. Everything particular to the fetch is here; the
+    response *body* lives in ``incidental_request_storage``, keyed by its
+    own hash, so a payload repeated across a crawl costs a row here and
+    nothing there.
     """
 
     __tablename__ = "incidental_requests"
@@ -1138,16 +1089,35 @@ class IncidentalRequest(Base):
         ForeignKey("requests.id", ondelete="CASCADE"),
         doc="The scraper request whose page load fired this sub-request.",
     )
-    url: Mapped[str] = mapped_column(
+    resource_type: Mapped[str] = mapped_column(
         doc=(
-            "URL the browser requested. Duplicated from the storage row so "
-            "the capture log reads without a join."
+            "Playwright's ``request.resource_type`` — ``document``, ``xhr``, "
+            "``fetch``, ``script``, and so on. Left open rather than made an "
+            "enum: the vocabulary is the browser's, not ours."
         )
     )
-    headers_json: Mapped[str | None] = mapped_column(
+    method: Mapped[str] = mapped_column(
         doc=(
-            "JSON object of request headers. Per-occurrence, unlike the "
-            "shared payload, so it stays on this row."
+            "HTTP method the browser used. Deliberately not the "
+            "``http_method`` enum that ``requests.method`` uses: page "
+            "JavaScript can issue an arbitrary method, and a ``CHECK`` here "
+            "would turn odd traffic into a failed scrape."
+        )
+    )
+    url: Mapped[str] = mapped_column(doc="URL the browser requested.")
+    headers_json: Mapped[str | None] = mapped_column(
+        doc="JSON object of request headers."
+    )
+    body: Mapped[bytes | None] = mapped_column(
+        LargeBinary, doc="Request body the browser sent, if any."
+    )
+    status_code: Mapped[int | None] = mapped_column(
+        doc="Response status. NULL when the request never got a response."
+    )
+    failure_reason: Mapped[str | None] = mapped_column(
+        doc=(
+            "Playwright's failure text when the browser request never "
+            "completed. NULL on success."
         )
     )
     # Unlike the dropped ``requests.*_at_ns`` columns these are
@@ -1175,7 +1145,9 @@ class IncidentalRequest(Base):
     storage_id: Mapped[int | None] = mapped_column(
         ForeignKey("incidental_request_storage.id"),
         doc=(
-            "The deduplicated payload for this occurrence. NULL when the "
-            "content was not stored."
+            "The content-addressed payload for this occurrence, shared with "
+            "every other capture of the same bytes. NULL when there was no "
+            "body to store — a failed request, or a response with an empty "
+            "one."
         ),
     )

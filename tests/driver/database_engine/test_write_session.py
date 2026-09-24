@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 from sqlalchemy import event
 
-from jkent.driver.database_engine.database import init_database, write_session
+from jkent.driver.database_engine.database import (
+    BASELINE_VERSION,
+    init_database,
+    write_session,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -73,6 +77,11 @@ async def test_write_session_holds_the_lock_it_is_given(
         await engine.dispose()
 
 
+#: Sentinel rows for the two-handle test below — any value but the stamp.
+_SLOW = 101
+_OTHER = 102
+
+
 async def test_read_then_write_survives_a_commit_from_another_handle(
     tmp_path: Path,
 ) -> None:
@@ -83,6 +92,9 @@ async def test_read_then_write_survives_a_commit_from_another_handle(
     and a separate lock, as a browser transport's handle once was — to commit.
     Under a deferred BEGIN that window invalidates ``slow``'s snapshot and its
     write fails outright; under BEGIN IMMEDIATE ``other`` simply waits.
+
+    ``schema_info`` is only a convenient table to write to; the two values
+    are sentinels chosen not to collide with the baseline stamp.
     """
     db_path = tmp_path / "run.db"
     slow_engine, slow_factory = await init_database(db_path)
@@ -96,7 +108,7 @@ async def test_read_then_write_survives_a_commit_from_another_handle(
             # Long enough for `other` to commit if nothing is holding it off.
             await asyncio.sleep(0.2)
             await session.execute(
-                sa.text("INSERT INTO schema_info (version) VALUES (2)")
+                sa.text(f"INSERT INTO schema_info (version) VALUES ({_SLOW})")
             )
             await session.commit()
 
@@ -104,7 +116,7 @@ async def test_read_then_write_survives_a_commit_from_another_handle(
         await selected.wait()
         async with write_session(other_factory, asyncio.Lock()) as session:
             await session.execute(
-                sa.text("INSERT INTO schema_info (version) VALUES (3)")
+                sa.text(f"INSERT INTO schema_info (version) VALUES ({_OTHER})")
             )
             await session.commit()
 
@@ -121,7 +133,7 @@ async def test_read_then_write_survives_a_commit_from_another_handle(
                 .scalars()
                 .all()
             )
-        assert sorted(versions) == [1, 2, 3]
+        assert sorted(versions) == sorted([BASELINE_VERSION, _SLOW, _OTHER])
     finally:
         await slow_engine.dispose()
         await other_engine.dispose()

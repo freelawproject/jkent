@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
-from sqlalchemy import func, select
+import zstandard as zstd
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from typing_extensions import Self
 
 from jkent.driver.database_engine.database import init_database, write_session
-from jkent.driver.database_engine.models import Request
 from jkent.observability import InstrumentedLock
 
 if TYPE_CHECKING:
@@ -20,6 +19,36 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class DictEntry(NamedTuple):
+    """A trained dictionary: its ``compression_dicts`` row id and the
+    loaded zstd object."""
+
+    dict_id: int
+    dictionary: zstd.ZstdCompressionDict
+
+
+class DictCache:
+    """A database's in-memory cache of compression dictionaries.
+
+    Without it, every stored response after compaction re-reads the ~110KB
+    dictionary blob and rebuilds a ``ZstdCompressionDict`` from it.
+
+    Dictionary rows are immutable once written — retraining mints a new
+    row/version — so ``by_id`` entries never invalidate. ``latest`` maps a
+    step to its newest :class:`DictEntry` and also caches the negative "no
+    dictionary yet" result (the pre-compaction common case); both are
+    dropped by ``train_compression_dict``, the only in-process writer. A run
+    database has a single writing process, so no external training can slip
+    past the negative cache.
+    """
+
+    __slots__ = ("by_id", "latest")
+
+    def __init__(self) -> None:
+        self.by_id: dict[int, zstd.ZstdCompressionDict] = {}
+        self.latest: dict[str, DictEntry | None] = {}
 
 
 class SQLManagerBase:
@@ -33,6 +62,9 @@ class SQLManagerBase:
         session_factory: Async session factory bound to :attr:`engine`.
         lock: The write lock every SQLManager mutation holds. One instance
             per manager, so concurrent writers actually serialize.
+        dict_cache: The database's compression dictionaries, cached for
+            the life of the manager (see
+            :mod:`~jkent.driver.database_engine.compression`).
 
     Example::
 
@@ -61,14 +93,16 @@ class SQLManagerBase:
             session_factory
         )
         self.lock: Final[asyncio.Lock] = InstrumentedLock()
-        # Not Final: reseeded from the DB on first use, then bumped per
-        # enqueue.
-        self._queue_counter: int | None = None
+        self.dict_cache: Final[DictCache] = DictCache()
 
     @classmethod
     @asynccontextmanager
     async def open(cls, db_path: Path) -> AsyncIterator[Self]:
-        """Open a database and create a SQLManager.
+        """Open an existing database and create a SQLManager.
+
+        A run creates its database with
+        :func:`~jkent.driver.database_engine.database.init_database`; this
+        opens one that already exists.
 
         Args:
             db_path: Path to the SQLite database file.
@@ -76,11 +110,23 @@ class SQLManagerBase:
         Yields:
             SQLManager instance.
 
+        Raises:
+            FileNotFoundError: If ``db_path`` does not exist, or is a 0-byte
+                file — SQLite opens that as an empty database, and a run
+                database is never 0 bytes (WAL mode writes the header on
+                creation). Nothing is created or written at the path.
+
         Example::
 
             async with SQLManager.open(db_path) as manager:
                 params = await manager.get_seed_params()
         """
+        if not db_path.exists():
+            raise FileNotFoundError(f"run database does not exist: {db_path}")
+        if db_path.stat().st_size == 0:
+            raise FileNotFoundError(
+                f"run database is empty (0 bytes): {db_path}"
+            )
         engine, session_factory = await init_database(db_path)
         try:
             yield cls(engine, session_factory)
@@ -98,18 +144,3 @@ class SQLManagerBase:
         a writer must not open a deferred transaction.
         """
         return write_session(self.session_factory, self.lock)
-
-    async def _ensure_queue_counter_seeded(
-        self, session: AsyncSession
-    ) -> None:
-        """Seed the in-memory FIFO counter from the DB once.
-
-        Runs a single ``max(queue_counter)`` scan the first time a counter
-        is requested; subsequent calls are no-ops. Callers hold
-        ``self.lock``, so this never races.
-        """
-        if self._queue_counter is None:
-            result = await session.execute(
-                select(func.max(Request.queue_counter))
-            )
-            self._queue_counter = result.scalar() or 0
