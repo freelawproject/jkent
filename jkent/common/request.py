@@ -4,7 +4,8 @@
 params, body); :class:`Request` wraps it with the driver's bookkeeping —
 step, location, ancestry, priority, dedup key, via, incidental match.
 The dedup-key hash and the URL re-quoting used by :meth:`Request.resolve_url`
-live here too, as they have no other consumer.
+live here too, as they have no other consumer. The authoring facade
+(``jkent.data_types``) re-exports the public names.
 """
 
 from __future__ import annotations
@@ -16,17 +17,33 @@ import warnings
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import InitVar, dataclass, field, replace
-from typing import Any, BinaryIO, Final
-from urllib.parse import quote, urljoin, urlparse
+from typing import Any, BinaryIO, Final, cast
+from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
 
 from jkent.common.coded_enum import CodedEnum
-from jkent.common.decorator_metadata import DEFAULT_PRIORITY
+from jkent.common.decorator_metadata import DEFAULT_PRIORITY, TimeoutType
 from jkent.common.headers import merge_headers
 from jkent.common.incidental import Multiple, Singular
 from jkent.common.rate_limits import NO_RATE_LIMIT
 from jkent.common.response import Response
 from jkent.common.via import FieldValue, ViaFormSubmit, ViaLink
 from jkent.contracts import ensure
+
+__all__ = [
+    "ARCHIVE_DEFAULT_PRIORITY",
+    "CookiesType",
+    "HTTPRequestParams",
+    "HeadersType",
+    "HttpMethod",
+    "QueryParams",
+    "Request",
+    "RequestData",
+    "SkipDeduplicationCheck",
+    "TimeoutType",
+    "VerifyType",
+    "encode_body",
+    "serialize_url_and_body",
+]
 
 
 class HttpMethod(CodedEnum):
@@ -55,22 +72,13 @@ QueryParams = dict[str, Any] | list[tuple[str, Any]] | bytes | None
 RequestData = dict[str, Any] | list[tuple[str, Any]] | bytes | BinaryIO | None
 HeadersType = dict[str, str] | None
 CookiesType = dict[str, str] | None
-FileTuple = (
-    tuple[str, BinaryIO]
-    | tuple[str, BinaryIO, str]
-    | tuple[str, BinaryIO, str, dict[str, str]]
-)
-# Values mirror requests' ``files=``: a file-like object, a file tuple,
-# or raw str content. All forms round-trip through the queue: str content is
-# stored as text, while bytes / file-like content is base64-encoded (see
-# ``database_engine.queue._serialize_files``). Binary content reconstructs as
-# ``bytes`` on deserialize.
-FilesType = dict[str, BinaryIO | FileTuple | str] | None
-AuthType = tuple[str, str] | None
-TimeoutType = float | tuple[float, float] | None
-ProxiesType = dict[str, str] | None
+
+#: The one "nobody said" timeout, in seconds. A request whose ``timeout`` is
+#: ``None`` takes its target step's ``@step(timeout=)``, then its transport's
+#: timeout, and a transport built without one falls back to this — on every
+#: wait, on every transport.
+DEFAULT_TIMEOUT_S: float = 60.0
 VerifyType = bool | str
-CertType = str | tuple[str, str] | None
 
 
 @dataclass(frozen=True)
@@ -87,28 +95,26 @@ class HTTPRequestParams:
     :param json: (optional) A JSON serializable Python object to send in the
         body of the request.
     :param headers: (optional) Dictionary of HTTP Headers to send with the request.
-    :param cookies: (optional) Dict of cookies to send with the request.
-    :param files: (optional) Dictionary of ``'name': file-like-objects``
-        (or ``{'name': file-tuple}``) for multipart encoding upload.
-        ``file-tuple`` can be a 2-tuple ``('filename', fileobj)``,
-        3-tuple ``('filename', fileobj, 'content_type')``
-        or a 4-tuple ``('filename', fileobj, 'content_type', custom_headers)``,
-        where ``'content_type'`` is a string defining the content type of the
-        given file and ``custom_headers`` a dict-like object containing
-        additional headers to add for the file.
-    :param auth: (optional) Auth tuple to enable Basic/Digest/Custom HTTP Auth.
+    :param cookies: (optional) Dict of cookies to send with the request,
+        added to the session's cookies for its URL (a request cookie wins
+        over a session cookie of the same name). Transports diverge on how
+        long they last, and this is not currently fixable: the HTTP
+        transport sends them on this request only (not on its redirects),
+        while a browser transport adds them to the browser's cookie jar, so
+        every later request to that site from any worker sends them too,
+        and the run saves them with the rest of the jar for the next run.
+        A browser offers no per-request ``Cookie`` header (Playwright drops
+        an override of it), and fetching the request outside the browser
+        would lose the browser's fingerprint.
     :param timeout: (optional) How many seconds to wait for the server to send
         data before giving up, as a float, or a (connect timeout, read timeout) tuple.
-    :param allow_redirects: (optional) Boolean. Enable/disable
-        GET/OPTIONS/POST/PUT/PATCH/DELETE/HEAD redirection. Defaults to ``True``.
-    :param proxies: (optional) Dictionary mapping protocol to the URL of the proxy.
+        ``None`` (the default) defers to the target step's
+        ``@step(timeout=)``, then to the transport's timeout
+        (``DEFAULT_TIMEOUT_S`` when the transport was built without one); it
+        never means "wait forever".
     :param verify: (optional) Either a boolean, in which case it controls whether
         we verify the server's TLS certificate, or a string, in which case it
         must be a path to a CA bundle to use. Defaults to ``True``.
-    :param stream: (optional) if ``False``, the response content will be
-        immediately downloaded.
-    :param cert: (optional) if String, path to ssl client cert file (.pem).
-        If Tuple, ('cert', 'key') pair.
     """
 
     method: HttpMethod
@@ -118,14 +124,93 @@ class HTTPRequestParams:
     json: Any = None
     headers: HeadersType = None
     cookies: CookiesType = None
-    files: FilesType = None
-    auth: AuthType = None
-    timeout: TimeoutType = 60
-    allow_redirects: bool = True
-    proxies: ProxiesType = None
+    timeout: TimeoutType = None
     verify: VerifyType = True
-    stream: bool = False
-    cert: CertType = None
+
+
+def _fold_params_into_url(url: str, params: QueryParams) -> str:
+    """*url* with *params* appended to its query, as the wire sends it.
+
+    ``doseq=True``, so a list-valued key encodes as ``q=a&q=b`` like a
+    browser, and pairs go out in the order given, duplicates included.
+    Raw ``bytes`` are taken as an already-encoded query.
+    """
+    if not params:
+        return url
+    parsed = urlparse(url)
+    if isinstance(params, bytes):
+        # ASCII passes verbatim (the caller encoded it); any other byte is
+        # percent-encoded as the byte it is, so a legacy-charset query
+        # (cp1252, Shift-JIS) goes out as sent instead of failing to decode.
+        query = "".join(
+            chr(byte) if byte < 0x80 else f"%{byte:02X}" for byte in params
+        )
+    else:
+        query = urlencode(params, doseq=True)
+    if parsed.query:
+        query = parsed.query + "&" + query
+    # urlparse/urlunparse are AnyStr-typed; with a str url and str query
+    # the result is always str, but the checker widens it to str | bytes.
+    return cast(str, urlunparse(parsed._replace(query=query)))
+
+
+def encode_body(data: RequestData) -> tuple[bytes | None, bool]:
+    """``data`` as the queue stores it: ``(body, body_is_form)``.
+
+    Raw bytes pass through verbatim (even ``b""``) with the flag False, and
+    a seekable file-like body is read to bytes the same way. A truthy dict
+    or pair list is JSON-encoded with the flag True, a value JSON cannot
+    spell by its ``str``. Falsy non-bytes data
+    (``None``, ``{}``, ``[]``) is no body at all.
+
+    Raises:
+        TypeError: for a non-seekable file-like body, which cannot be read
+            without consuming it.
+    """
+    if isinstance(data, bytes):
+        return data, False
+    if hasattr(data, "read"):
+        stream = cast(BinaryIO, data)
+        if not stream.seekable():
+            raise TypeError(
+                "a non-seekable file-like request body cannot be queued; "
+                "pass its bytes instead"
+            )
+        position = stream.tell()
+        content = stream.read()
+        stream.seek(position)
+        return content, False
+    if data:
+        # ``str`` for a value JSON has no spelling for, as the form encoder
+        # would send it — and so an unresolved field resolver still keys.
+        return json.dumps(data, default=str).encode(), True
+    return None, False
+
+
+def serialize_url_and_body(
+    http_request: HTTPRequestParams,
+) -> tuple[str, bytes | None]:
+    """The ``(url, body)`` the run database stores for *http_request*.
+
+    Query params are folded into the URL (see :func:`_fold_params_into_url`)
+    and the body is :func:`encode_body`'s. The queue's write path and
+    replay's fallback-key derivation both go through this function.
+    """
+    return (
+        _fold_params_into_url(http_request.url, http_request.params),
+        encode_body(http_request.data)[0],
+    )
+
+
+def _sorted_if_dict(value: Any) -> Any:
+    """A dict's items in name order; anything else unchanged.
+
+    A dict's names are unique, so the order only reflects insertion;
+    a pair list's order is part of the request and is left alone.
+    """
+    if isinstance(value, dict):
+        return dict(sorted(value.items(), key=lambda item: str(item[0])))
+    return value
 
 
 @ensure(
@@ -135,84 +220,31 @@ class HTTPRequestParams:
     "dedup key is a sha256 hex digest",
 )
 def _generate_deduplication_key(request_params: HTTPRequestParams) -> str:
-    """Generate a deduplication key from HTTPRequestParams.
+    """SHA256 of the request as the queue stores it.
 
-    Default deduplication key is a SHA256 hash of:
-    - HTTP method
-    - Full URL with parameters
-    - Request data (sorted if dict/list of tuples)
-
-    Args:
-        request_params: The HTTP request parameters.
-
-    Returns:
-        A SHA256 hex digest string for deduplication.
+    The key hashes the method, the URL with params folded in, the encoded
+    body with its JSON flag, and the ``json`` payload — the same fields the
+    stored row carries, so two spellings of one stored request (a query in
+    the URL or in ``params``) share a key. Dict ``params``/``data`` are
+    taken in name order; pair lists as given, duplicates included. The parts
+    are joined as a JSON array, so no part can shift the boundary of
+    another.
     """
-    # Start with the method and full URL. The method is part of a
-    # request's identity: a GET search page and a bodyless POST search
-    # submission to the same URL must not dedup each other away.
-    url_str = f"{request_params.method.value} {request_params.url}"
-
-    # Add query parameters if present
-    if request_params.params:
-        # Sort params for consistent hashing
-        if isinstance(request_params.params, dict):
-            sorted_params = sorted(request_params.params.items())
-            params_str = str(sorted_params)
-        elif isinstance(request_params.params, (list, tuple)):
-            # Sort by repr: total over mixed value types (plain tuple
-            # comparison raises TypeError when two entries share a name
-            # and carry e.g. an int and a str).
-            sorted_params = sorted(request_params.params, key=repr)
-            params_str = str(sorted_params)
-        else:
-            # bytes or other type - use as-is
-            params_str = str(request_params.params)
-        url_str = f"{url_str}?{params_str}"
-
-    # Add request data if present
-    data_str = ""
-    if request_params.data:
-        if isinstance(request_params.data, dict):
-            # Sort dict by key
-            sorted_data = sorted(request_params.data.items())
-            data_str = str(sorted_data)
-        elif isinstance(request_params.data, list):
-            # Sort full entries by repr so the key is invariant under
-            # field order (sorting by name alone left duplicate names
-            # in yield order) and total over mixed value types.
-            sorted_data = sorted(request_params.data, key=repr)
-            data_str = str(sorted_data)
-        elif isinstance(request_params.data, bytes):
-            data_str = str(request_params.data)
-        elif hasattr(request_params.data, "read"):
-            # File-like body: key on the content, not the object —
-            # str(stream) renders a memory address, which would give
-            # the same logical request a fresh key per construction.
-            # Non-seekable streams can't be inspected without
-            # consuming them, so they keep identity-based hashing.
-            stream = request_params.data
-            if stream.seekable():
-                pos = stream.tell()
-                data_str = str(stream.read())
-                stream.seek(pos)
-            else:
-                data_str = str(stream)
-        else:
-            data_str = str(request_params.data)
-
-    # Add JSON data if present
-    if request_params.json is not None:
-        if isinstance(request_params.json, dict):
-            # Sort dict by key for consistent hashing
-            json_str = json.dumps(request_params.json, sort_keys=True)
-        else:
-            json_str = json.dumps(request_params.json)
-        data_str = f"{data_str}|{json_str}"
-
-    # Combine URL and data, then hash
-    combined = f"{url_str}|{data_str}"
-    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    url = _fold_params_into_url(
+        request_params.url, _sorted_if_dict(request_params.params)
+    )
+    body, body_is_form = encode_body(_sorted_if_dict(request_params.data))
+    identity = json.dumps(
+        [
+            request_params.method.value,
+            url,
+            None if body is None else body.hex(),
+            body_is_form,
+            request_params.json,
+        ],
+        sort_keys=True,
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 # Characters that never need percent-encoding (RFC 3986 unreserved set).
@@ -261,27 +293,22 @@ def _requote_uri(uri: str) -> str:
     return quote("".join(out), safe=_REQUOTE_SAFE)
 
 
+@dataclass(frozen=True)
 class SkipDeduplicationCheck:
     """Sentinel for ``deduplication_key`` that skips the dedup check.
 
     Pass an *instance* — ``deduplication_key=SkipDeduplicationCheck()`` — not
     the class itself, so the request opts out of deduplication entirely.
+    Stored as a NULL key; the queue loads a NULL back as this sentinel, so
+    the opt-out survives a dequeue (a request read back with ``None`` would
+    be re-hashed as if the key were merely unset). Instances are equal so
+    a round-tripped request compares equal to the one enqueued.
     """
 
-    pass
 
-
-# DEFAULT_PRIORITY (the priority for requests whose author didn't choose one)
-# is defined in jkent.common.decorator_metadata and imported above so the
-# decorators and data_types share one source of truth; re-exported here for
-# the many callers that import it from data_types.
 # Default priority for archive (file download) requests: downloads jump
 # the queue because stale server-side state expires quickly.
 ARCHIVE_DEFAULT_PRIORITY: Final = 1
-# Soft-failure status the driver assigns to a speculative 2xx response that
-# actually_successful() rejected, so the speculation callback sees a failure
-# instead of a success.
-SPECULATION_SOFT_FAILURE_STATUS: Final = 555
 
 
 @dataclass(frozen=True)
@@ -307,23 +334,21 @@ class Request:
                      resolve it to the function's name.
         current_location: The URL context for resolving relative URLs.
         parent_request: The immediate parent request that led to this one,
-                        or None for entry requests. When we pop this off a request queue
-                        we only take one parent, so we don't grow memory unbounded.
+                        or None for entry requests.
         accumulated_data: Data collected across the request chain.
         priority: Priority for request queue ordering (lower = higher
                   priority). None means "unset": the request inherits the
-                  target step's priority when ``step`` is a
-                  Callable, archive requests default to
+                  target step's priority, archive requests default to
                   ARCHIVE_DEFAULT_PRIORITY, and the queue falls back to
                   DEFAULT_PRIORITY (see effective_priority). An explicit
                   value — including an explicit 9 — is always kept.
-        deduplication_key: Key for deduplication (defaults to hash of URL and
-            data). Requests with the same deduplication_key will be resolved once,
-            subsequent requests with the same key will be pruned. If you don't provide
-            this key, it will default to a hash of the url and data. If you want "the same"
-            request to be processed multiple times, you can pass different values here that
-            embed some part of the context, or you can pass a ``SkipDeduplicationCheck()``
-            instance to opt out.
+        deduplication_key: Key for deduplication. Requests with the same key will be
+            resolved once, subsequent requests with the same key will be pruned. None
+            (the default) means a hash of the method, url and data, computed from the
+            request as finally resolved (see effective_deduplication_key). If you want
+            "the same" request to be processed multiple times, you can pass different
+            values here that embed some part of the context, or you can pass a
+            ``SkipDeduplicationCheck()`` instance to opt out.
         permanent: Persistent data (cookies, headers) that flows through the request chain.
         is_speculative: Whether this request is speculative (probing for content existence).
         speculation_tracking_id: Row id of the ``speculation_tracking`` entry for
@@ -362,7 +387,6 @@ class Request:
         nonnavigating: If True, does not update current_location.
         archive: If True, downloads and archives the file.
         expected_type: Optional file type hint for archive requests ("pdf", "audio", etc.).
-        archive_hash_header: Reserved for future use, to contain ETag/SHA256 header ids.
     """
 
     request: HTTPRequestParams
@@ -383,19 +407,15 @@ class Request:
     nonnavigating: bool = False
     archive: bool = False
     expected_type: str | None = None
-    archive_hash_header: str | None = None
     #: Deprecated spelling of ``step``, accepted so scrapers written against
     #: the old keyword keep constructing; warns once per call site. Remove
-    #: once juriscraper-prs and the hosts have been ported to ``step=``. Note
-    #: the
+    #: once juriscraper-prs and the hosts have been ported to ``step=``. The
     #: default lingers as a class attribute (``dataclasses.replace`` reads it
     #: back), so ``request.continuation`` is ``None``, never the step.
-    # pyre-ignore[16]: pyre mishandles ``InitVar`` fields on dataclasses.
     continuation: InitVar[str | Callable[..., Any] | None] = None
     #: Deprecated spelling of ``rate_limit="none"``; same lifecycle as
     #: ``continuation``. ``True`` selects the unlimited lane, ``False`` is a
     #: no-op — both warn once per call site.
-    # pyre-ignore[16]: pyre mishandles ``InitVar`` fields on dataclasses.
     bypass_rate_limit: InitVar[bool | None] = None
 
     def __post_init__(
@@ -461,13 +481,6 @@ class Request:
             new_request = self._merge_permanent_into_request()
             object.__setattr__(self, "request", new_request)
 
-        if self.deduplication_key is None:
-            object.__setattr__(
-                self,
-                "deduplication_key",
-                _generate_deduplication_key(self.request),
-            )
-
     @property
     def effective_priority(self) -> int:
         """The priority the queue should use.
@@ -478,6 +491,22 @@ class Request:
         if self.priority is None:
             return DEFAULT_PRIORITY
         return self.priority
+
+    @property
+    def effective_deduplication_key(self) -> str | None:
+        """The key the queue deduplicates on, or None to never deduplicate.
+
+        An unset (None) key is hashed from the request as it stands, so a
+        request whose URL or form values are resolved later (``resolve_from``,
+        ``resolve_deferred_fields``) is keyed by the resolved values.
+        ``SkipDeduplicationCheck`` yields None; explicit keys are returned
+        as-is.
+        """
+        if self.deduplication_key is None:
+            return _generate_deduplication_key(self.request)
+        if isinstance(self.deduplication_key, str):
+            return self.deduplication_key
+        return None
 
     def _merge_permanent_into_request(self) -> HTTPRequestParams:
         """Merge permanent headers and cookies into the HTTPRequestParams.
@@ -589,22 +618,11 @@ class Request:
             child_cookies, dict
         ):
             merged_permanent["cookies"] = {**parent_cookies, **child_cookies}
-        # An auto-generated key was hashed from the still-relative URL at
-        # construction time; two "detail.aspx" yields from different pages
-        # would collide. Detect auto keys by recomputing the hash for the
-        # unresolved params and pass None so __post_init__ regenerates the
-        # key from the resolved URL. Explicit keys (including a hand-built
-        # hash, which behaves identically) and SkipDeduplicationCheck pass
-        # through untouched.
-        deduplication_key = self.deduplication_key
-        if deduplication_key == _generate_deduplication_key(self.request):
-            deduplication_key = None
         return replace(
             self,
             request=request,
             current_location=location,
             parent_request=parent,
-            deduplication_key=deduplication_key,
             permanent=merged_permanent,
         )
 
@@ -624,25 +642,20 @@ class Request:
         submit identical data.
 
         Returns self when there is nothing to resolve. Otherwise returns a
-        new Request with resolved values; an auto-generated deduplication
-        key (hashed from the resolver's repr at construction time) is
-        regenerated from the resolved values, mirroring ``resolve_from``'s
-        URL handling, while explicit keys pass through untouched.
+        new Request with resolved values (an unset deduplication key then
+        hashes those).
         """
-        field_dicts: list[dict[str, Any]] = [
-            d
-            for d in (self.request.params, self.request.data)
-            if isinstance(d, dict)
-        ]
+        # The HTTP payloads may be dicts or pair lists; the via is a dict.
+        values: list[Any] = []
+        for payload in (self.request.params, self.request.data):
+            if isinstance(payload, dict):
+                values.extend(payload.values())
+            elif isinstance(payload, list):
+                values.extend(pair[1] for pair in payload)
         if isinstance(self.via, ViaFormSubmit):
-            field_dicts.append(self.via.field_data)
+            values.extend(self.via.field_data.values())
 
-        pending = {
-            id(value): value
-            for d in field_dicts
-            for value in d.values()
-            if callable(value)
-        }
+        pending = {id(value): value for value in values if callable(value)}
         if not pending:
             return self
 
@@ -669,34 +682,31 @@ class Request:
                 )
             resolved[key] = value
 
-        def substitute(d: dict[str, Any]) -> dict[str, Any]:
-            return {
-                name: resolved[id(value)] if callable(value) else value
-                for name, value in d.items()
-            }
+        def concrete(value: Any) -> Any:
+            return resolved[id(value)] if callable(value) else value
 
-        new_params = self.request
-        if isinstance(new_params.params, dict):
-            new_params = replace(
-                new_params, params=substitute(new_params.params)
-            )
-        if isinstance(new_params.data, dict):
-            new_params = replace(new_params, data=substitute(new_params.data))
+        def substitute(d: dict[str, Any]) -> dict[str, Any]:
+            return {name: concrete(value) for name, value in d.items()}
+
+        def substitute_payload(payload: Any) -> Any:
+            if isinstance(payload, dict):
+                return substitute(payload)
+            if isinstance(payload, list):
+                return [(name, concrete(value)) for name, value in payload]
+            return payload
+
+        new_params = replace(
+            self.request,
+            params=substitute_payload(self.request.params),
+            data=substitute_payload(self.request.data),
+        )
         new_via = self.via
         if isinstance(new_via, ViaFormSubmit):
             new_via = replace(
                 new_via, field_data=substitute(new_via.field_data)
             )
 
-        deduplication_key = self.deduplication_key
-        if deduplication_key == _generate_deduplication_key(self.request):
-            deduplication_key = None
-        return replace(
-            self,
-            request=new_params,
-            via=new_via,
-            deduplication_key=deduplication_key,
-        )
+        return replace(self, request=new_params, via=new_via)
 
     def speculative(self, tracking_id: int, spec_id: int) -> Request:
         """Create a speculative copy of this request.

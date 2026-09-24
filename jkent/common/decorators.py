@@ -5,17 +5,9 @@ to determine what to inject into scraper methods. Instead of having separate
 decorators for each content type (lxml, json, text, etc.), a single decorator
 inspects the function signature and injects values based on parameter names.
 
-Supported parameter names:
-
-- response: The Response object
-- request: The current Request
-- previous_request: The parent request from the chain
-- accumulated_data: Data collected across the request chain (from request)
-- json_content: Response content parsed as JSON
-- lxml_tree: Response content parsed as LxmlPageElement
-- page: Response content parsed as PageElement (wires up the observer)
-- text: Response content as string
-- local_filepath: Local file path from ArchiveResponse (None if not archive)
+Supported parameter names live in one registry (``INJECTORS``), which also
+generates the documented list on ``@step`` — see :func:`register_injector`
+for adding one.
 
 The decorator also handles:
 
@@ -25,7 +17,7 @@ The decorator also handles:
 - Automatic yielding from wrapped generators
 
 The @entry decorator marks scraper methods as entry points with typed
-parameters, replacing the old get_entry()/ScraperParams system.
+parameters; it is the only way a scraper declares where a run starts.
 """
 
 import inspect
@@ -61,19 +53,15 @@ from jkent.common.exceptions import (
 from jkent.common.lxml_page_element import (
     LxmlPageElement,
 )
+from jkent.common.request import Request
+from jkent.common.response import ArchiveResponse, Response
+from jkent.common.scraper import BaseScraper, ScraperYield
 from jkent.common.selector_observer import (
     SelectorObserver,
     get_active_observer,
 )
 from jkent.common.speculative import Speculative
-from jkent.data_types import (
-    ArchiveResponse,
-    BaseScraper,
-    Request,
-    Response,
-    ScraperYield,
-    WaitCondition,
-)
+from jkent.common.wait_conditions import WaitCondition
 
 T = TypeVar("T")
 
@@ -205,7 +193,7 @@ def _parse_page_element(
         # wrapper), not through the PageElement — see SelectorObserver.
         # An observer already active here was injected by a caller running
         # the step under its own (possibly subclassed) observer —
-        # e.g. jent's annotation/residual analysis — so reuse it instead of
+        # e.g. a host's selector-coverage analysis — so reuse it instead of
         # shadowing it with a fresh one. Under the driver no observer is
         # active at parse time, so each execution gets its own as before.
         observer = get_active_observer() or SelectorObserver()
@@ -222,6 +210,171 @@ def _parse_page_element(
             request_url=response.url,
             context={"encoding": encoding, "error": str(e)},
         ) from e
+
+
+class InjectionContext:
+    """Everything an injector may read, for one execution of one step.
+
+    Holds the per-execution state the injectors share: the response, the
+    step's ``encoding``, and the ``preprocess`` repair hook. :attr:`document`
+    memoises the repaired text so ``text``, ``lxml_tree``, and ``page`` in the
+    same signature all see one repair rather than three.
+
+    :attr:`observer` is written by the ``page`` injector and read back by the
+    wrapper — per-execution state, so it lives here and on the ``Response``,
+    never on the shared :class:`StepMetadata` where two in-flight executions
+    of one step would clobber each other.
+    """
+
+    __slots__ = ("_document", "encoding", "observer", "preprocess", "response")
+
+    def __init__(
+        self,
+        response: Response,
+        encoding: str,
+        preprocess: Callable[[str], str] | None,
+    ) -> None:
+        self.response = response
+        self.encoding = encoding
+        self.preprocess = preprocess
+        self.observer: SelectorObserver | None = None
+        self._document: str | None = None
+
+    @property
+    def document(self) -> str | None:
+        """The repaired document text, or ``None`` when no hook is set.
+
+        Computed at most once per execution, and only if an injector that
+        feeds on the document is actually in the signature — asking for
+        ``json_content`` alone never runs the repair.
+        """
+        if self.preprocess is None:
+            return None
+        if self._document is None:
+            try:
+                self._document = self.preprocess(
+                    _get_text(self.response, self.encoding)
+                )
+            except ScraperAssumptionException:
+                raise
+            except Exception as e:
+                raise ScraperAssumptionException(
+                    f"Step preprocess hook failed: {e}",
+                    request_url=self.response.url,
+                    context={"error": str(e)},
+                ) from e
+        return self._document
+
+
+#: One injector per supported ``@step`` parameter name: ``name -> (builder,
+#: docstring line)``. The registry is the single source for both the
+#: injection behaviour and the documented list in :func:`step` and this
+#: module's docstring, so a new injection cannot be added without being
+#: documented. Extend it with :func:`register_injector`.
+INJECTORS: dict[str, tuple[Callable[[InjectionContext], Any], str]] = {}
+
+
+def register_injector(
+    name: str,
+    builder: Callable[[InjectionContext], Any],
+    *,
+    doc: str,
+) -> None:
+    """Register a ``@step`` parameter name and what to inject for it.
+
+    Hosts embedding jkent (a replay worker, for one) register their own
+    injections here rather than patching the decorator.
+
+    Args:
+        name: The parameter name a step declares to receive this value.
+        builder: Called with the :class:`InjectionContext` once per execution
+            of a step whose signature names ``name``.
+        doc: One-line description for the generated documentation.
+
+    Raises:
+        ValueError: ``name`` is already registered.
+    """
+    if name in INJECTORS:
+        raise ValueError(f"@step injector {name!r} is already registered")
+    INJECTORS[name] = (builder, doc)
+
+
+def _injector_doc(indent: str = "    ") -> str:
+    """The registry rendered as the documented parameter list."""
+    return "\n".join(
+        f"{indent}- {name}: {doc}" for name, (_, doc) in INJECTORS.items()
+    )
+
+
+def _inject_page(ctx: InjectionContext) -> Any:
+    page_element, observer = _parse_page_element(
+        ctx.response, ctx.encoding, text=ctx.document
+    )
+    ctx.observer = observer
+    # The Response is the driver's per-execution handle, so the observer
+    # travels there for the transports to read back.
+    ctx.response.observer = observer
+    return page_element
+
+
+def _inject_local_filepath(ctx: InjectionContext) -> Any:
+    if isinstance(ctx.response, ArchiveResponse):
+        return ctx.response.file_url
+    return None
+
+
+register_injector(
+    "response",
+    lambda ctx: ctx.response,
+    doc="The Response object",
+)
+register_injector(
+    "request",
+    lambda ctx: ctx.response.request,
+    doc="The current Request",
+)
+register_injector(
+    "previous_request",
+    lambda ctx: ctx.response.request.parent_request,
+    doc="The parent request from the chain (None for entry requests)",
+)
+register_injector(
+    "accumulated_data",
+    lambda ctx: ctx.response.request.accumulated_data,
+    doc="Data collected across the request chain (from request)",
+)
+register_injector(
+    "json_content",
+    lambda ctx: _parse_json(ctx.response, ctx.encoding),
+    doc="Response content parsed as JSON",
+)
+register_injector(
+    "lxml_tree",
+    lambda ctx: _parse_html(ctx.response, ctx.encoding, text=ctx.document),
+    doc="Response content parsed as LxmlPageElement",
+)
+register_injector(
+    "page",
+    _inject_page,
+    doc=(
+        "Response content parsed as PageElement (LxmlPageElement with "
+        "observer)"
+    ),
+)
+register_injector(
+    "text",
+    lambda ctx: (
+        ctx.document
+        if ctx.document is not None
+        else _get_text(ctx.response, ctx.encoding)
+    ),
+    doc="Response content as string",
+)
+register_injector(
+    "local_filepath",
+    _inject_local_filepath,
+    doc="Local file path from ArchiveResponse (None otherwise)",
+)
 
 
 def _process_yielded_request(yielded: Any) -> Any:
@@ -324,17 +477,10 @@ def step(
     """Decorator for scraper step methods with automatic argument injection.
 
     This decorator inspects the function signature and injects values based on
-    parameter names:
+    parameter names. The list below is generated from :data:`INJECTORS`, so a
+    host that calls :func:`register_injector` sees its own name here too:
 
-    - response: The Response object
-    - request: The current Request
-    - previous_request: The parent request from the chain (if available)
-    - accumulated_data: Data collected across the request chain (from request)
-    - json_content: Response content parsed as JSON
-    - lxml_tree: Response content parsed as LxmlPageElement
-    - page: Response content parsed as PageElement (LxmlPageElement with observer)
-    - text: Response content as string
-    - local_filepath: Local file path from ArchiveResponse (None otherwise)
+    {injections}
 
     Example::
 
@@ -396,9 +542,12 @@ def step(
     def decorator(
         fn: StepFunction[StepScraper, StepYield],
     ) -> StepMethod[StepScraper, StepYield]:
-        # Inspect the function signature to determine what to inject
+        # Resolve, once at decoration time, which registered injections
+        # this signature asks for. Registry order, not signature order, so
+        # the shared document repair is driven by the injectors themselves.
         sig = inspect.signature(fn)
-        param_names = [p.name for p in sig.parameters.values()]
+        param_names = {p.name for p in sig.parameters.values()}
+        wanted = [name for name in INJECTORS if name in param_names]
 
         # Create metadata
         metadata = StepMetadata(
@@ -416,80 +565,12 @@ def step(
             *args: Any,
             **kwargs: Any,
         ) -> Generator[StepYield, bool | None, None]:
-            # Build kwargs for injection based on parameter names
-            injected_kwargs: dict[str, Any] = {}
-            observer: SelectorObserver | None = None
-
-            if "response" in param_names:
-                injected_kwargs["response"] = response
-
-            if "request" in param_names:
-                injected_kwargs["request"] = response.request
-
-            if "previous_request" in param_names:
-                # The immediate parent request (None for entry requests)
-                injected_kwargs["previous_request"] = (
-                    response.request.parent_request
-                )
-
-            if "accumulated_data" in param_names:
-                injected_kwargs["accumulated_data"] = (
-                    response.request.accumulated_data
-                )
-
-            # Content transformations (lazy - only parse if requested)
-            if "json_content" in param_names:
-                injected_kwargs["json_content"] = _parse_json(
-                    response, encoding
-                )
-
-            # Repaired document text, computed once when a preprocess hook
-            # is set and any document-shaped injection is requested. Feeds
-            # text/lxml_tree/page below so they all see the same repaired
-            # document.
-            repaired: str | None = None
-            if preprocess is not None and any(
-                name in param_names for name in ("text", "lxml_tree", "page")
-            ):
-                try:
-                    repaired = preprocess(_get_text(response, encoding))
-                except ScraperAssumptionException:
-                    raise
-                except Exception as e:
-                    raise ScraperAssumptionException(
-                        f"Step preprocess hook failed: {e}",
-                        request_url=response.url,
-                        context={"error": str(e)},
-                    ) from e
-
-            if "lxml_tree" in param_names:
-                injected_kwargs["lxml_tree"] = _parse_html(
-                    response, encoding, text=repaired
-                )
-
-            if "page" in param_names:
-                page_element, observer = _parse_page_element(
-                    response, encoding, text=repaired
-                )
-                injected_kwargs["page"] = page_element
-                # The observer is per-execution state and the Response is
-                # the driver's per-execution handle, so it travels there —
-                # never on the shared StepMetadata, where two in-flight
-                # executions of the same step would clobber each other.
-                response.observer = observer
-
-            if "text" in param_names:
-                injected_kwargs["text"] = (
-                    repaired
-                    if repaired is not None
-                    else _get_text(response, encoding)
-                )
-
-            if "local_filepath" in param_names:
-                if isinstance(response, ArchiveResponse):
-                    injected_kwargs["local_filepath"] = response.file_url
-                else:
-                    injected_kwargs["local_filepath"] = None
+            # Build kwargs from the injector registry (see INJECTORS).
+            ctx = InjectionContext(response, encoding, preprocess)
+            injected_kwargs: dict[str, Any] = {
+                name: INJECTORS[name][0](ctx) for name in wanted
+            }
+            observer = ctx.observer
 
             # Call the original function with injected kwargs
             gen = fn(scraper_self, *args, **injected_kwargs, **kwargs)
@@ -521,6 +602,27 @@ def step(
     if func is not None:
         return decorator(func)
     return decorator
+
+
+#: ``step.__doc__`` with the ``{injections}`` placeholder still in it, kept so
+#: every refresh renders from the template rather than from the last render.
+#: ``None`` under ``python -OO``, which strips docstrings.
+_STEP_DOC_TEMPLATE = step.__doc__
+
+
+def refresh_step_doc() -> None:
+    """Render :data:`INJECTORS` into ``step``'s docstring.
+
+    Call after :func:`register_injector` to have a host's own injection show
+    up in ``help(step)``. No-op under ``python -OO``.
+    """
+    if _STEP_DOC_TEMPLATE is not None:
+        step.__doc__ = _STEP_DOC_TEMPLATE.replace(
+            "{injections}", _injector_doc()
+        )
+
+
+refresh_step_doc()
 
 
 # =============================================================================

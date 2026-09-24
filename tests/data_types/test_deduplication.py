@@ -4,15 +4,16 @@ This test module verifies:
 
 1. Default keys are derived from the request params, including the HTTP
    method — a GET and a POST to the same URL must not collide.
-2. Auto-generated keys are regenerated when a request's relative URL is
-   resolved against its parent — two scrapers yielding "detail.aspx"
-   from different pages must not dedup each other away.
+2. Auto keys hash the request as resolved against its parent — two
+   scrapers yielding "detail.aspx" from different pages must not dedup
+   each other away.
 3. Explicitly-set keys (and SkipDeduplicationCheck) survive resolution
    untouched.
 """
 
 from typing import Any
 
+from jkent.common.request import serialize_url_and_body
 from jkent.data_types import (
     HttpMethod,
     HTTPRequestParams,
@@ -50,18 +51,18 @@ class TestKeyGeneration:
 
     def test_default_key_is_generated(self):
         req = make_request("https://example.com/list")
-        assert isinstance(req.deduplication_key, str)
-        assert len(req.deduplication_key) == 64
+        assert isinstance(req.effective_deduplication_key, str)
+        assert len(req.effective_deduplication_key) == 64
 
     def test_identical_requests_share_a_key(self):
         a = make_request("https://example.com/list")
         b = make_request("https://example.com/list")
-        assert a.deduplication_key == b.deduplication_key
+        assert a.effective_deduplication_key == b.effective_deduplication_key
 
     def test_different_urls_differ(self):
         a = make_request("https://example.com/list?page=1")
         b = make_request("https://example.com/list?page=2")
-        assert a.deduplication_key != b.deduplication_key
+        assert a.effective_deduplication_key != b.effective_deduplication_key
 
     def test_http_method_is_part_of_the_key(self):
         """GET and POST to the same URL are different requests.
@@ -74,15 +75,18 @@ class TestKeyGeneration:
         post_req = make_request(
             "https://example.com/export", method=HttpMethod.POST
         )
-        assert get_req.deduplication_key != post_req.deduplication_key
+        assert (
+            get_req.effective_deduplication_key
+            != post_req.effective_deduplication_key
+        )
 
     def test_explicit_key_is_preserved(self):
         req = make_request("https://example.com/list")
         explicit = make_request(
             "https://example.com/list", deduplication_key="my-key"
         )
-        assert explicit.deduplication_key == "my-key"
-        assert req.deduplication_key != "my-key"
+        assert explicit.effective_deduplication_key == "my-key"
+        assert req.effective_deduplication_key != "my-key"
 
 
 class TestKeyResolution:
@@ -101,7 +105,10 @@ class TestKeyResolution:
         resolved_b = make_request("detail.aspx").resolve_from(
             make_response("https://example.com/court-b/list")
         )
-        assert resolved_a.deduplication_key != resolved_b.deduplication_key
+        assert (
+            resolved_a.effective_deduplication_key
+            != resolved_b.effective_deduplication_key
+        )
 
     def test_auto_key_matches_equivalent_absolute_request(self):
         """A resolved auto key equals the key of the same absolute URL.
@@ -113,20 +120,26 @@ class TestKeyResolution:
             make_response("https://example.com/court/list")
         )
         direct = make_request("https://example.com/court/detail.aspx?id=7")
-        assert resolved.deduplication_key == direct.deduplication_key
+        assert (
+            resolved.effective_deduplication_key
+            == direct.effective_deduplication_key
+        )
 
     def test_same_relative_url_same_parent_still_collides(self):
         """Resolution must not break genuine duplicate detection."""
         response = make_response("https://example.com/court/list")
         resolved_a = make_request("detail.aspx").resolve_from(response)
         resolved_b = make_request("detail.aspx").resolve_from(response)
-        assert resolved_a.deduplication_key == resolved_b.deduplication_key
+        assert (
+            resolved_a.effective_deduplication_key
+            == resolved_b.effective_deduplication_key
+        )
 
     def test_explicit_key_survives_resolve_from(self):
         resolved = make_request(
             "detail.aspx", deduplication_key="my-key"
         ).resolve_from(make_response("https://example.com/court/list"))
-        assert resolved.deduplication_key == "my-key"
+        assert resolved.effective_deduplication_key == "my-key"
 
     def test_resolved_speculative_copy_regenerates_its_auto_key(self):
         """Auto-ness survives a speculative() copy.
@@ -140,4 +153,28 @@ class TestKeyResolution:
             make_response("https://example.com/court/list")
         )
         direct = make_request("https://example.com/court/detail.aspx?id=7")
-        assert resolved.deduplication_key == direct.deduplication_key
+        assert (
+            resolved.effective_deduplication_key
+            == direct.effective_deduplication_key
+        )
+
+
+class TestBytesParams:
+    """Raw-bytes ``params`` fold into the stored URL, whatever the bytes."""
+
+    def _params(self, params: bytes) -> HTTPRequestParams:
+        return HTTPRequestParams(
+            method=HttpMethod.GET,
+            url="https://example.com/s?a=1",
+            params=params,
+        )
+
+    def test_non_utf8_bytes_are_percent_encoded(self):
+        # A cp1252 query (``é`` is 0xE9) raised UnicodeDecodeError on enqueue.
+        url, _ = serialize_url_and_body(self._params(b"q=caf\xe9"))
+        assert url == "https://example.com/s?a=1&q=caf%E9"
+        Request(request=self._params(b"q=caf\xe9"), step="parse")
+
+    def test_ascii_bytes_are_kept_verbatim(self):
+        url, _ = serialize_url_and_body(self._params(b"q=a b&r=%2F"))
+        assert url == "https://example.com/s?a=1&q=a b&r=%2F"
