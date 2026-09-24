@@ -32,6 +32,7 @@ from jkent.driver.unified_driver.rate_limiter import (
     RateLimiter,
     RateLimiters,
 )
+from jkent.driver.unified_driver.run import ScrapeRun
 from jkent.driver.unified_driver.steps import StepExecutor
 from jkent.driver.unified_driver.transport import (
     ArchiveStream,
@@ -75,6 +76,7 @@ __all__ = [
     "RunCollaborators",
     "RunConfig",
     "RunHooks",
+    "ScrapeRun",
     "Transport",
     "WorkerHandle",
     "WorkerPool",
