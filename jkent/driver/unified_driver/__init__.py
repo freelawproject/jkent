@@ -25,16 +25,28 @@ from jkent.driver.unified_driver.rate_limiter import (
     RateLimiter,
     RateLimiters,
 )
+from jkent.driver.unified_driver.transport import (
+    ArchiveStream,
+    AwaitCondition,
+    QueuedRequest,
+    Transport,
+    WorkerHandle,
+)
 
 __all__ = [
     "AdaptiveRateLimiter",
+    "ArchiveStream",
     "AsyncLifecycle",
+    "AwaitCondition",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
     "DEFAULT_ADAPTIVE_LADDER",
     "NoopRateLimiter",
     "PyrateRateLimiter",
+    "QueuedRequest",
     "RateLimiter",
     "RateLimiters",
+    "Transport",
+    "WorkerHandle",
     "WorkerPool",
 ]
