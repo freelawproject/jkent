@@ -15,6 +15,9 @@ The SQLManager handles:
 
 from jkent.driver.database_engine.sql_manager._base import SQLManagerBase
 from jkent.driver.database_engine.sql_manager._errors import ErrorsMixin
+from jkent.driver.database_engine.sql_manager._incidental_requests import (
+    IncidentalRequestStorageMixin,
+)
 from jkent.driver.database_engine.sql_manager._requests import (
     RequestQueueMixin,
     RetryState,
@@ -25,11 +28,21 @@ from jkent.driver.database_engine.sql_manager._responses import (
 from jkent.driver.database_engine.sql_manager._results import (
     ResultStorageMixin,
 )
+from jkent.driver.database_engine.sql_manager._run_metadata import (
+    RUN_METADATA_ID,
+    RunMetadataMixin,
+    RunMetadataRecord,
+)
+from jkent.driver.database_engine.sql_manager._speculation import (
+    SpeculationMixin,
+    SpeculationStateRecord,
+)
 from jkent.driver.database_engine.sql_manager._types import (
     CompressedPayload,
     DequeuedRow,
     IncidentalCapture,
     IncidentalRequestRecord,
+    IncidentalStorageRecord,
     InsertResult,
     RequestInsert,
     ResultInsert,
@@ -40,10 +53,13 @@ from jkent.driver.database_engine.sql_manager._types import (
 
 
 class SQLManager(
+    RunMetadataMixin,
     ErrorsMixin,
     RequestQueueMixin,
     ResponseStorageMixin,
+    IncidentalRequestStorageMixin,
     ResultStorageMixin,
+    SpeculationMixin,
     SQLManagerBase,
 ):
     """Database manager for the unified driver's run database.
@@ -65,16 +81,20 @@ class SQLManager(
 
 
 __all__ = [
+    "RUN_METADATA_ID",
     "CompressedPayload",
     "DequeuedRow",
     "IncidentalCapture",
     "IncidentalRequestRecord",
+    "IncidentalStorageRecord",
     "InsertResult",
     "RequestInsert",
     "ResultInsert",
     "RetryState",
     "RowModel",
+    "RunMetadataRecord",
     "SQLManager",
+    "SpeculationStateRecord",
     "StoredResponse",
     "compute_cache_key",
 ]

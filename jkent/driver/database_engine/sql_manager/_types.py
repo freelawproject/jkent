@@ -141,6 +141,19 @@ class CompressedPayload(RowModel):
     compression_dict_id: int | None = None
 
 
+class IncidentalStorageRecord(CompressedPayload):
+    """One ``incidental_request_storage`` row, less its surrogate id.
+
+    What ``get_incidental_request_storage`` returns: the payload columns
+    plus the two the storage table adds. A row model rather than the ORM
+    object, which would leave the session it was loaded in and be read
+    detached.
+    """
+
+    response_headers_json: str | None = None
+    content_md5: bytes | None = None
+
+
 class StoredResponse(CompressedPayload):
     """A request's stored response columns.
 
