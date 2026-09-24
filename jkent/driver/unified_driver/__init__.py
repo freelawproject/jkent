@@ -47,6 +47,12 @@ from jkent.driver.unified_driver.transport import (
 from jkent.driver.unified_driver.transport.httpx_transport import (
     HttpxTransport,
 )
+from jkent.driver.unified_driver.wiring import (
+    RunCollaborators,
+    RunConfig,
+    RunHooks,
+)
+from jkent.driver.unified_driver.worker import PoolWorker
 
 __all__ = [
     "AdaptiveRateLimiter",
@@ -65,12 +71,16 @@ __all__ = [
     "HttpxTransport",
     "NoopHandle",
     "NoopRateLimiter",
+    "PoolWorker",
     "PyrateRateLimiter",
     "QueuedRequest",
     "RateLimiter",
     "RateLimiters",
     "RequestQueue",
     "ResponseStorage",
+    "RunCollaborators",
+    "RunConfig",
+    "RunHooks",
     "StatelessTransport",
     "parse_retry_after",
     "Transport",
