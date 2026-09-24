@@ -45,7 +45,7 @@ from jkent.common.exceptions import (
     ScraperConfigError,
 )
 from jkent.common.request import HttpMethod, HTTPRequestParams, Request
-from jkent.common.selector_observer import get_active_observer
+from jkent.common.selector_observer import SelectorQuery, get_active_observer
 from jkent.common.selectors import (
     CSS,
     ElementQuery,
@@ -654,8 +654,9 @@ class PageElement:
         )
 
         observer = get_active_observer()
+        query = None
         if observer is not None:
-            observer.record_query(
+            query = observer.record_query(
                 selector=selector.value,
                 selector_type=selector.grammar,
                 description=description,
@@ -672,6 +673,7 @@ class PageElement:
             min_count,
             max_count,
             is_element_query=not strings,
+            query=query,
         )
         return typed_results
 
@@ -684,6 +686,7 @@ class PageElement:
         max_count: int | None,
         *,
         is_element_query: bool = True,
+        query: SelectorQuery | None = None,
     ) -> None:
         """Check a match count against the caller's bounds.
 
@@ -695,6 +698,8 @@ class PageElement:
             max_count: Most it will accept, or ``None`` for unlimited.
             is_element_query: Whether the results were elements rather
                 than strings.
+            query: The observer query that produced the count, if one
+                was recorded; the exception carries it.
 
         Raises:
             HTMLStructuralAssumptionException: If the count is out of
@@ -712,6 +717,7 @@ class PageElement:
                 actual_count=actual_count,
                 request_url=self._request_url,
                 is_element_query=is_element_query,
+                query=query,
             )
 
     def query(

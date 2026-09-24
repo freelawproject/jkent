@@ -179,9 +179,9 @@ class Selector(ABC):
         Playwright can only wait on something that targets *elements*. This
         is a property of the *wait* context only: a selector this rejects is
         still perfectly valid for parsing, which is why the constructors do
-        not reject it. The driver reads this to decide whether a failed
-        structural assumption can be retried behind an autowait, and falls
-        back to re-raising when it cannot.
+        not reject it. The driver reads this to decide whether autowait can
+        wait on a failed structural assumption's selector, and polls the
+        page for a change when it cannot.
 
         Returns:
             ``True`` unless a grammar says otherwise.
@@ -193,8 +193,10 @@ class Selector(ABC):
     def compose(cls, parts: Sequence[str]) -> str | None:
         """Compose a root-to-leaf chain of same-grammar selectors into one.
 
-        ``parts[0]`` is the absolute root; the rest are relative to their
-        parent. ``None`` when this grammar cannot express the composition.
+        ``parts[0]`` ran on the parsed document's root element; each later
+        part ran on what the one before it matched. The result selects the
+        same elements from the whole page. ``None`` when this grammar cannot
+        express the composition.
         """
 
     def __str__(self) -> str:
@@ -343,6 +345,13 @@ _NON_ELEMENT_NODE_TEST = re.compile(
     r"(?:text|comment|node)\s*\(\s*\)|processing-instruction\s*\(.*\)"
 )
 _OPENERS = {"[": "]", "(": ")"}
+# A leading function call (``id('x')``, ``string(.)``): no location path to
+# extend with a child step.
+_XPATH_FUNCTION_CALL = re.compile(r"[\w.-]+(?::[\w.-]+)?\s*\(")
+# The document element. A parsed page's root is this element, so a selector
+# run on the root runs from here; the browser evaluates XPath from the
+# document node, one level up.
+_XPATH_DOCUMENT_ELEMENT = "/*"
 
 
 def _at_depth_zero(expression: str, char: str) -> list[int]:
@@ -516,16 +525,31 @@ class XPath(Selector):
     @classmethod
     @override
     def compose(cls, parts: Sequence[str]) -> str | None:
-        # parts[0] is the absolute root; the rest are relative, so strip the
-        # leading "." and keep whatever combinator followed it.
-        result = parts[0]
-        for part in parts[1:]:
-            if part.startswith("."):
-                # ".//tr" -> "//tr" (descendant); "./tr" -> "/tr" (child);
-                # a bare "." is the rare case and just loses the dot.
-                result += part[1:]
+        # Each part ran on what the one before it matched, and the first on
+        # the parsed root, the document element. An absolute part ignores
+        # its context; a relative one continues from it: ".//tr" -> "//tr",
+        # "./tr" -> "/tr", and a bare "tr" or "../tr" after a "/". A union,
+        # a parenthesized expression or a function call has no single path
+        # to continue, so it doesn't compose.
+        result = _XPATH_DOCUMENT_ELEMENT
+        for part in parts:
+            expression = part.strip(" \t\r\n")
+            structural = _XPATH_STRING_LITERAL.sub("''", expression)
+            if (
+                len(_split_union(structural)) > 1
+                or structural.startswith("(")
+                or (
+                    _XPATH_FUNCTION_CALL.match(structural)
+                    and not _NON_ELEMENT_NODE_TEST.match(structural)
+                )
+            ):
+                return None
+            if expression.startswith("/"):
+                result = expression
+            elif expression.startswith((".//", "./")):
+                result += expression[1:]
             else:
-                result += "//" + part
+                result += "/" + expression
         return result
 
 

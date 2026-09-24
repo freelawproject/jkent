@@ -16,6 +16,7 @@ from jkent.common.coded_enum import CodedEnum
 
 if TYPE_CHECKING:
     from jkent.common.response import Response
+    from jkent.common.selector_observer import SelectorQuery
 
 __all__ = [
     "DataFormatAssumptionException",
@@ -154,6 +155,8 @@ class HTMLStructuralAssumptionException(ScraperAssumptionException):
         selector: The XPath or CSS selector that was used.
         selector_type: Type of selector ("xpath" or "css").
         is_element_query: True if querying for elements, False for strings/attributes.
+        query: The observer query whose count raised, when an observer
+            recorded it; autowait composes its page-wide selector from it.
     """
 
     def __init__(
@@ -166,6 +169,8 @@ class HTMLStructuralAssumptionException(ScraperAssumptionException):
         actual_count: int,
         request_url: str,
         is_element_query: bool = True,
+        *,
+        query: SelectorQuery | None = None,
     ) -> None:
         """Initialize the exception.
 
@@ -178,6 +183,7 @@ class HTMLStructuralAssumptionException(ScraperAssumptionException):
             actual_count: Actual number of elements found.
             request_url: The URL of the request that triggered this error.
             is_element_query: True if querying for elements (default), False for strings.
+            query: The observer query whose count raised, if recorded.
         """
         self.selector = selector
         self.selector_type = selector_type
@@ -186,6 +192,7 @@ class HTMLStructuralAssumptionException(ScraperAssumptionException):
         self.expected_max = expected_max
         self.actual_count = actual_count
         self.is_element_query = is_element_query
+        self.query = query
 
         # Build expected count string
         if expected_max is None:
@@ -273,9 +280,10 @@ class IncidentalRequestAssumptionException(ScraperAssumptionException):
     expects at least one. When the match count violates that (``Singular`` with
     zero or more than one match, ``Multiple`` with zero), the spec no longer
     describes the page's behavior — a structural assumption violation, parallel
-    to :class:`HTMLStructuralAssumptionException` for the DOM. It is also
-    raised when a matched sub-request got no response at all (the browser
-    aborted it, or it failed), since there is nothing to promote.
+    to :class:`HTMLStructuralAssumptionException` for the DOM. A sub-request
+    that got no response at all (the browser aborted it, or it failed) has
+    nothing to promote and is not counted as a match; the message names any
+    such captures, since they are often why the count fell short.
 
     Attributes:
         match_spec: repr of the ``Singular``/``Multiple`` spec that was applied.

@@ -19,6 +19,8 @@ from jkent.driver.database_engine.sql_manager._types import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
 
@@ -209,7 +211,13 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
                 .where(
                     IncidentalRequest.parent_request_id == parent_request_id
                 )
-                .order_by(IncidentalRequest.started_at_ns.asc())
+                # The id breaks ties: captures inside one timer tick would
+                # otherwise come back in either order, and promotion keys
+                # identical captures by their ordinal in this order.
+                .order_by(
+                    IncidentalRequest.started_at_ns.asc(),
+                    IncidentalRequest.id.asc(),
+                )
             )
             return [
                 IncidentalRequestRecord.model_validate(row)
@@ -240,54 +248,53 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
                 else None
             )
 
-    async def get_incidental_request_body(
-        self, incidental_id: int
-    ) -> bytes | None:
-        """The request body the browser sent on one capture.
+    async def get_incidental_request_bodies(
+        self, parent_request_id: int
+    ) -> dict[int, bytes]:
+        """The request bodies the browser sent on one navigation's captures.
 
         Its own accessor rather than a field of
         :class:`IncidentalRequestRecord`: the body is bytes, the record's
         ``model_dump(mode="json")`` is a display shape, and only
-        ``incidental=``'s ``body_contains`` matching ever wants it.
+        ``incidental=`` promotion ever wants it. Read per navigation, in
+        one query, because promotion matches against all of its captures.
 
         Args:
-            incidental_id: The capture row to read.
+            parent_request_id: The navigation whose captures to read.
 
         Returns:
-            The request body, or ``None`` when the capture carries none.
+            Each capture's body by capture id; a capture that carried no
+            body is absent.
         """
         async with self.session_factory() as session:
             result = await session.execute(
-                select(IncidentalRequest.body).where(
-                    IncidentalRequest.id == incidental_id
+                select(IncidentalRequest.id, IncidentalRequest.body).where(
+                    IncidentalRequest.parent_request_id == parent_request_id,
+                    IncidentalRequest.body.is_not(None),
                 )
             )
-            return result.scalar_one_or_none()
+            return {row.id: row.body for row in result.all()}
 
-    async def get_incidental_request_storage(
-        self, storage_id: int
-    ) -> IncidentalStorageRecord | None:
-        """Get the raw storage row (compressed body, headers, dict id).
-
-        A row model, not the ORM object: the session closes as this
-        returns, so an ORM instance would cross the boundary detached and
-        raise on any attribute it had not already loaded.
+    async def get_incidental_request_storages(
+        self, storage_ids: Collection[int]
+    ) -> dict[int, IncidentalStorageRecord]:
+        """Get several raw storage rows in one query.
 
         Args:
-            storage_id: The storage row to read.
+            storage_ids: The storage rows to read.
 
         Returns:
-            The row, or ``None`` when no such row exists.
+            Each row by its id; an id with no row is absent.
         """
+        if not storage_ids:
+            return {}
         async with self.session_factory() as session:
             result = await session.execute(
-                select(*_STORAGE_ROW_COLUMNS).where(
-                    IncidentalRequestStorage.id == storage_id
-                )
+                select(
+                    IncidentalRequestStorage.id, *_STORAGE_ROW_COLUMNS
+                ).where(IncidentalRequestStorage.id.in_(storage_ids))
             )
-            row = result.first()
-            return (
-                IncidentalStorageRecord.model_validate(row)
-                if row is not None
-                else None
-            )
+            return {
+                row.id: IncidentalStorageRecord.model_validate(row)
+                for row in result.all()
+            }

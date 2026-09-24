@@ -388,6 +388,23 @@ def test_compose_absolute_selector_simple():
     assert absolute == "//table"
 
 
+def test_compose_absolute_selector_anchors_a_relative_root_query():
+    """A relative root query ran on <html>; the browser starts a level up."""
+    query = SelectorQuery(
+        selector="body/div",
+        selector_type="xpath",
+        description="content",
+        match_count=0,
+        expected_min=1,
+        expected_max=None,
+        parent=None,
+    )
+
+    observer = SelectorObserver()
+
+    assert observer.compose_absolute_selector(query) == "/*/body/div"
+
+
 def test_compose_absolute_selector_nested_xpath():
     """compose_absolute_selector should compose nested XPath selectors."""
     parent = SelectorQuery(
@@ -650,3 +667,79 @@ def test_simple_tree_matches_raised_count_for_missing_type_str():
     # Recorded match is the post-filter 0, agreeing with the raised error —
     # not the 2 raw @href strings the XPath returned.
     assert "0 match" in rendered
+
+
+def test_record_query_returns_the_query_it_landed_in(
+    simple_html: str,
+) -> None:
+    """``record_query`` returns its query, new or aggregated into a twin."""
+    doc = html.fromstring(simple_html)
+    observer = SelectorObserver()
+    rows = doc.xpath("//tr[@class='row']")
+    row_query = observer.record_query(
+        selector="//tr[@class='row']",
+        selector_type="xpath",
+        description="table rows",
+        results=rows,
+        expected_min=1,
+        expected_max=None,
+    )
+    assert row_query is observer.queries[0]
+
+    for row in rows:
+        cell_query = observer.record_query(
+            selector=".//td",
+            selector_type="xpath",
+            description="cells",
+            results=row.xpath(".//td"),
+            expected_min=1,
+            expected_max=None,
+            parent_element=row,
+        )
+        assert cell_query is row_query.children[0]
+
+
+def test_distinct_match_count_ignores_repeat_calls(simple_html: str) -> None:
+    """A query run twice on one element matches it twice but once distinctly.
+
+    ``match_count`` sums the calls; autowait's ambiguity check needs how many
+    elements the composed selector would actually find.
+    """
+    tree = PageElement(html.fromstring(simple_html))
+    with SelectorObserver() as observer:
+        tree.checked_xpath("//div[@id='main']", "main")
+        tree.checked_xpath("//div[@id='main']", "main again")
+        tree.checked_xpath("//tr[@class='row']", "rows")
+    main, rows = observer.queries
+    assert (main.match_count, main.distinct_match_count) == (2, 1)
+    assert (rows.match_count, rows.distinct_match_count) == (3, 3)
+    assert "distinct_match_count" not in main.to_dict()
+
+
+def test_structural_exception_carries_the_query_that_raised(
+    simple_html: str,
+) -> None:
+    """The raised exception holds the recorded query, whatever its description.
+
+    The observer keeps the first description a (parent, selector) pair was
+    recorded under, so matching the exception back to a query by description
+    misses a selector reused under a new one.
+    """
+    tree = PageElement(html.fromstring(simple_html))
+    with SelectorObserver() as observer:
+        tree.checked_xpath("//td[@class='date']", "dates", min_count=0)
+        with pytest.raises(HTMLStructuralAssumptionException) as excinfo:
+            tree.checked_xpath("//td[@class='date']", "dates (retry)")
+    (query,) = observer.queries
+    assert query.description == "dates"
+    assert excinfo.value.query is query
+
+
+def test_structural_exception_without_an_observer_carries_no_query(
+    simple_html: str,
+) -> None:
+    """With nothing recording, there is no query to attach."""
+    tree = PageElement(html.fromstring(simple_html))
+    with pytest.raises(HTMLStructuralAssumptionException) as excinfo:
+        tree.checked_xpath("//td[@class='date']", "dates")
+    assert excinfo.value.query is None

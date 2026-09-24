@@ -60,6 +60,9 @@ class SelectorQuery:
         element_id: Unique ID for highlighting in UI.
         parent_element_id: ID of parent query (for scoped highlights).
         parent: Reference to parent SelectorQuery for tree navigation.
+        distinct_match_count: Distinct elements matched across every call
+            aggregated into this query; ``match_count`` sums the calls, so
+            a query run twice on one element counts 2 there and 1 here.
     """
 
     selector: str
@@ -77,6 +80,9 @@ class SelectorQuery:
     # leaving nested children's backrefs to form a cycle -- Field(exclude=True)
     # applies per-field recursively, so the serializer never walks the cycle.
     parent: Annotated[SelectorQuery | None, Field(exclude=True)] = None
+    # Kept by the observer for autowait's ambiguity check; not serialized,
+    # so the JSON shape the UI reads is unchanged.
+    distinct_match_count: Annotated[int, Field(exclude=True)] = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization.
@@ -126,6 +132,11 @@ class SelectorObserver:
         self._element_counter: int = 0
         # Maps element id() to the query that produced it
         self._element_to_query: dict[int, SelectorQuery] = {}
+        # The distinct elements each query matched, by query element_id then
+        # element id(), behind ``SelectorQuery.distinct_match_count``.
+        # Holding the elements (not just their ids) keeps lxml from minting a
+        # new proxy, and so a new id(), for the same node.
+        self._matched_elements: dict[str | None, dict[int, HtmlElement]] = {}
         # Maps (parent_element_id, selector) to existing SelectorQuery for deduplication
         self._dedup_index: dict[tuple[str | None, str], SelectorQuery] = {}
         # A stack, not a single token: the same observer can be re-entered.
@@ -165,7 +176,7 @@ class SelectorObserver:
         expected_min: int,
         expected_max: int | None,
         parent_element: HtmlElement | None = None,
-    ) -> None:
+    ) -> SelectorQuery:
         """Record a selector query and its results.
 
         Args:
@@ -176,6 +187,9 @@ class SelectorObserver:
             expected_min: Minimum expected count.
             expected_max: Maximum expected count (None = unlimited).
             parent_element: The element the query was executed on.
+
+        Returns:
+            The query the call landed in, new or aggregated into a twin.
 
         Note:
             Queries with the same (parent_element_id, selector) are deduplicated.
@@ -207,12 +221,8 @@ class SelectorObserver:
                 existing_query.sample_elements.extend(new_samples)
 
             # Track which elements came from this query (use existing query)
-            for result in results:
-                elem = self._unwrap_element(result)
-                if elem is not None:
-                    self._element_to_query[id(elem)] = existing_query
-
-            return
+            self._track_elements(existing_query, results)
+            return existing_query
 
         # Generate sample content from results
         samples = self._extract_samples(results[: self.max_samples])
@@ -237,17 +247,26 @@ class SelectorObserver:
         # Register in dedup index
         self._dedup_index[dedup_key] = query
 
-        # Track which elements came from this query (for future child queries)
-        for result in results:
-            elem = self._unwrap_element(result)
-            if elem is not None:
-                self._element_to_query[id(elem)] = query
+        self._track_elements(query, results)
 
         # Add to current context (nested or top-level)
         if parent_query is not None:
             parent_query.children.append(query)
         else:
             self.queries.append(query)
+        return query
+
+    def _track_elements(
+        self, query: SelectorQuery, results: QueryResults
+    ) -> None:
+        """Note which elements ``query`` matched, for future child queries."""
+        matched = self._matched_elements.setdefault(query.element_id, {})
+        for result in results:
+            elem = self._unwrap_element(result)
+            if elem is not None:
+                self._element_to_query[id(elem)] = query
+                matched[id(elem)] = elem
+        query.distinct_match_count = len(matched)
 
     def _unwrap_element(self, result: str | Element) -> HtmlElement | None:
         """Unwrap a result to the underlying HtmlElement.
@@ -386,7 +405,10 @@ class SelectorObserver:
 
         Returns:
             An absolute selector string, or None if the chain contains
-            mixed selector types (XPath + CSS).
+            mixed selector types (XPath + CSS) or its grammar can't compose
+            it. A query with no parent ran on the document's root element,
+            so even it goes through the grammar's composition: a relative
+            root XPath such as ``body/div`` is anchored there.
 
         Example::
 
@@ -394,10 +416,6 @@ class SelectorObserver:
             # Child query: .//tr
             # Result: //table//tr
         """
-        if query.parent is None:
-            # Already absolute (no parent)
-            return query.selector
-
         # Walk up the parent chain to collect selectors
         selectors: list[tuple[str, str]] = []  # (selector_type, selector)
         current: SelectorQuery | None = query

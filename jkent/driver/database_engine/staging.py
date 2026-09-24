@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from jkent.driver.database_engine.enums import SpeculationOutcome
     from jkent.driver.database_engine.sql_manager import (
         RequestInsert,
         ResultInsert,
@@ -47,6 +48,8 @@ class StagedWrites:
     """
 
     request_id: int
+    # Written with the completion; ``None`` leaves the column alone.
+    speculation_outcome: SpeculationOutcome | None = None
     # The three buffers are private and append-only through the ``stage_*``
     # methods: a caller reaching past them could stage a callback with no
     # row behind it.
@@ -125,7 +128,9 @@ class StagedWrites:
                 )
 
             await db.mark_request_completed_in_session(
-                session, self.request_id
+                session,
+                self.request_id,
+                speculation_outcome=self.speculation_outcome,
             )
 
             await session.commit()

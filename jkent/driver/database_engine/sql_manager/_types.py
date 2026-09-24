@@ -162,10 +162,10 @@ class CompressedPayload(RowModel):
 class IncidentalStorageRecord(CompressedPayload):
     """One ``incidental_request_storage`` row, less its surrogate id.
 
-    What ``get_incidental_request_storage`` returns: the payload columns
-    plus the two the storage table adds. A row model rather than the ORM
-    object, which would leave the session it was loaded in and be read
-    detached.
+    What ``get_incidental_request_storages`` returns per row: the payload
+    columns plus the two the storage table adds. A row model rather than
+    the ORM object, which would leave the session it was loaded in and be
+    read detached.
 
     ``content_md5`` is required, unlike the capture's: the column is NOT
     NULL, because a capture with no body gets no row here at all.

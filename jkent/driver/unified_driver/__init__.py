@@ -35,6 +35,7 @@ from jkent.driver.unified_driver.rate_limiter import (
     ReactivePaceLimiter,
     Turn,
 )
+from jkent.driver.unified_driver.steps import StepExecutor
 from jkent.driver.unified_driver.transport import (
     MAX_RETRY_AFTER_S,
     ArchiveStream,
@@ -62,6 +63,7 @@ __all__ = [
     "Compactors",
     "DEFAULT_ADAPTIVE_LADDER",
     "MAX_RETRY_AFTER_S",
+    "StepExecutor",
     "ErrorBudget",
     "ErrorSink",
     "FileArchiveStream",

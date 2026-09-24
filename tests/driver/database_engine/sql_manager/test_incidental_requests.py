@@ -404,9 +404,10 @@ class TestIncidentalRequestStorage:
         storage_ids = {r.storage_id for r in records if r is not None}
         [storage_id] = storage_ids  # one shared payload row
         assert storage_id is not None
-        storage = await sql_manager.get_incidental_request_storage(storage_id)
-        assert storage is not None
-        assert storage.response_headers_json == '{"ETag": "a"}'
+        storages = await sql_manager.get_incidental_request_storages(
+            {storage_id}
+        )
+        assert storages[storage_id].response_headers_json == '{"ETag": "a"}'
 
     async def test_no_content_creates_no_storage_row(
         self, sql_manager: SQLManager, insert_request: InsertRequest
@@ -487,6 +488,28 @@ class TestIncidentalRequestStorage:
         assert records[0].resource_type == "script"
         assert records[0].status_code == 200
 
+    async def test_get_incidental_requests_breaks_start_time_ties_by_id(
+        self, sql_manager: SQLManager, insert_request: InsertRequest
+    ) -> None:
+        """Captures inside one timer tick come back in capture order.
+
+        Promotion keys identical captures by their ordinal in this order, so
+        it must not vary between reads.
+        """
+        parent_id = await _create_parent_request(insert_request)
+        await sql_manager.replace_incidental_requests(
+            parent_id,
+            [
+                _capture(
+                    url=f"https://example.com/api/poll#{n}", started_at_ns=1000
+                )
+                for n in range(20)
+            ],
+        )
+
+        records = await sql_manager.get_incidental_requests(parent_id)
+        assert [r.id for r in records] == sorted(r.id for r in records)
+
     async def test_get_incidental_request_by_id(
         self, sql_manager: SQLManager, insert_request: InsertRequest
     ) -> None:
@@ -538,7 +561,7 @@ class TestIncidentalRequestStorage:
         record = await sql_manager.get_incidental_request_by_id(99999)
         assert record is None
 
-    async def test_get_incidental_request_storage(
+    async def test_get_incidental_request_storages_row(
         self, sql_manager: SQLManager, insert_request: InsertRequest
     ) -> None:
         parent_id = await _create_parent_request(insert_request)
@@ -559,16 +582,59 @@ class TestIncidentalRequestStorage:
         record = await sql_manager.get_incidental_request_by_id(ir_id)
         assert record is not None
         assert record.storage_id is not None
-        storage = await sql_manager.get_incidental_request_storage(
-            record.storage_id
-        )
-        assert storage is not None
+        storage = (
+            await sql_manager.get_incidental_request_storages(
+                {record.storage_id}
+            )
+        )[record.storage_id]
         assert storage.content_compressed == compressed
         assert storage.response_headers_json == '{"Content-Type": "text/html"}'
         assert storage.content_md5 == hashlib.md5(content).digest()
         # A row model, not the ORM row: the session that loaded it is closed
         # by the time it is read, so an ORM instance would be detached.
         assert isinstance(storage, IncidentalStorageRecord)
+
+    async def test_get_incidental_request_storages(
+        self, sql_manager: SQLManager, insert_request: InsertRequest
+    ) -> None:
+        parent_id = await _create_parent_request(insert_request)
+        await sql_manager.replace_incidental_requests(
+            parent_id,
+            [
+                _capture(b"one", url="https://example.com/1"),
+                _capture(b"two", url="https://example.com/2"),
+            ],
+        )
+        records = await sql_manager.get_incidental_requests(parent_id)
+        storage_ids = {r.storage_id for r in records if r.storage_id}
+        assert len(storage_ids) == 2
+
+        storages = await sql_manager.get_incidental_request_storages(
+            {*storage_ids, 99999}
+        )
+        assert storages.keys() == storage_ids
+        assert {s.content_compressed for s in storages.values()} == {
+            compress(b"one"),
+            compress(b"two"),
+        }
+        assert await sql_manager.get_incidental_request_storages(set()) == {}
+
+    async def test_get_incidental_request_bodies(
+        self, sql_manager: SQLManager, insert_request: InsertRequest
+    ) -> None:
+        parent_id = await _create_parent_request(insert_request)
+        ids = await sql_manager.replace_incidental_requests(
+            parent_id,
+            [
+                _capture(
+                    url="https://example.com/q", method="POST", body=b"q=1"
+                ),
+                _capture(url="https://example.com/r"),
+            ],
+        )
+        assert await sql_manager.get_incidental_request_bodies(parent_id) == {
+            ids[0]: b"q=1"
+        }
 
 
 def _record_fields(**overrides: Any) -> dict[str, Any]:
