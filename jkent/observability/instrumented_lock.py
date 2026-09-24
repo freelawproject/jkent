@@ -2,7 +2,7 @@
 
 The run's single :class:`~asyncio.Lock` serializes every SQLite access for a
 run (dequeue, restamp, store, staged flush, dedup, counts). Under N concurrent
-continuation workers it is the central serialization point — the "lock getting
+pool workers it is the central serialization point — the "lock getting
 fought over". :class:`InstrumentedLock` is a drop-in subclass that records two
 things per use:
 

@@ -53,7 +53,11 @@ class LoopLagMonitor:
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            # The sampler's own cancellation is expected; the caller's is not
+            # ours to swallow.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
         finally:
             self._task = None
 
