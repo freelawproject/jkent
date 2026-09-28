@@ -264,7 +264,7 @@ class Form:
                 {"timeout": 30}). Wins over the form-derived values, except for
                 url/method/params/data which are always set by the form.
             **request_kwargs: Additional kwargs passed to Request constructor.
-                Common ones: continuation, accumulated_data, archive, expected_type,
+                Common ones: step, accumulated_data, archive, expected_type,
                 priority, deduplication_key, permanent.
 
         Returns:
@@ -323,8 +323,8 @@ class Form:
                 data=field_data,
             )
 
-        # Set defaults for continuation if not provided
-        request_kwargs.setdefault("continuation", "")
+        # Set defaults for step if not provided
+        request_kwargs.setdefault("step", "")
         if request_params:
             overrides = {
                 k: v
@@ -367,7 +367,7 @@ class Link:
 
         Args:
             **request_kwargs: Additional kwargs passed to the Request
-                constructor. Common ones: continuation, accumulated_data,
+                constructor. Common ones: step, accumulated_data,
                 archive, expected_type, priority, deduplication_key,
                 permanent.
 

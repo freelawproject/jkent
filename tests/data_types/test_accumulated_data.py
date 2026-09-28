@@ -37,7 +37,7 @@ class TestAccumulatedDataField:
                 method=HttpMethod.GET,
                 url="http://example.com/test",
             ),
-            continuation="parse",
+            step="parse",
         )
 
         assert hasattr(request, "accumulated_data")
@@ -51,7 +51,7 @@ class TestAccumulatedDataField:
                 method=HttpMethod.GET,
                 url="http://example.com/test",
             ),
-            continuation="parse",
+            step="parse",
             accumulated_data=data,
         )
 
@@ -68,7 +68,7 @@ class TestAccumulatedDataField:
                 method=HttpMethod.GET,
                 url="http://example.com/test",
             ),
-            continuation="parse",
+            step="parse",
             accumulated_data=original_data,
         )
 
@@ -95,7 +95,7 @@ class TestDeepCopySemantics:
                 method=HttpMethod.GET,
                 url="http://example.com/case1",
             ),
-            continuation="parse",
+            step="parse",
             accumulated_data=shared_data,
         )
 
@@ -104,7 +104,7 @@ class TestDeepCopySemantics:
                 method=HttpMethod.GET,
                 url="http://example.com/case2",
             ),
-            continuation="parse",
+            step="parse",
             accumulated_data=shared_data,
         )
 
@@ -121,7 +121,7 @@ class TestDeepCopySemantics:
                 method=HttpMethod.GET,
                 url="http://example.com/case1",
             ),
-            continuation="parse",
+            step="parse",
             accumulated_data=shared_data,
         )
 
@@ -130,7 +130,7 @@ class TestDeepCopySemantics:
                 method=HttpMethod.GET,
                 url="http://example.com/case2",
             ),
-            continuation="parse",
+            step="parse",
             accumulated_data=shared_data,
         )
 
@@ -152,7 +152,7 @@ class TestAccumulatedDataPropagation:
                 method=HttpMethod.GET,
                 url="http://example.com/parent",
             ),
-            continuation="parse_parent",
+            step="parse_parent",
         )
 
         parent_response = Response(
@@ -169,7 +169,7 @@ class TestAccumulatedDataPropagation:
                 method=HttpMethod.GET,
                 url="/child",
             ),
-            continuation="parse_child",
+            step="parse_child",
             accumulated_data={"key": "value"},
         )
 
@@ -186,7 +186,7 @@ class TestBugCourtScraperWithAccumulatedData:
         """Create a scraper instance for testing."""
         return BugCourtScraperWithAccumulatedData()
 
-    def test_parse_appeals_list_adds_case_name_to_accumulated_data(
+    async def test_parse_appeals_list_adds_case_name_to_accumulated_data(
         self, scraper: BugCourtScraperWithAccumulatedData, server_url: str
     ):
         """The scraper shall add case_name to accumulated_data from list page."""
@@ -211,7 +211,7 @@ class TestBugCourtScraperWithAccumulatedData:
             content=html.encode(),
             text=html,
             url=f"{server_url}/appeals",
-            request=next(scraper.get_entry()),
+            request=next(scraper.start()),
         )
 
         results = list(scraper.parse_appeals_list(response))

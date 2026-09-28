@@ -45,7 +45,7 @@ class BareMinimumScraper(BaseScraper[dict[str, Any]]):
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -73,7 +73,7 @@ class FullyConfiguredScraper(BaseScraper[dict[str, Any]]):
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -91,7 +91,7 @@ class MultiStepScraper(BaseScraper[dict[str, Any]]):
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse_listing",
+            step="parse_listing",
         )
 
     @step
@@ -131,7 +131,7 @@ class CustomSSLScraper(BaseScraper[dict[str, Any]]):
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -274,7 +274,7 @@ class TestGetSSLContext:
                     request=HTTPRequestParams(
                         method=HttpMethod.GET, url="/start"
                     ),
-                    continuation="parse",
+                    step="parse",
                 )
 
             @step
@@ -341,7 +341,7 @@ class TestListSteps:
                     request=HTTPRequestParams(
                         method=HttpMethod.GET, url="/start"
                     ),
-                    continuation="process",
+                    step="process",
                 )
 
             def process(self, response: Response):
@@ -374,7 +374,7 @@ class BrokenAttrScraper(BaseScraper[dict[str, Any]]):
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -396,7 +396,7 @@ class BrokenPropertyScraper(BaseScraper[dict[str, Any]]):
     def get_entry(self) -> Generator[Request, None, None]:
         yield Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url="/start"),
-            continuation="parse",
+            step="parse",
         )
 
     @step
@@ -419,7 +419,7 @@ class TestActuallySuccessful:
     def _response(text: str, url: str = "https://example.com/case/1"):
         request = Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url=url),
-            continuation="parse",
+            step="parse",
         )
         return Response(
             status_code=200,

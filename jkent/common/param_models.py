@@ -78,7 +78,7 @@ class SpeculativeRange(BaseModel, Speculative):
         def fetch_case(self, rid: SpeculativeRange) -> Request:
             return Request(
                 request=HTTPRequestParams(url=f"/case/{rid.min}"),
-                continuation=self.parse_case,
+                step=self.parse_case,
             )
 
         # seed_params: [{"fetch_case": {"rid": {"min": 1, "soft_max": 2, "gap": 20}}}]

@@ -16,7 +16,6 @@ from typing import Any
 
 from lxml import html
 from lxml.html import HtmlElement
-from typing_extensions import override
 
 from jkent.common.decorators import entry
 from jkent.data_types import (
@@ -77,16 +76,15 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict[str, Any]]):
 
     BASE_URL = "http://127.0.0.1"
 
-    @override
     @entry(dict)
-    def get_entry(self) -> Generator[Request, None, None]:
+    def start(self) -> Generator[Request, None, None]:
         """Create the initial request to start scraping."""
         yield Request(
             request=HTTPRequestParams(
                 method=HttpMethod.GET,
                 url=f"{self.BASE_URL}/appeals",
             ),
-            continuation="parse_appeals_list",
+            step="parse_appeals_list",
         )
 
     def parse_appeals_list(
@@ -117,7 +115,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict[str, Any]]):
                         method=HttpMethod.GET,
                         url=f"/appeals/{docket}",
                     ),
-                    continuation="parse_appeals_detail",
+                    step="parse_appeals_detail",
                     accumulated_data={"case_name": case_name},
                 )
 
@@ -158,7 +156,7 @@ class BugCourtScraperWithAccumulatedData(BaseScraper[dict[str, Any]]):
                 method=HttpMethod.GET,
                 url=f"/cases/{trial_court_docket}",
             ),
-            continuation="parse_trial_court",
+            step="parse_trial_court",
             accumulated_data=data,
         )
 
