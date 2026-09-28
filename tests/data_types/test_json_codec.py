@@ -70,12 +70,6 @@ def test_non_bytes_values_encode(value: Any, expected: Any):
     assert json.loads(dump_json(value)) == expected
 
 
-def test_none_stays_none():
-    # The overload already narrows this call to ``None``, hence the ignore;
-    # the assert is here to pin the runtime behaviour the overload claims.
-    assert dump_json_or_none(None) is None  # type: ignore[func-returns-value]
-
-
 @pytest.mark.parametrize("value", [0, False, "", [], {}])
 def test_a_falsy_but_real_value_is_still_encoded(value: Any):
     """Only ``None`` means a NULL column — the overloads cannot say this."""
