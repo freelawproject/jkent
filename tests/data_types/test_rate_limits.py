@@ -5,12 +5,13 @@ Inheritance from ``@step(rate_limit=...)`` is under test in
 
 A scraper declares lanes by name (``named_rate_limits``); requests and
 steps select one by name; the run database stores the lane as an integer
-derived from declaration order. Under test:
+index into the lane list the run recorded at start. Under test:
 
 - ``RateLimitTable`` codes: ``default`` 0, ``none`` 1, declared lanes 2+ in
   order; unknown names fail to encode, out-of-range codes fail to decode.
+- ``stored_names`` (the lane list a run recorded) fixes those codes across a
+  reorder, appends lanes declared since, and refuses a lane that is gone.
 - ``BaseScraper`` rejects a bad ``named_rate_limits`` at class definition.
-- The deprecated ``bypass_rate_limit=`` spelling maps onto the ``none`` lane.
 """
 
 from collections.abc import Generator, Mapping
@@ -115,21 +116,57 @@ class TestRateLimitTable:
         with pytest.raises(ValueError, match="'downloads'.*default.*none"):
             table.encode("downloads")
 
-    def test_decode_removed_lane_is_loud(self):
-        # A row written when the scraper had a third lane, read after the
-        # lane was deleted: never silently the default rate.
+    def test_decode_past_the_table_is_loud(self):
+        # A code from a run whose stored lanes are not this table's: never
+        # silently the default rate.
         table = RateLimitTable.for_scraper(BareScraper)
-        with pytest.raises(ValueError, match="removed"):
+        with pytest.raises(ValueError, match="has no lane"):
             table.decode(2)
         with pytest.raises(ValueError):
             table.decode(-1)
 
-    def test_stand_in_without_the_attributes_is_bare(self):
-        class NotAScraper:
-            pass
 
+class TestStoredLaneNames:
+    """Codes come from the run's stored lane list, not the class body."""
+
+    def test_reordering_the_class_body_does_not_move_a_lane(self):
+        class Reordered(BaseScraper[dict[str, Any]]):
+            rate_limits = [Rate(2, Duration.SECOND)]
+            named_rate_limits = {
+                "search": [Rate(1, Duration.SECOND)],
+                "downloads": [Rate(1, Duration.SECOND * 5)],
+            }
+
+        stored = RateLimitTable.for_scraper(LanedScraper).names
+        table = RateLimitTable.for_scraper(Reordered, stored_names=stored)
+        assert table.names == stored
+        assert table.encode("downloads") == 2
+        # The rates still come from the scraper, only the order is stored.
+        assert table.rates["search"] == Reordered.named_rate_limits["search"]
+
+    def test_a_lane_added_since_the_run_started_is_appended(self):
+        stored = RateLimitTable.for_scraper(BareScraper).names
+        table = RateLimitTable.for_scraper(LanedScraper, stored_names=stored)
+        assert table.names == ("default", "none", "downloads", "search")
+
+    def test_a_dropped_lane_is_refused_naming_both_lists(self):
+        stored = RateLimitTable.for_scraper(LanedScraper).names
+        with pytest.raises(ScraperConfigError) as excinfo:
+            RateLimitTable.for_scraper(BareScraper, stored_names=stored)
+        message = str(excinfo.value)
+        assert "downloads" in message and "search" in message
+
+    def test_stored_names_must_start_with_the_reserved_pair(self):
+        with pytest.raises(ScraperConfigError, match="jkent wrote"):
+            RateLimitTable.for_scraper(
+                LanedScraper, stored_names=("downloads", "search")
+            )
+
+    def test_stored_names_matching_the_class_body_change_nothing(self):
+        stored = RateLimitTable.for_scraper(LanedScraper).names
         assert (
-            RateLimitTable.for_scraper(NotAScraper()) == RateLimitTable.bare()
+            RateLimitTable.for_scraper(LanedScraper, stored_names=stored).names
+            == stored
         )
 
 
@@ -184,12 +221,16 @@ class TestNamedRateLimitsValidation:
             class Bad(BaseScraper[dict[str, Any]]):
                 rate_limits: ClassVar[list[Rate] | None] = []
 
-    def test_table_rejects_a_bad_default_on_a_stand_in(self):
-        class NotAScraper:
-            rate_limits = Rate(1, Duration.SECOND)
+    def test_table_revalidates_a_class_built_at_runtime(self):
+        # Not written in a module, so __init_subclass__ never saw it.
+        built = type(
+            "Built",
+            (),
+            {"rate_limits": Rate(1, Duration.SECOND), "named_rate_limits": {}},
+        )
 
         with pytest.raises(ScraperConfigError, match="list of Rate"):
-            RateLimitTable.for_scraper(NotAScraper)
+            RateLimitTable.for_scraper(built)  # type: ignore[arg-type]
 
     def test_step_naming_an_undeclared_lane_is_rejected(self):
         # Was caught only at the first enqueue of a request to the step.
@@ -267,29 +308,3 @@ class TestRequestRateLimit:
             response
         )
         assert resolved.rate_limit == NO_RATE_LIMIT
-
-
-class TestDeprecatedBypassSpelling:
-    def test_true_selects_the_none_lane(self):
-        with pytest.warns(DeprecationWarning, match="bypass_rate_limit"):
-            request = make_request(bypass_rate_limit=True)
-        assert request.rate_limit == NO_RATE_LIMIT
-
-    def test_false_is_a_warned_no_op(self):
-        with pytest.warns(DeprecationWarning):
-            request = make_request(bypass_rate_limit=False)
-        assert request.rate_limit is None
-
-    def test_true_conflicts_with_another_lane(self):
-        with (
-            pytest.warns(DeprecationWarning),
-            pytest.raises(TypeError, match="not both"),
-        ):
-            make_request(bypass_rate_limit=True, rate_limit="downloads")
-
-    def test_true_agrees_with_the_none_lane(self):
-        with pytest.warns(DeprecationWarning):
-            request = make_request(
-                bypass_rate_limit=True, rate_limit=NO_RATE_LIMIT
-            )
-        assert request.rate_limit == NO_RATE_LIMIT

@@ -747,6 +747,7 @@ class RunMetadata(Base):
             "speculation_config_json",
             "browser_config_json",
             "browser_cookies_json",
+            "rate_limit_lanes_json",
         ),
     )
 
@@ -839,6 +840,19 @@ class RunMetadata(Base):
         doc=(
             "JSON browser cookie jar, checkpointed so a resumed run "
             "restarts with the session it had rather than a fresh one."
+        )
+    )
+
+    # Rate-limit lanes (see :mod:`jkent.common.rate_limits`)
+    rate_limit_lanes_json: Mapped[str | None] = mapped_column(
+        doc=(
+            "JSON list of this run's rate-limit lane names, in code order: "
+            "``requests.rate_limit`` holds an index into it. Written at "
+            "start and read back on resume, so what a stored code means "
+            "comes from here rather than from the order the scraper's "
+            "``named_rate_limits`` happens to be in today. NULL for a run "
+            "written before the column existed; the lane order then falls "
+            "back to the class body."
         )
     )
 

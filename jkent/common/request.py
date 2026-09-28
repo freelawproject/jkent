@@ -12,10 +12,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-import warnings
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import InitVar, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, BinaryIO, Final
 from urllib.parse import quote, urljoin, urlparse
 
@@ -23,7 +22,6 @@ from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import DEFAULT_PRIORITY
 from jkent.common.headers import merge_headers
 from jkent.common.incidental import Multiple, Singular
-from jkent.common.rate_limits import NO_RATE_LIMIT
 from jkent.common.response import Response
 from jkent.common.via import FieldValue, ViaFormSubmit, ViaLink
 from jkent.contracts import ensure
@@ -384,25 +382,8 @@ class Request:
     archive: bool = False
     expected_type: str | None = None
     archive_hash_header: str | None = None
-    #: Deprecated spelling of ``step``, accepted so scrapers written against
-    #: the old keyword keep constructing; warns once per call site. Remove
-    #: once juriscraper-prs and the hosts have been ported to ``step=``. Note
-    #: the
-    #: default lingers as a class attribute (``dataclasses.replace`` reads it
-    #: back), so ``request.continuation`` is ``None``, never the step.
-    # pyre-ignore[16]: pyre mishandles ``InitVar`` fields on dataclasses.
-    continuation: InitVar[str | Callable[..., Any] | None] = None
-    #: Deprecated spelling of ``rate_limit="none"``; same lifecycle as
-    #: ``continuation``. ``True`` selects the unlimited lane, ``False`` is a
-    #: no-op — both warn once per call site.
-    # pyre-ignore[16]: pyre mishandles ``InitVar`` fields on dataclasses.
-    bypass_rate_limit: InitVar[bool | None] = None
 
-    def __post_init__(
-        self,
-        continuation: str | Callable[..., Any] | None,
-        bypass_rate_limit: bool | None,
-    ) -> None:
+    def __post_init__(self) -> None:
         """Deep copy accumulated_data and permanent to prevent unintended sharing.
 
         When a scraper yields multiple requests from the same method, they might
@@ -418,32 +399,6 @@ class Request:
 
         The deep copy ensures each request gets its own independent copy of the data.
         """
-        if continuation is not None:
-            if self.step:
-                raise TypeError(
-                    "Request takes either step= or the deprecated "
-                    "continuation=, not both"
-                )
-            warnings.warn(
-                "Request(continuation=...) is deprecated; use step=",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-            object.__setattr__(self, "step", continuation)
-        if bypass_rate_limit is not None:
-            warnings.warn(
-                "Request(bypass_rate_limit=...) is deprecated; use "
-                'rate_limit="none"',
-                DeprecationWarning,
-                stacklevel=3,
-            )
-            if bypass_rate_limit:
-                if self.rate_limit not in (None, NO_RATE_LIMIT):
-                    raise TypeError(
-                        "Request takes either rate_limit= or the deprecated "
-                        "bypass_rate_limit=True, not both"
-                    )
-                object.__setattr__(self, "rate_limit", NO_RATE_LIMIT)
         assert self.step and self.step != "", "Request made without step"
         # If archive=True and the author didn't choose a priority, default
         # to the higher archive priority for file downloads. An explicit

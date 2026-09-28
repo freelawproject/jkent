@@ -11,7 +11,7 @@ its class body — :class:`DriverRequirement`, :class:`ScraperStatus`,
 from __future__ import annotations
 
 import ssl
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
@@ -182,14 +182,14 @@ class BaseScraper(Generic[ScraperReturnType]):
 
     # Optional metadata
     requires_auth: ClassVar[bool] = False
-    rate_limits: ClassVar[list[Rate] | None] = None
+    rate_limits: ClassVar[Sequence[Rate] | None] = None
 
     # Additional rate-limit lanes, by name. The framework supplies "default"
     # (= rate_limits) and "none" (unlimited); anything here is stored in the
-    # run database as 2 + its position, so APPEND lanes — never insert or
-    # reorder — or a resumed run gates its pending rows at the wrong rate.
-    # Validated in __init_subclass__.
-    named_rate_limits: ClassVar[Mapping[str, list[Rate]]] = {}
+    # run database as a small integer code, fixed by the lane list the run
+    # recorded at start, so reordering these is safe and dropping a lane a
+    # live run used is refused. Validated in __init_subclass__.
+    named_rate_limits: ClassVar[Mapping[str, Sequence[Rate]]] = {}
 
     # Baseline HTTP headers the httpx transport sends with every request.
     # A per-request header with the same name (matched case-insensitively,

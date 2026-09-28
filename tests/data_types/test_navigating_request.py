@@ -125,26 +125,6 @@ class TestRequest:
 
         assert resolved == "http://bugcourt.example.com/cases/BCC-2024-001"
 
-    def test_deprecated_continuation_keyword_fills_step(self):
-        """``continuation=`` still constructs, warns, and lands in ``step``."""
-        with pytest.warns(DeprecationWarning, match="use step="):
-            request = Request(
-                request=HTTPRequestParams(method=HttpMethod.GET, url="/x"),
-                continuation="parse_detail",
-            )
-        assert request.step == "parse_detail"
-        # The alias is write-only: the InitVar default is what reads back.
-        assert request.continuation is None  # type: ignore[attr-defined]
-
-    def test_step_and_continuation_together_is_an_error(self):
-        """Naming the target twice is a TypeError, not a silent pick."""
-        with pytest.raises(TypeError, match="not both"):
-            Request(
-                request=HTTPRequestParams(method=HttpMethod.GET, url="/x"),
-                step="a",
-                continuation="b",
-            )
-
     def test_step_as_string_is_serializable(self):
         """Step specified as string shall be fully serializable."""
         request = Request(
