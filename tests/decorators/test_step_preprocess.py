@@ -16,7 +16,10 @@ from typing import Any
 import pytest
 
 from jkent.common.decorators import step
-from jkent.common.exceptions import ScraperAssumptionException
+from jkent.common.exceptions import (
+    PreprocessPageException,
+    ScraperAssumptionException,
+)
 from jkent.common.lxml_page_element import LxmlPageElement
 from jkent.data_types import BaseScraper, ParsedData, Response, XPath
 
@@ -104,5 +107,6 @@ def test_preprocess_feeds_lxml_tree() -> None:
 
 
 def test_preprocess_failure_wraps_in_assumption_taxonomy() -> None:
-    with pytest.raises(ScraperAssumptionException, match="preprocess"):
+    with pytest.raises(PreprocessPageException, match="preprocess"):
         list(_Host().parse_exploding(_response()))
+    assert issubclass(PreprocessPageException, ScraperAssumptionException)

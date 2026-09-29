@@ -18,7 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from functools import cached_property
-from typing import Any, BinaryIO, Final, cast
+from typing import Any, BinaryIO, Final, TypeVar, cast, overload
 from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
 
 from jkent.common.coded_enum import CodedEnum
@@ -151,25 +151,25 @@ def _encode_query_bytes(params: bytes) -> str:
       legacy-charset query (cp1252, Shift-JIS) goes out as sent instead
       of failing to decode.
     """
-    out: list[str] = []
+    out = ""
     i = 0
     while i < len(params):
         byte = params[i]
         if byte == 0x25:  # '%'
             escape = params[i + 1 : i + 3].decode("ascii", "replace")
             if len(escape) == 2 and set(escape) <= _HEX_DIGITS:
-                out.append("%" + escape)
+                out += "%" + escape
                 i += 3
                 continue
-            out.append("%25")
+            out += "%25"
             i += 1
             continue
         if byte <= 0x20 or byte >= 0x7F or byte == 0x23:  # ctrl/space, '#'
-            out.append(f"%{byte:02X}")
+            out += f"%{byte:02X}"
         else:
-            out.append(chr(byte))
+            out += chr(byte)
         i += 1
-    return "".join(out)
+    return out
 
 
 def _fold_params_into_url(url: str, params: QueryParams) -> str:
@@ -239,6 +239,19 @@ def serialize_url_and_body(
         _fold_params_into_url(http_request.url, http_request.params),
         encode_body(http_request.data)[0],
     )
+
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+_T = TypeVar("_T")
+
+
+@overload
+def _sorted_if_dict(value: dict[_K, _V]) -> dict[_K, _V]: ...
+
+
+@overload
+def _sorted_if_dict(value: _T) -> _T: ...
 
 
 def _sorted_if_dict(value: Any) -> Any:

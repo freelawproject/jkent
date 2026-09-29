@@ -49,6 +49,7 @@ from jkent.common.decorator_metadata import (
     get_step_metadata,
 )
 from jkent.common.exceptions import (
+    PreprocessPageException,
     ScraperAssumptionException,
 )
 from jkent.common.lxml_page_element import (
@@ -259,7 +260,7 @@ class InjectionContext:
             except ScraperAssumptionException:
                 raise
             except Exception as e:
-                raise ScraperAssumptionException(
+                raise PreprocessPageException(
                     f"Step preprocess hook failed: {e}",
                     request_url=self.response.url,
                     context={"error": str(e)},
@@ -267,10 +268,13 @@ class InjectionContext:
         return self._document
 
 
+InjectorBuilder = Callable[["InjectionContext"], Any]
+
+
 class Injector(NamedTuple):
     """What a registered ``@step`` parameter name injects, and its doc line."""
 
-    builder: Callable[[InjectionContext], Any]
+    builder: InjectorBuilder
     doc: str
 
 
@@ -278,32 +282,47 @@ INJECTORS: dict[str, Injector] = {}
 
 
 def register_injector(
-    name: str,
-    builder: Callable[[InjectionContext], Any],
-    *,
-    doc: str,
-) -> None:
+    name: str, *, doc: str | None = None
+) -> Callable[[InjectorBuilder], InjectorBuilder]:
     """Register a ``@step`` parameter name and what to inject for it.
 
     Extension point for hosts or test rigs that need to add/modify the
-    injected values for steps.
+    injected values for steps. Used as a decorator on the builder::
+
+        @register_injector("page")
+        def _inject_page(ctx: InjectionContext) -> Any:
+            ...
 
     Args:
         name: The parameter name a step declares to receive this value.
-        builder: Called with the :class:`InjectionContext` once per execution
-            of a step whose signature names ``name``.
-        doc: One-line description for the generated documentation.
+        doc: One-line description for the generated documentation. Taken
+            from the builder's first docstring line when omitted.
+
+    Returns:
+        The decorator, which returns the builder unchanged.
 
     Raises:
-        ValueError: ``name`` is already registered to a different injector.
+        ValueError: ``name`` is already registered to a different injector,
+            or ``doc`` was omitted and the builder has no docstring.
     """
-    injector = Injector(builder, doc)
-    existing = INJECTORS.get(name)
-    if existing is not None:
-        if existing == injector:
-            return
-        raise ValueError(f"@step injector {name!r} is already registered")
-    INJECTORS[name] = injector
+
+    def decorate(builder: InjectorBuilder) -> InjectorBuilder:
+        summary = doc
+        if summary is None:
+            docstring = inspect.getdoc(builder) or ""
+            summary = docstring.split("\n\n", 1)[0].replace("\n", " ").strip()
+            if not summary:
+                raise ValueError(
+                    f"@step injector {name!r} needs a doc= or a docstring"
+                )
+        injector = Injector(builder, summary)
+        existing = INJECTORS.get(name)
+        if existing is not None and existing != injector:
+            raise ValueError(f"@step injector {name!r} is already registered")
+        INJECTORS[name] = injector
+        return builder
+
+    return decorate
 
 
 def _injector_doc(indent: str = "    ") -> str:
@@ -314,7 +333,46 @@ def _injector_doc(indent: str = "    ") -> str:
     )
 
 
+@register_injector("response")
+def _inject_response(ctx: InjectionContext) -> Any:
+    """The Response object"""
+    return ctx.response
+
+
+@register_injector("request")
+def _inject_request(ctx: InjectionContext) -> Any:
+    """The current Request"""
+    return ctx.response.request
+
+
+@register_injector("previous_request")
+def _inject_previous_request(ctx: InjectionContext) -> Any:
+    """The parent request from the chain (None for entry requests)"""
+    return ctx.response.request.parent_request
+
+
+@register_injector("accumulated_data")
+def _inject_accumulated_data(ctx: InjectionContext) -> Any:
+    """Data collected across the request chain (from request)"""
+    return ctx.response.request.accumulated_data
+
+
+@register_injector("json_content")
+def _inject_json_content(ctx: InjectionContext) -> Any:
+    """Response content parsed as JSON"""
+    return _parse_json(ctx.response, ctx.encoding)
+
+
+@register_injector("lxml_tree")
+def _inject_lxml_tree(ctx: InjectionContext) -> Any:
+    """Response content parsed as LxmlPageElement"""
+    return _parse_html(ctx.response, ctx.encoding, text=ctx.document)
+
+
+@register_injector("page")
 def _inject_page(ctx: InjectionContext) -> Any:
+    """Response content parsed as PageElement (LxmlPageElement with
+    observer)"""
     page_element, observer = _parse_page_element(
         ctx.response, ctx.encoding, text=ctx.document
     )
@@ -323,67 +381,21 @@ def _inject_page(ctx: InjectionContext) -> Any:
     return page_element
 
 
+@register_injector("text")
 def _inject_text(ctx: InjectionContext) -> Any:
+    """Response content as string"""
     document = ctx.document
     if document is not None:
         return document
     return _get_text(ctx.response, ctx.encoding)
 
 
+@register_injector("local_filepath")
 def _inject_local_filepath(ctx: InjectionContext) -> Any:
+    """Local file path from ArchiveResponse (None otherwise)"""
     if isinstance(ctx.response, ArchiveResponse):
         return ctx.response.file_url
     return None
-
-
-register_injector(
-    "response",
-    lambda ctx: ctx.response,
-    doc="The Response object",
-)
-register_injector(
-    "request",
-    lambda ctx: ctx.response.request,
-    doc="The current Request",
-)
-register_injector(
-    "previous_request",
-    lambda ctx: ctx.response.request.parent_request,
-    doc="The parent request from the chain (None for entry requests)",
-)
-register_injector(
-    "accumulated_data",
-    lambda ctx: ctx.response.request.accumulated_data,
-    doc="Data collected across the request chain (from request)",
-)
-register_injector(
-    "json_content",
-    lambda ctx: _parse_json(ctx.response, ctx.encoding),
-    doc="Response content parsed as JSON",
-)
-register_injector(
-    "lxml_tree",
-    lambda ctx: _parse_html(ctx.response, ctx.encoding, text=ctx.document),
-    doc="Response content parsed as LxmlPageElement",
-)
-register_injector(
-    "page",
-    _inject_page,
-    doc=(
-        "Response content parsed as PageElement (LxmlPageElement with "
-        "observer)"
-    ),
-)
-register_injector(
-    "text",
-    _inject_text,
-    doc="Response content as string",
-)
-register_injector(
-    "local_filepath",
-    _inject_local_filepath,
-    doc="Local file path from ArchiveResponse (None otherwise)",
-)
 
 
 def _process_yielded_request(yielded: Any) -> Any:

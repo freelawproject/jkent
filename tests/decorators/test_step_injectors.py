@@ -61,8 +61,8 @@ def test_injection_registered_after_decoration_is_seen(
     Frozen at decoration time, ``parse`` would be called without
     ``replay_cursor`` and raise TypeError once per request for a whole run.
     """
-    register_injector(
-        "replay_cursor", lambda ctx: "cursor-7", doc="The replay cursor"
+    register_injector("replay_cursor", doc="The replay cursor")(
+        lambda ctx: "cursor-7"
     )
     results = list(_Host().parse(_response()))
     assert results[0].data["cursor"] == "cursor-7"
@@ -71,7 +71,7 @@ def test_injection_registered_after_decoration_is_seen(
 def test_step_without_the_parameter_is_unaffected(
     clean_registry: None,
 ) -> None:
-    register_injector("replay_cursor", lambda ctx: "x", doc="The cursor")
+    register_injector("replay_cursor", doc="The cursor")(lambda ctx: "x")
 
     class _Other(BaseScraper[dict[str, Any]]):
         @step
@@ -91,17 +91,31 @@ def test_registering_the_same_injector_twice_is_a_noop(
     def builder(ctx: Any) -> str:
         return "cursor-7"
 
-    register_injector("replay_cursor", builder, doc="The replay cursor")
-    register_injector("replay_cursor", builder, doc="The replay cursor")
+    register_injector("replay_cursor", doc="The replay cursor")(builder)
+    register_injector("replay_cursor", doc="The replay cursor")(builder)
     assert INJECTORS["replay_cursor"] == Injector(builder, "The replay cursor")
 
 
 def test_registering_a_different_injector_for_one_name_raises(
     clean_registry: None,
 ) -> None:
-    register_injector("replay_cursor", lambda ctx: "a", doc="The cursor")
+    register_injector("replay_cursor", doc="The cursor")(lambda ctx: "a")
     with pytest.raises(ValueError, match="already registered"):
-        register_injector("replay_cursor", lambda ctx: "b", doc="The cursor")
+        register_injector("replay_cursor", doc="The cursor")(lambda ctx: "b")
+
+
+def test_doc_defaults_to_the_builders_docstring(clean_registry: None) -> None:
+    @register_injector("replay_cursor")
+    def _inject_cursor(ctx: Any) -> str:
+        """The replay cursor"""
+        return "cursor-7"
+
+    assert INJECTORS["replay_cursor"].doc == "The replay cursor"
+
+
+def test_no_doc_and_no_docstring_raises(clean_registry: None) -> None:
+    with pytest.raises(ValueError, match="doc= or a docstring"):
+        register_injector("replay_cursor")(lambda ctx: "a")
 
 
 def test_builtin_injections_are_documented_on_step() -> None:
