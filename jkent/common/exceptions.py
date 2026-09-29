@@ -24,6 +24,7 @@ __all__ = [
     "IncidentalRequestAssumptionException",
     "InterstitialUnresolved",
     "PersistentException",
+    "PreprocessPageException",
     "PersistentHTTPResponseException",
     "RequestFailedHalt",
     "RequestTimeoutException",
@@ -299,6 +300,16 @@ class IncidentalRequestAssumptionException(ScraperAssumptionException):
         if self.candidate_urls:
             context["candidate_urls"] = self.candidate_urls
         super().__init__(message, request_url, context)
+
+
+class PreprocessPageException(ScraperAssumptionException):
+    """Raised when a step's ``preprocess=`` repair hook fails.
+
+    The hook is the scraper's own assumption about the page: that the
+    document it gets back is the shape the repair was written for. When the
+    hook raises, that assumption is wrong, and no retry of the same
+    response will make it right.
+    """
 
 
 class TransientException(Exception):

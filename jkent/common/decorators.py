@@ -5,17 +5,9 @@ to determine what to inject into scraper methods. Instead of having separate
 decorators for each content type (lxml, json, text, etc.), a single decorator
 inspects the function signature and injects values based on parameter names.
 
-Supported parameter names:
-
-- response: The Response object
-- request: The current Request
-- previous_request: The parent request from the chain
-- accumulated_data: Data collected across the request chain (from request)
-- json_content: Response content parsed as JSON
-- lxml_tree: Response content parsed as LxmlPageElement
-- page: Response content parsed as PageElement (wires up the observer)
-- text: Response content as string
-- local_filepath: Local file path from ArchiveResponse (None if not archive)
+Supported parameter names live in one registry (``INJECTORS``), which also
+generates the documented list on ``@step`` — see :func:`register_injector`
+for adding one.
 
 The decorator also handles:
 
@@ -25,7 +17,7 @@ The decorator also handles:
 - Automatic yielding from wrapped generators
 
 The @entry decorator marks scraper methods as entry points with typed
-parameters, replacing the old get_entry()/ScraperParams system.
+parameters; it is the only way a scraper declares where a run starts.
 """
 
 import inspect
@@ -33,6 +25,7 @@ from collections.abc import Callable, Generator
 from functools import wraps
 from typing import (
     Any,
+    NamedTuple,
     ParamSpec,
     TypeVar,
     get_args,
@@ -56,24 +49,21 @@ from jkent.common.decorator_metadata import (
     get_step_metadata,
 )
 from jkent.common.exceptions import (
+    PreprocessPageException,
     ScraperAssumptionException,
 )
 from jkent.common.lxml_page_element import (
     LxmlPageElement,
 )
+from jkent.common.request import Request
+from jkent.common.response import ArchiveResponse, Response
+from jkent.common.scraper import BaseScraper, ScraperYield
 from jkent.common.selector_observer import (
     SelectorObserver,
     get_active_observer,
 )
 from jkent.common.speculative import Speculative
-from jkent.data_types import (
-    ArchiveResponse,
-    BaseScraper,
-    Request,
-    Response,
-    ScraperYield,
-    WaitCondition,
-)
+from jkent.common.wait_conditions import WaitCondition
 
 T = TypeVar("T")
 
@@ -205,7 +195,7 @@ def _parse_page_element(
         # wrapper), not through the PageElement — see SelectorObserver.
         # An observer already active here was injected by a caller running
         # the step under its own (possibly subclassed) observer —
-        # e.g. jent's annotation/residual analysis — so reuse it instead of
+        # e.g. a host's selector-coverage analysis — so reuse it instead of
         # shadowing it with a fresh one. Under the driver no observer is
         # active at parse time, so each execution gets its own as before.
         observer = get_active_observer() or SelectorObserver()
@@ -222,6 +212,190 @@ def _parse_page_element(
             request_url=response.url,
             context={"encoding": encoding, "error": str(e)},
         ) from e
+
+
+class InjectionContext:
+    """Everything an injector may read, for one execution of one step.
+
+    Holds the per-execution state the injectors share: the response, the
+    step's ``encoding``, and the ``preprocess`` repair hook. :attr:`document`
+    memoises the repaired text so ``text``, ``lxml_tree``, and ``page`` in the
+    same signature all see one repair rather than three.
+
+    :attr:`observer` is written by the ``page`` injector and read back by the
+    wrapper — per-execution state, so it lives here and on the ``Response``,
+    never on the shared :class:`StepMetadata` where two in-flight executions
+    of one step would clobber each other.
+    """
+
+    __slots__ = ("_document", "encoding", "observer", "preprocess", "response")
+
+    def __init__(
+        self,
+        response: Response,
+        encoding: str,
+        preprocess: Callable[[str], str] | None,
+    ) -> None:
+        self.response = response
+        self.encoding = encoding
+        self.preprocess = preprocess
+        self.observer: SelectorObserver | None = None
+        self._document: str | None = None
+
+    @property
+    def document(self) -> str | None:
+        """The repaired document text, or ``None`` when no hook is set.
+
+        Computed at most once per execution, and only if an injector that
+        feeds on the document is actually in the signature — asking for
+        ``json_content`` alone never runs the repair.
+        """
+        if self.preprocess is None:
+            return None
+        if self._document is None:
+            try:
+                self._document = self.preprocess(
+                    _get_text(self.response, self.encoding)
+                )
+            except ScraperAssumptionException:
+                raise
+            except Exception as e:
+                raise PreprocessPageException(
+                    f"Step preprocess hook failed: {e}",
+                    request_url=self.response.url,
+                    context={"error": str(e)},
+                ) from e
+        return self._document
+
+
+InjectorBuilder = Callable[["InjectionContext"], Any]
+
+
+class Injector(NamedTuple):
+    """What a registered ``@step`` parameter name injects, and its doc line."""
+
+    builder: InjectorBuilder
+    doc: str
+
+
+INJECTORS: dict[str, Injector] = {}
+
+
+def register_injector(
+    name: str, *, doc: str | None = None
+) -> Callable[[InjectorBuilder], InjectorBuilder]:
+    """Register a ``@step`` parameter name and what to inject for it.
+
+    Extension point for hosts or test rigs that need to add/modify the
+    injected values for steps. Used as a decorator on the builder::
+
+        @register_injector("page")
+        def _inject_page(ctx: InjectionContext) -> Any:
+            ...
+
+    Args:
+        name: The parameter name a step declares to receive this value.
+        doc: One-line description for the generated documentation. Taken
+            from the builder's first docstring line when omitted.
+
+    Returns:
+        The decorator, which returns the builder unchanged.
+
+    Raises:
+        ValueError: ``name`` is already registered to a different injector,
+            or ``doc`` was omitted and the builder has no docstring.
+    """
+
+    def decorate(builder: InjectorBuilder) -> InjectorBuilder:
+        summary = doc
+        if summary is None:
+            docstring = inspect.getdoc(builder) or ""
+            summary = docstring.split("\n\n", 1)[0].replace("\n", " ").strip()
+            if not summary:
+                raise ValueError(
+                    f"@step injector {name!r} needs a doc= or a docstring"
+                )
+        injector = Injector(builder, summary)
+        existing = INJECTORS.get(name)
+        if existing is not None and existing != injector:
+            raise ValueError(f"@step injector {name!r} is already registered")
+        INJECTORS[name] = injector
+        return builder
+
+    return decorate
+
+
+def _injector_doc(indent: str = "    ") -> str:
+    """The registry rendered as the documented parameter list."""
+    return "\n".join(
+        f"{indent}- {name}: {injector.doc}"
+        for name, injector in INJECTORS.items()
+    )
+
+
+@register_injector("response")
+def _inject_response(ctx: InjectionContext) -> Any:
+    """The Response object"""
+    return ctx.response
+
+
+@register_injector("request")
+def _inject_request(ctx: InjectionContext) -> Any:
+    """The current Request"""
+    return ctx.response.request
+
+
+@register_injector("previous_request")
+def _inject_previous_request(ctx: InjectionContext) -> Any:
+    """The parent request from the chain (None for entry requests)"""
+    return ctx.response.request.parent_request
+
+
+@register_injector("accumulated_data")
+def _inject_accumulated_data(ctx: InjectionContext) -> Any:
+    """Data collected across the request chain (from request)"""
+    return ctx.response.request.accumulated_data
+
+
+@register_injector("json_content")
+def _inject_json_content(ctx: InjectionContext) -> Any:
+    """Response content parsed as JSON"""
+    return _parse_json(ctx.response, ctx.encoding)
+
+
+@register_injector("lxml_tree")
+def _inject_lxml_tree(ctx: InjectionContext) -> Any:
+    """Response content parsed as LxmlPageElement"""
+    return _parse_html(ctx.response, ctx.encoding, text=ctx.document)
+
+
+@register_injector("page")
+def _inject_page(ctx: InjectionContext) -> Any:
+    """Response content parsed as PageElement (LxmlPageElement with
+    observer)"""
+    page_element, observer = _parse_page_element(
+        ctx.response, ctx.encoding, text=ctx.document
+    )
+    ctx.observer = observer
+    ctx.response.observer = observer
+    return page_element
+
+
+@register_injector("text")
+def _inject_text(ctx: InjectionContext) -> Any:
+    """Response content as string"""
+    document = ctx.document
+    if document is not None:
+        return document
+    return _get_text(ctx.response, ctx.encoding)
+
+
+@register_injector("local_filepath")
+def _inject_local_filepath(ctx: InjectionContext) -> Any:
+    """Local file path from ArchiveResponse (None otherwise)"""
+    if isinstance(ctx.response, ArchiveResponse):
+        return ctx.response.file_url
+    return None
 
 
 def _process_yielded_request(yielded: Any) -> Any:
@@ -323,18 +497,13 @@ def step(
 ):
     """Decorator for scraper step methods with automatic argument injection.
 
-    This decorator inspects the function signature and injects values based on
-    parameter names:
+    This decorator inspects the function signature and injects values based
+    on parameter names. The built-in list below is generated from
+    :data:`INJECTORS`; a host that adds its own with
+    :func:`register_injector` can render the current list with
+    ``_injector_doc()``:
 
-    - response: The Response object
-    - request: The current Request
-    - previous_request: The parent request from the chain (if available)
-    - accumulated_data: Data collected across the request chain (from request)
-    - json_content: Response content parsed as JSON
-    - lxml_tree: Response content parsed as LxmlPageElement
-    - page: Response content parsed as PageElement (LxmlPageElement with observer)
-    - text: Response content as string
-    - local_filepath: Local file path from ArchiveResponse (None otherwise)
+    {injections}
 
     Example::
 
@@ -396,9 +565,10 @@ def step(
     def decorator(
         fn: StepFunction[StepScraper, StepYield],
     ) -> StepMethod[StepScraper, StepYield]:
-        # Inspect the function signature to determine what to inject
         sig = inspect.signature(fn)
-        param_names = [p.name for p in sig.parameters.values()]
+        param_names = {p.name for p in sig.parameters.values()}
+        wanted: list[str] = []
+        resolved_against: tuple[str, ...] = ()
 
         # Create metadata
         metadata = StepMetadata(
@@ -416,80 +586,18 @@ def step(
             *args: Any,
             **kwargs: Any,
         ) -> Generator[StepYield, bool | None, None]:
-            # Build kwargs for injection based on parameter names
-            injected_kwargs: dict[str, Any] = {}
-            observer: SelectorObserver | None = None
-
-            if "response" in param_names:
-                injected_kwargs["response"] = response
-
-            if "request" in param_names:
-                injected_kwargs["request"] = response.request
-
-            if "previous_request" in param_names:
-                # The immediate parent request (None for entry requests)
-                injected_kwargs["previous_request"] = (
-                    response.request.parent_request
-                )
-
-            if "accumulated_data" in param_names:
-                injected_kwargs["accumulated_data"] = (
-                    response.request.accumulated_data
-                )
-
-            # Content transformations (lazy - only parse if requested)
-            if "json_content" in param_names:
-                injected_kwargs["json_content"] = _parse_json(
-                    response, encoding
-                )
-
-            # Repaired document text, computed once when a preprocess hook
-            # is set and any document-shaped injection is requested. Feeds
-            # text/lxml_tree/page below so they all see the same repaired
-            # document.
-            repaired: str | None = None
-            if preprocess is not None and any(
-                name in param_names for name in ("text", "lxml_tree", "page")
-            ):
-                try:
-                    repaired = preprocess(_get_text(response, encoding))
-                except ScraperAssumptionException:
-                    raise
-                except Exception as e:
-                    raise ScraperAssumptionException(
-                        f"Step preprocess hook failed: {e}",
-                        request_url=response.url,
-                        context={"error": str(e)},
-                    ) from e
-
-            if "lxml_tree" in param_names:
-                injected_kwargs["lxml_tree"] = _parse_html(
-                    response, encoding, text=repaired
-                )
-
-            if "page" in param_names:
-                page_element, observer = _parse_page_element(
-                    response, encoding, text=repaired
-                )
-                injected_kwargs["page"] = page_element
-                # The observer is per-execution state and the Response is
-                # the driver's per-execution handle, so it travels there —
-                # never on the shared StepMetadata, where two in-flight
-                # executions of the same step would clobber each other.
-                response.observer = observer
-
-            if "text" in param_names:
-                injected_kwargs["text"] = (
-                    repaired
-                    if repaired is not None
-                    else _get_text(response, encoding)
-                )
-
-            if "local_filepath" in param_names:
-                if isinstance(response, ArchiveResponse):
-                    injected_kwargs["local_filepath"] = response.file_url
-                else:
-                    injected_kwargs["local_filepath"] = None
+            nonlocal wanted, resolved_against
+            registry_names = tuple(INJECTORS)
+            if registry_names != resolved_against:
+                wanted = [
+                    name for name in registry_names if name in param_names
+                ]
+                resolved_against = registry_names
+            ctx = InjectionContext(response, encoding, preprocess)
+            injected_kwargs: dict[str, Any] = {
+                name: INJECTORS[name].builder(ctx) for name in wanted
+            }
+            observer = ctx.observer
 
             # Call the original function with injected kwargs
             gen = fn(scraper_self, *args, **injected_kwargs, **kwargs)
@@ -521,6 +629,12 @@ def step(
     if func is not None:
         return decorator(func)
     return decorator
+
+
+# The built-in injections, rendered into step's docstring once. ``__doc__``
+# is None under ``python -OO``, which strips docstrings.
+if step.__doc__ is not None:
+    step.__doc__ = step.__doc__.replace("{injections}", _injector_doc())
 
 
 # =============================================================================
