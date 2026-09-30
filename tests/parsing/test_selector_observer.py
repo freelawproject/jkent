@@ -11,7 +11,7 @@ from lxml import html
 
 from jkent.common.decorators import step
 from jkent.common.exceptions import HTMLStructuralAssumptionException
-from jkent.common.lxml_page_element import LxmlPageElement
+from jkent.common.page_element import PageElement
 from jkent.common.selector_observer import (
     SelectorObserver,
     SelectorQuery,
@@ -87,8 +87,8 @@ def test_reentering_same_observer_unwinds_cleanly():
 
 
 def test_page_element_reports_to_active_observer(simple_html: str):
-    """LxmlPageElement records queries to the active observer."""
-    tree = LxmlPageElement(html.fromstring(simple_html), "http://example.com")
+    """PageElement records queries to the active observer."""
+    tree = PageElement(html.fromstring(simple_html), "http://example.com")
 
     with SelectorObserver() as observer:
         rows = tree.checked_xpath("//tr[@class='row']", "rows")
@@ -100,10 +100,10 @@ def test_page_element_reports_to_active_observer(simple_html: str):
 
 
 def test_no_active_observer_outside_context(simple_html: str):
-    """LxmlPageElement still works when no observer is active."""
+    """PageElement still works when no observer is active."""
     assert get_active_observer() is None
 
-    tree = LxmlPageElement(html.fromstring(simple_html), "http://example.com")
+    tree = PageElement(html.fromstring(simple_html), "http://example.com")
     rows = tree.checked_xpath("//tr[@class='row']", "rows")
     assert len(rows) == 3
 
@@ -582,7 +582,7 @@ def test_interleaved_step_executions_keep_their_own_observers():
 
     class TwoPageScraper(BaseScraper[dict[str, Any]]):
         @step
-        def parse(self, page: LxmlPageElement, response: Response):
+        def parse(self, page: PageElement, response: Response):
             page.query(Selector.XPath("//h1"), "title", min_count=0)
             yield ParsedData({"url": response.url})
 
@@ -634,7 +634,7 @@ def test_simple_tree_matches_raised_count_for_missing_type_str():
     observer must record that same 0 — not the raw pre-filter string count —
     or simple_tree() would show ✓ for the very query that just failed.
     """
-    tree = LxmlPageElement(
+    tree = PageElement(
         html.fromstring('<div><a href="/a">A</a><a href="/b">B</a></div>')
     )
 

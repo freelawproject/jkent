@@ -1,13 +1,16 @@
 """Selectors and their grammars — the one place a grammar is dispatched on.
 
 A :class:`Selector` carries its value *and* the grammar it is written in, so
-nothing downstream has to re-run a prefix heuristic to find out. Each
-grammar-specific behaviour is a method here, overridden per subclass: the
-lxml query (:meth:`Selector.query`), the Playwright-engine prefix
-(:meth:`Selector.for_playwright`), relative-chain composition
-(:meth:`Selector.compose`), and the Playwright-waitability predicate
-(:meth:`Selector.can_playwright_wait`). Adding a grammar is one subclass — it
-registers itself, and :meth:`Selector.of` finds it.
+nothing downstream has to re-run a prefix heuristic to find out. There are
+exactly two grammars, :class:`CSS` and :class:`XPath`, and each
+grammar-specific behaviour is an abstract method here implemented by both:
+the lxml query (:meth:`Selector.query`), the positional wrapper
+(:meth:`Selector.nth`), relative-chain composition (:meth:`Selector.compose`),
+and the Playwright-waitability predicate (:meth:`Selector.can_playwright_wait`).
+
+A selector always states its grammar: there is no bare-string form and no
+inference. :meth:`Selector.of` exists only to rebuild one from a stored
+``(value, grammar)`` pair.
 
 A leaf: it imports nothing from jkent. The via models, the page-element
 layer, the drivers, and the authoring facade (``jkent.data_types``) all sit
@@ -23,8 +26,9 @@ from __future__ import annotations
 
 import functools
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from lxml import etree
 from pydantic_core import core_schema
@@ -33,114 +37,72 @@ from typing_extensions import override
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from lxml.html import HtmlElement
     from pydantic import GetCoreSchemaHandler
 
-__all__ = ["CSS", "Selector", "XPath"]
+__all__ = ["CSS", "Grammar", "Selector", "XPath"]
+
+#: The selector grammars jkent supports. Stored verbatim in a serialized
+#: selector and in ``HTMLStructuralAssumptionException.selector_type``.
+Grammar = Literal["css", "xpath"]
 
 
 @dataclass(frozen=True)
-class Selector:
+class Selector(ABC):
     """A selector string together with the grammar it is written in.
+
+    Abstract: construct a :class:`CSS` or an :class:`XPath`, or rebuild one
+    from stored parts with :meth:`of`. A selector without a grammar has no
+    meaning, since the grammar is what every downstream dispatch reads.
 
     Attributes:
         value: The raw selector string.
-        grammar: ``"css"`` or ``"xpath"`` — a ClassVar set by each subclass,
-            and the key it registers itself under.
+        grammar: ``"css"`` or ``"xpath"`` — a ClassVar set by each subclass.
         label: Human-readable grammar name, for error messages.
         playwright_engine: Playwright's name for this grammar, used as the
             explicit ``engine=`` prefix.
     """
 
     value: str
-    grammar: ClassVar[str] = ""
-    label: ClassVar[str] = ""
-    playwright_engine: ClassVar[str] = ""
+    grammar: ClassVar[Grammar]
+    label: ClassVar[str]
+    playwright_engine: ClassVar[Grammar]
 
     CSS: ClassVar[type[CSS]]
     XPath: ClassVar[type[XPath]]
-
-    #: ``grammar`` → subclass, populated by :meth:`__init_subclass__`. The
-    #: registry :meth:`of` reads, so deserialization needs no if-chain.
-    _BY_GRAMMAR: ClassVar[dict[str, type[Selector]]] = {}
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        grammar = cls.__dict__.get("grammar")
-        if not grammar:
-            # An intermediate subclass that adds behaviour but not a grammar
-            # (nothing does today) stays out of the registry, and
-            # ``__post_init__`` refuses to construct it.
-            return
-        existing = Selector._BY_GRAMMAR.get(grammar)
-        if existing is not None and existing is not cls:
-            raise ValueError(
-                f"selector grammar {grammar!r} is already registered to "
-                f"{existing.__name__}"
-            )
-        Selector._BY_GRAMMAR[grammar] = cls
-
-    def __post_init__(self) -> None:
-        """Refuse a selector with no grammar.
-
-        The base class and any intermediate subclass that sets no
-        ``grammar`` are not constructible: a selector's grammar is what every
-        downstream dispatch reads, so one without it has no meaning. Build a
-        concrete grammar (:class:`CSS`, :class:`XPath`) or go through
-        :meth:`of`.
-
-        Raises:
-            TypeError: ``type(self)`` has no ``grammar``.
-        """
-        if not type(self).grammar:
-            raise TypeError(
-                f"{type(self).__name__} has no grammar; construct a concrete "
-                "selector (CSS, XPath) or use Selector.of(value, grammar)"
-            )
-
-    @classmethod
-    def grammar_class(cls, grammar: str) -> type[Selector] | None:
-        """The registered subclass for ``grammar``, or ``None``.
-
-        For callers holding a grammar name but no value — they want the
-        grammar's classmethods (:meth:`compose`), not an instance.
-        """
-        return Selector._BY_GRAMMAR.get(grammar)
 
     @classmethod
     def of(cls, value: str, grammar: str) -> Selector:
         """Rebuild a Selector from its serialized ``value``/``grammar`` parts.
 
+        The only way to reach a Selector from a grammar *name* — for the
+        deserializers and the driver call sites that hold a stored
+        ``(value, grammar)`` pair rather than a Selector.
+
         Raises:
-            ValueError: ``grammar`` names no registered subclass.
+            ValueError: ``grammar`` is neither ``"css"`` nor ``"xpath"``.
         """
-        subclass = Selector._BY_GRAMMAR.get(grammar)
-        if subclass is None:
-            raise ValueError(f"unknown selector grammar: {grammar!r}")
-        return subclass(value)
+        if grammar == CSS.grammar:
+            return CSS(value)
+        if grammar == XPath.grammar:
+            return XPath(value)
+        raise ValueError(f"unknown selector grammar: {grammar!r}")
 
-    @classmethod
-    def infer(cls, value: str) -> Selector:
-        """Best-effort Selector for a bare string with no recorded grammar.
-
-        Mirrors ``find_form``/``find_links``: unambiguous XPath prefixes are
-        XPath, everything else CSS. A fallback only: guessing is exactly what
-        :class:`Selector` exists to stop.
-        """
-        return (
-            XPath(value) if value.startswith(("//", "./", "(")) else CSS(value)
-        )
-
+    @abstractmethod
     def nth(self, position: int) -> Selector:
         """A selector for the 1-based ``position``-th match of this one.
 
         Each subclass encodes the positional wrapper in its own grammar so a
         single matched node can be replayed unambiguously.
         """
-        raise NotImplementedError
 
-    def query(self, element: Any) -> Any:
-        """Run this selector against an lxml element, in its own grammar."""
-        raise NotImplementedError
+    @abstractmethod
+    def query(self, element: HtmlElement) -> list[Any] | str | float | bool:
+        """Run this selector against an lxml element, in its own grammar.
+
+        A node-set comes back as a list; a scalar XPath
+        (``count()``/``string()``/…) comes back as a bare value.
+        """
 
     def for_playwright(self) -> str:
         """This selector as a Playwright selector string.
@@ -154,18 +116,23 @@ class Selector:
     def can_playwright_wait(self) -> bool:
         """Whether ``page.wait_for_selector()`` can wait on this selector.
 
-        Playwright can only wait on something that targets *elements*.
+        Playwright can only wait on something that targets *elements*. This
+        is a property of the *wait* context only: a selector this rejects is
+        still perfectly valid for parsing, which is why the constructors do
+        not reject it. The driver reads this to decide whether a failed
+        structural assumption can be retried behind an autowait, and falls
+        back to re-raising when it cannot.
         """
         return True
 
     @classmethod
+    @abstractmethod
     def compose(cls, parts: Sequence[str]) -> str | None:
         """Compose a root-to-leaf chain of same-grammar selectors into one.
 
         ``parts[0]`` is the absolute root; the rest are relative to their
         parent. ``None`` when this grammar cannot express the composition.
         """
-        raise NotImplementedError
 
     def __str__(self) -> str:
         return self.value
@@ -235,9 +202,9 @@ _CSS_CONTAINS = re.compile(r":contains\s*\(", re.IGNORECASE)
 class CSS(Selector):
     """A CSS selector. Also reachable as :attr:`Selector.CSS`."""
 
-    grammar: ClassVar[str] = "css"
+    grammar: ClassVar[Grammar] = "css"
     label: ClassVar[str] = "CSS"
-    playwright_engine: ClassVar[str] = "css"
+    playwright_engine: ClassVar[Grammar] = "css"
 
     @override
     def nth(self, position: int) -> Selector:
@@ -246,7 +213,7 @@ class CSS(Selector):
         return CSS(f":nth-match({self.value}, {position})")
 
     @override
-    def query(self, element: Any) -> Any:
+    def query(self, element: HtmlElement) -> list[Any] | str | float | bool:
         return element.cssselect(self.value)
 
     @override
@@ -256,6 +223,8 @@ class CSS(Selector):
         lxml's cssselect evaluates it, so a parse can use it; Playwright
         hands a pseudo-class it does not define to the browser, which
         rejects the selector. Its equivalent there is ``:has-text()``.
+        Constructing such a selector stays legal — only waiting on one is
+        refused (see :meth:`Selector.can_playwright_wait`).
 
         Examples:
             >>> CSS("td.docket").can_playwright_wait()
@@ -376,9 +345,9 @@ def _evaluates_to_node_set(expression: str) -> bool:
 class XPath(Selector):
     """An XPath selector. Also reachable as :attr:`Selector.XPath`."""
 
-    grammar: ClassVar[str] = "xpath"
+    grammar: ClassVar[Grammar] = "xpath"
     label: ClassVar[str] = "XPath"
-    playwright_engine: ClassVar[str] = "xpath"
+    playwright_engine: ClassVar[Grammar] = "xpath"
 
     @override
     def nth(self, position: int) -> Selector:
@@ -387,7 +356,7 @@ class XPath(Selector):
         return XPath(f"({self.value})[{position}]")
 
     @override
-    def query(self, element: Any) -> Any:
+    def query(self, element: HtmlElement) -> list[Any] | str | float | bool:
         return element.xpath(self.value)
 
     @override

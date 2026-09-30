@@ -9,7 +9,7 @@ features:
 - Request(nonnavigating=True) to fetch JSON API data without navigating.
 - Request(archive=True) to download and archive PDF and MP3 files.
 - accumulated_data to flow case data from appeals to trial court.
-- LxmlPageElement to validate HTML structure assumptions.
+- PageElement to validate HTML structure assumptions.
 - Pydantic models with deferred validation for data validation.
 """
 
@@ -24,7 +24,7 @@ from pydantic import Field, HttpUrl
 
 from jkent.common.data_models import ScrapedData
 from jkent.common.decorators import entry
-from jkent.common.lxml_page_element import LxmlPageElement
+from jkent.common.page_element import PageElement
 from jkent.data_types import (
     ArchiveResponse,
     BaseScraper,
@@ -110,7 +110,7 @@ class BugCourtScraper(BaseScraper[dict[str, Any]]):
         This method extracts all case information from the detail page
         and yields it as ParsedData.
 
-        Step 8: Uses LxmlPageElement to validate that the case detail
+        Step 8: Uses PageElement to validate that the case detail
         container exists, raising HTMLStructuralAssumptionException if the
         page structure has changed.
 
@@ -120,7 +120,7 @@ class BugCourtScraper(BaseScraper[dict[str, Any]]):
         Yields:
             ParsedData containing the complete case information.
         """
-        tree = LxmlPageElement(html.fromstring(response.text), response.url)
+        tree = PageElement(html.fromstring(response.text), response.url)
 
         # Step 8: Validate that the case details container exists
         # This will raise HTMLStructuralAssumptionException if the structure changed
@@ -270,7 +270,7 @@ class BugCourtScraperWithAPI(BaseScraper[dict[str, Any]]):
 # =============================================================================
 
 
-def _get_text(element: HtmlElement | LxmlPageElement, xpath: str) -> str:
+def _get_text(element: HtmlElement | PageElement, xpath: str) -> str:
     """Extract text content from an xpath query.
 
     Args:
@@ -286,9 +286,7 @@ def _get_text(element: HtmlElement | LxmlPageElement, xpath: str) -> str:
     return ""
 
 
-def _get_text_by_id(
-    tree: HtmlElement | LxmlPageElement, element_id: str
-) -> str:
+def _get_text_by_id(tree: HtmlElement | PageElement, element_id: str) -> str:
     """Extract text content from an element by its ID.
 
     Args:

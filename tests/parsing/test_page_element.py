@@ -20,6 +20,7 @@ from jkent.data_types import (
     Request,
     Response,
     Selector,
+    XPath,
 )
 
 
@@ -108,12 +109,14 @@ def test_form_submit_with_submit_selector():
     )
 
     request = form.submit(
-        submit_selector=".//button[@name='submit']", step="test"
+        submit_selector=XPath(".//button[@name='submit']"), step="test"
     )
 
     assert request.via is not None
     assert isinstance(request.via, ViaFormSubmit)
-    assert request.via.submit_selector == ".//button[@name='submit']"
+    # The grammar engine travels with it, so the transport's query_selector
+    # never has to guess.
+    assert request.via.submit_selector == "xpath=.//button[@name='submit']"
 
 
 def test_form_submit_with_css_submit_selector():

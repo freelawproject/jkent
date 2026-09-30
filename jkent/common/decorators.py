@@ -52,8 +52,8 @@ from jkent.common.exceptions import (
     PreprocessPageException,
     ScraperAssumptionException,
 )
-from jkent.common.lxml_page_element import (
-    LxmlPageElement,
+from jkent.common.page_element import (
+    PageElement,
 )
 from jkent.common.request import Request
 from jkent.common.response import ArchiveResponse, Response
@@ -94,7 +94,7 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
 
 def _parse_html(
     response: Response, encoding: str = "utf-8", *, text: str | None = None
-) -> LxmlPageElement:
+) -> PageElement:
     """Parse HTML from response content (or preprocessed text).
 
     Passes raw bytes to lxml so it can auto-detect encoding from the HTML
@@ -113,7 +113,7 @@ def _parse_html(
             decoded with the @step encoding before repair.
 
     Returns:
-        LxmlPageElement parsed from response content.
+        PageElement parsed from response content.
 
     Raises:
         ScraperAssumptionException: If HTML parsing fails.
@@ -125,7 +125,7 @@ def _parse_html(
         # 3. <meta charset="..."> or <meta http-equiv="Content-Type" content="...">
         # 4. Falls back to default if nothing found
         source = text if text is not None else response.content
-        return LxmlPageElement(lxml_html.fromstring(source), response.url)
+        return PageElement(lxml_html.fromstring(source), response.url)
     except Exception as e:
         raise ScraperAssumptionException(
             f"Failed to parse HTML: {e}",
@@ -186,7 +186,7 @@ def _parse_page_element(
         ScraperAssumptionException: If HTML parsing fails.
     """
     try:
-        # Parse HTML straight into a LxmlPageElement (the count-validated
+        # Parse HTML straight into a PageElement (the count-validated
         # PageElement — no separate wrapper object).
         page_element = _parse_html(response, encoding, text=text)
 
@@ -365,13 +365,13 @@ def _inject_json_content(ctx: InjectionContext) -> Any:
 
 @register_injector("lxml_tree")
 def _inject_lxml_tree(ctx: InjectionContext) -> Any:
-    """Response content parsed as LxmlPageElement"""
+    """Response content parsed as PageElement"""
     return _parse_html(ctx.response, ctx.encoding, text=ctx.document)
 
 
 @register_injector("page")
 def _inject_page(ctx: InjectionContext) -> Any:
-    """Response content parsed as PageElement (LxmlPageElement with
+    """Response content parsed as PageElement (PageElement with
     observer)"""
     page_element, observer = _parse_page_element(
         ctx.response, ctx.encoding, text=ctx.document
@@ -508,7 +508,7 @@ def step(
     Example::
 
         @step
-        def parse_page(self, lxml_tree: LxmlPageElement, response: Response):
+        def parse_page(self, lxml_tree: PageElement, response: Response):
             # lxml_tree and response are automatically injected
             cases = lxml_tree.checked_xpath("//div[@class='case']", "cases")
             for case in cases:

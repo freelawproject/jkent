@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pytest
 from pydantic import BaseModel
 
@@ -15,29 +13,26 @@ class _Holder(BaseModel):
 
 
 def test_base_selector_cannot_be_constructed():
-    with pytest.raises(TypeError, match="grammar"):
-        Selector("x")
-
-
-def test_grammarless_subclass_cannot_be_constructed():
-    @dataclass(frozen=True)
-    class Intermediate(Selector):
-        pass
-
-    with pytest.raises(TypeError, match="grammar"):
-        Intermediate("x")
+    # Abstract: a selector without a grammar has no meaning downstream.
+    with pytest.raises(TypeError):
+        Selector("x")  # pyrefly: ignore[bad-instantiation]
 
 
 @pytest.mark.parametrize(
     ("grammar", "expected_class"), [("css", CSS), ("xpath", XPath)]
 )
-def test_of_builds_the_registered_grammar(
+def test_of_builds_the_named_grammar(
     grammar: str, expected_class: type[Selector]
 ):
     selector = Selector.of("x", grammar)
 
     assert type(selector) is expected_class
     assert selector.grammar == grammar
+
+
+def test_of_rejects_an_unknown_grammar():
+    with pytest.raises(ValueError, match="unknown selector grammar"):
+        Selector.of("x", "jsonpath")
 
 
 @pytest.mark.parametrize("selector", [CSS("div.x"), XPath("//div")])

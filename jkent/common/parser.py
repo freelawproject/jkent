@@ -18,7 +18,7 @@ from lxml import html as lxml_html
 from pydantic import BaseModel
 
 from jkent.common.deferred_validation import DeferredValidation
-from jkent.common.lxml_page_element import LxmlPageElement
+from jkent.common.page_element import PageElement
 
 if TYPE_CHECKING:
     from jkent.common.page_element import PageElement
@@ -51,7 +51,7 @@ class JKentParser(ABC, Generic[T]):
             url: Base URL for resolving relative links. Optional.
         """
         element = lxml_html.fromstring(html)
-        page = LxmlPageElement(element, url)
+        page = PageElement(element, url)
         return cls()(page)
 
     @classmethod
