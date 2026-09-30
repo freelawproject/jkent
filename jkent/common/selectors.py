@@ -12,9 +12,13 @@ A selector always states its grammar: there is no bare-string form and no
 inference. :meth:`Selector.of` exists only to rebuild one from a stored
 ``(value, grammar)`` pair.
 
-A leaf: it imports nothing from jkent. The via models, the page-element
-layer, the drivers, and the authoring facade (``jkent.data_types``) all sit
-above it.
+A leaf: it imports nothing from jkent. It never names the parse-tree
+implementation either — :meth:`Selector.query` takes an
+:class:`ElementQuery`, the structural protocol a page element satisfies, so
+the lxml backing stays behind :class:`~jkent.common.page_element.PageElement`
+rather than surfacing in a selector's signature. The via models, the
+page-element layer, the drivers, and the authoring facade
+(``jkent.data_types``) all sit above it.
 
 :class:`Selector` also carries its own pydantic schema, so a model that holds
 one (a via) serializes it as ``{"value": …, "grammar": …}`` and validates it
@@ -28,7 +32,7 @@ import functools
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeAlias
 
 from lxml import etree
 from pydantic_core import core_schema
@@ -37,14 +41,60 @@ from typing_extensions import override
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from lxml.html import HtmlElement
     from pydantic import GetCoreSchemaHandler
 
-__all__ = ["CSS", "Grammar", "Selector", "XPath"]
+__all__ = ["CSS", "ElementQuery", "Grammar", "Selector", "XPath"]
 
 #: The selector grammars jkent supports. Stored verbatim in a serialized
 #: selector and in ``HTMLStructuralAssumptionException.selector_type``.
 Grammar = Literal["css", "xpath"]
+
+#: What running a selector against an element yields: a node-set of elements
+#: and/or strings (attributes, text nodes), or a bare scalar for an XPath
+#: like ``count()``/``string()``. ``Sequence`` rather than ``list`` so an
+#: implementer's ``list[ConcreteElement]`` satisfies it — ``list`` is
+#: invariant, ``Sequence`` is covariant.
+QueryResult: TypeAlias = "Sequence[ElementQuery | str] | str | float | bool"
+
+
+class ElementQuery(Protocol):
+    """The raw query surface :meth:`Selector.query` dispatches into.
+
+    One method per grammar, named for it. Structural rather than nominal so
+    this module stays a leaf: a
+    :class:`~jkent.common.page_element.PageElement` satisfies it, and so does
+    the lxml element it wraps, without either being named here.
+
+    Self-referential on purpose: a query yields things you can query again,
+    stated without naming a concrete element type. That is as far as this
+    protocol goes, though — it is a *query* surface, not an element one, so
+    it carries no ``text_content``/``get``/``tag``. Reading a result means
+    narrowing it to a concrete type, which is what
+    ``PageElement._checked`` does before wrapping each node.
+
+    Both methods take their expression positionally: lxml names the
+    parameter ``_path`` and accepts it positional-only, so a keyword-capable
+    protocol parameter would exclude ``HtmlElement`` from satisfying this.
+
+    These are the *unchecked* queries — no count validation, no observer
+    record, results as the parser hands them back. Scrapers go through
+    ``PageElement.query``/``checked_xpath``; only a Selector calls these.
+    """
+
+    def cssselect(self, expr: str, /) -> Sequence[ElementQuery]:
+        """Every element matching the CSS selector ``expr``.
+
+        CSS can only select elements, so this never yields strings.
+        """
+        ...
+
+    def xpath(self, expr: str, /) -> QueryResult:
+        """``expr`` evaluated: a node-set, or a scalar for ``count()`` etc.
+
+        The node-set is mixed: ``//a`` yields elements, ``//a/@href`` and
+        ``//a/text()`` yield strings.
+        """
+        ...
 
 
 @dataclass(frozen=True)
@@ -97,7 +147,7 @@ class Selector(ABC):
         """
 
     @abstractmethod
-    def query(self, element: HtmlElement) -> list[Any] | str | float | bool:
+    def query(self, element: ElementQuery) -> QueryResult:
         """Run this selector against an lxml element, in its own grammar.
 
         A node-set comes back as a list; a scalar XPath
@@ -213,7 +263,7 @@ class CSS(Selector):
         return CSS(f":nth-match({self.value}, {position})")
 
     @override
-    def query(self, element: HtmlElement) -> list[Any] | str | float | bool:
+    def query(self, element: ElementQuery) -> QueryResult:
         return element.cssselect(self.value)
 
     @override
@@ -356,7 +406,7 @@ class XPath(Selector):
         return XPath(f"({self.value})[{position}]")
 
     @override
-    def query(self, element: HtmlElement) -> list[Any] | str | float | bool:
+    def query(self, element: ElementQuery) -> QueryResult:
         return element.xpath(self.value)
 
     @override

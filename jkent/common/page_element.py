@@ -32,7 +32,7 @@ obtain them.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeGuard, cast, overload
 from urllib.parse import urljoin
@@ -46,7 +46,13 @@ from jkent.common.exceptions import (
 )
 from jkent.common.request import HttpMethod, HTTPRequestParams, Request
 from jkent.common.selector_observer import get_active_observer
-from jkent.common.selectors import CSS, Selector, XPath
+from jkent.common.selectors import (
+    CSS,
+    ElementQuery,
+    QueryResult,
+    Selector,
+    XPath,
+)
 
 # ViaLink and ViaFormSubmit are defined in via so that Request.via can be
 # typed directly. They are imported here because the page-element API is
@@ -583,7 +589,7 @@ class PageElement:
         match count is the count the bounds were checked against.
         """
         try:
-            raw = selector.query(self._element)
+            raw = selector.query(self)
         except Exception as e:
             # A selector that doesn't parse is a bug in the scraper, not
             # a change in the website — never report it as structural.
@@ -1031,6 +1037,27 @@ class PageElement:
         )
 
         return links
+
+    def cssselect(self, expr: str, /) -> Sequence[ElementQuery]:
+        """Every element matching the CSS selector ``expr``, unchecked.
+
+        Half of the :class:`~jkent.common.selectors.ElementQuery` surface a
+        :class:`~jkent.common.selectors.CSS` selector dispatches into. Raw:
+        no count validation and no observer record, so scrapers want
+        ``query``/``checked_css`` instead. Explicit rather than left to
+        ``__getattr__`` below, which would type the result as ``Any``.
+        """
+        return self._element.cssselect(expr)
+
+    def xpath(self, expr: str, /) -> QueryResult:
+        """``expr`` evaluated against this element, unchecked.
+
+        The other half of :class:`~jkent.common.selectors.ElementQuery`. A
+        node-set comes back as a list; a scalar XPath (``count()``,
+        ``string()``, …) as a bare value. Same caveat as :meth:`cssselect`:
+        raw, so scrapers want ``query_strings``/``checked_xpath``.
+        """
+        return self._element.xpath(expr)
 
     def __getattr__(self, name: str) -> Any:
         """Delegate all other attributes to the wrapped element.

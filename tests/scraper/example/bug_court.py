@@ -280,9 +280,14 @@ def _get_text(element: HtmlElement | PageElement, xpath: str) -> str:
     Returns:
         The text content, or empty string if not found.
     """
+    # PageElement.xpath is the raw passthrough, so its result is the honest
+    # lxml union: a node-set, or a scalar for count()/string(). Narrow to the
+    # element case this helper is written for.
     results = element.xpath(xpath)
-    if results:
-        return results[0].text_content().strip()
+    if isinstance(results, list) and results:
+        first = results[0]
+        if isinstance(first, HtmlElement):
+            return first.text_content().strip()
     return ""
 
 
