@@ -1,4 +1,4 @@
-"""Tests for LxmlPageElement implementation.
+"""Tests for PageElement implementation.
 
 Tests checked-query behavior, observer integration, form and link handling.
 """
@@ -11,18 +11,15 @@ from lxml import html
 from jkent.common.exceptions import (
     HTMLStructuralAssumptionException,
 )
-from jkent.common.lxml_page_element import (
-    LxmlPageElement,
-)
-from jkent.common.page_element import ViaLink
+from jkent.common.page_element import PageElement, ViaLink
 from jkent.common.selector_observer import (
     SelectorObserver,
 )
-from jkent.data_types import Selector
+from jkent.data_types import CSS, Selector, XPath
 
 
 @pytest.fixture
-def simple_page() -> LxmlPageElement:
+def simple_page() -> PageElement:
     """Simple HTML page for testing."""
     html_content = """
     <html>
@@ -38,11 +35,11 @@ def simple_page() -> LxmlPageElement:
     </html>
     """
     doc = html.fromstring(html_content)
-    return LxmlPageElement(doc, "https://example.com/page")
+    return PageElement(doc, "https://example.com/page")
 
 
 @pytest.fixture
-def form_page() -> LxmlPageElement:
+def form_page() -> PageElement:
     """HTML page with a form for testing."""
     html_content = """
     <html>
@@ -62,11 +59,11 @@ def form_page() -> LxmlPageElement:
     </html>
     """
     doc = html.fromstring(html_content)
-    return LxmlPageElement(doc, "https://example.com/")
+    return PageElement(doc, "https://example.com/")
 
 
 @pytest.fixture
-def links_page() -> LxmlPageElement:
+def links_page() -> PageElement:
     """HTML page with links for testing."""
     html_content = """
     <html>
@@ -83,31 +80,31 @@ def links_page() -> LxmlPageElement:
     </html>
     """
     doc = html.fromstring(html_content)
-    return LxmlPageElement(doc, "https://example.com/")
+    return PageElement(doc, "https://example.com/")
 
 
-def test_query_xpath_delegation(simple_page: LxmlPageElement):
+def test_query_xpath_delegation(simple_page: PageElement):
     """query with an XPath selector should delegate to checked_xpath."""
     rows = simple_page.query(Selector.XPath("//tr[@class='row']"), "rows")
 
     assert len(rows) == 2
-    # Results should be wrapped in LxmlPageElement
-    assert all(isinstance(row, LxmlPageElement) for row in rows)
+    # Results should be wrapped in PageElement
+    assert all(isinstance(row, PageElement) for row in rows)
 
 
-def test_query_xpath_returns_lxml_page_elements(simple_page: LxmlPageElement):
-    """query should return LxmlPageElement instances."""
+def test_query_xpath_returns_page_elements(simple_page: PageElement):
+    """query should return PageElement instances."""
     rows = simple_page.query(Selector.XPath("//tr"), "rows", min_count=2)
 
-    # Each result should be LxmlPageElement
+    # Each result should be PageElement
     for row in rows:
-        assert isinstance(row, LxmlPageElement)
+        assert isinstance(row, PageElement)
         # Should be able to query nested elements
         cells = row.query(Selector.XPath(".//td"), "cells")
         assert len(cells) == 2
 
 
-def test_query_xpath_strings(simple_page: LxmlPageElement):
+def test_query_xpath_strings(simple_page: PageElement):
     """query_strings should return string values."""
     cell_texts = simple_page.query_strings(
         Selector.XPath("//td/text()"), "cell texts", min_count=4, max_count=4
@@ -127,7 +124,7 @@ def test_query_strings_scalar_counts_as_one_result():
     the max_count check. It must count as a single result of value "10".
     """
     markup = "<table class='t'></table>" * 10 + "<td class='c'>x</td>"
-    cell = LxmlPageElement(html.fromstring(markup)).query(
+    cell = PageElement(html.fromstring(markup)).query(
         Selector.XPath("//td[@class='c']"), "cell", min_count=1
     )[0]
 
@@ -148,7 +145,7 @@ def test_query_strings_scalar_number_and_bool_count_as_one():
     single result the isinstance(str) filter drops — actual_count=0 — rather
     than iterating a non-iterable or miscounting.
     """
-    page = LxmlPageElement(html.fromstring("<div><p>a</p><p>b</p></div>"))
+    page = PageElement(html.fromstring("<div><p>a</p><p>b</p></div>"))
 
     # count(...) returns a float; boolean(...) returns a bool. Neither is a
     # str, so with type=str both filter down to zero string results.
@@ -161,7 +158,7 @@ def test_query_strings_scalar_number_and_bool_count_as_one():
         )
 
 
-def test_inner_html(simple_page: LxmlPageElement):
+def test_inner_html(simple_page: PageElement):
     """inner_html should return inner HTML content."""
     div = simple_page.query(Selector.XPath("//div[@id='main']"), "main div")[0]
 
@@ -174,7 +171,7 @@ def test_inner_html(simple_page: LxmlPageElement):
 def test_inner_html_preserves_leading_text():
     """inner_html keeps text that precedes the first child element."""
     doc = html.fromstring("<td>Case No. <a href='/c/1'>123</a></td>")
-    cell = LxmlPageElement(doc, "https://example.com/")
+    cell = PageElement(doc, "https://example.com/")
 
     inner = cell.inner_html()
 
@@ -190,7 +187,7 @@ def test_child_queries_record_to_active_observer():
     element returned by query_xpath must still be captured.
     """
     doc = html.fromstring("<div><section><p>Test</p></section></div>")
-    page = LxmlPageElement(doc, "https://example.com/")
+    page = PageElement(doc, "https://example.com/")
 
     with SelectorObserver() as observer:
         sections = page.query(Selector.XPath("//section"), "sections")
@@ -203,7 +200,7 @@ def test_child_queries_record_to_active_observer():
     assert [c.selector for c in observer.queries[0].children] == [".//p"]
 
 
-def test_find_form_by_xpath(form_page: LxmlPageElement):
+def test_find_form_by_xpath(form_page: PageElement):
     """find_form should find form by XPath selector."""
     form = form_page.find_form(
         Selector.XPath("//form[@id='search']"), "search form"
@@ -215,7 +212,7 @@ def test_find_form_by_xpath(form_page: LxmlPageElement):
     assert len(form.fields) == 4  # query, token, category, description
 
 
-def test_find_form_by_css(form_page: LxmlPageElement):
+def test_find_form_by_css(form_page: PageElement):
     """find_form should find form by CSS selector."""
     form = form_page.find_form(Selector.CSS("form#search"), "search form")
 
@@ -223,7 +220,7 @@ def test_find_form_by_css(form_page: LxmlPageElement):
     assert form.method == "POST"
 
 
-def test_form_fields_extraction(form_page: LxmlPageElement):
+def test_form_fields_extraction(form_page: PageElement):
     """find_form should extract all form fields correctly."""
     form = form_page.find_form(Selector.XPath("//form"), "form")
 
@@ -253,30 +250,30 @@ def test_form_fields_extraction(form_page: LxmlPageElement):
     assert desc_field.value == "Default text"
 
 
-def test_form_action_resolution(form_page: LxmlPageElement):
+def test_form_action_resolution(form_page: PageElement):
     """find_form should resolve relative action URLs."""
     # Absolute URL in action
     html_content = (
         '<form action="https://other.com/submit"><input name="test"/></form>'
     )
     doc = html.fromstring(html_content)
-    page = LxmlPageElement(doc, "https://example.com/")
+    page = PageElement(doc, "https://example.com/")
 
     form = page.find_form(Selector.XPath("//form"), "form")
     assert form.action == "https://other.com/submit"
 
 
-def test_form_no_action_uses_base_url(form_page: LxmlPageElement):
+def test_form_no_action_uses_base_url(form_page: PageElement):
     """find_form should use base URL when form has no action."""
     html_content = '<form><input name="test"/></form>'
     doc = html.fromstring(html_content)
-    page = LxmlPageElement(doc, "https://example.com/page")
+    page = PageElement(doc, "https://example.com/page")
 
     form = page.find_form(Selector.XPath("//form"), "form")
     assert form.action == "https://example.com/page"
 
 
-def test_find_links_by_xpath(links_page: LxmlPageElement):
+def test_find_links_by_xpath(links_page: PageElement):
     """find_links should find links by XPath selector."""
     links = links_page.find_links(
         Selector.XPath("//a[@class='nav-link']"), "nav links"
@@ -289,7 +286,7 @@ def test_find_links_by_xpath(links_page: LxmlPageElement):
     assert links[1].text == "Page 2"
 
 
-def test_find_links_by_css(links_page: LxmlPageElement):
+def test_find_links_by_css(links_page: PageElement):
     """find_links should find links by CSS selector."""
     links = links_page.find_links(Selector.CSS("a.nav-link"), "nav links")
 
@@ -297,7 +294,7 @@ def test_find_links_by_css(links_page: LxmlPageElement):
     assert links[0].url == "https://example.com/page1"
 
 
-def test_find_links_resolves_urls(links_page: LxmlPageElement):
+def test_find_links_resolves_urls(links_page: PageElement):
     """find_links should resolve relative URLs."""
     links = links_page.find_links(
         Selector.XPath("//a[@class='nav-link']"), "nav links"
@@ -308,7 +305,7 @@ def test_find_links_resolves_urls(links_page: LxmlPageElement):
     assert links[1].url == "https://example.com/page2"
 
 
-def test_find_links_skips_links_without_href(links_page: LxmlPageElement):
+def test_find_links_skips_links_without_href(links_page: PageElement):
     """find_links should skip <a> elements without href."""
     all_links = links_page.find_links(
         Selector.XPath(".//a[@href]"), "all links", min_count=0
@@ -350,7 +347,7 @@ def test_find_links_throws_error_for_missing_hrefs():
         )
 
 
-def test_find_links_returns_all_links(links_page: LxmlPageElement):
+def test_find_links_returns_all_links(links_page: PageElement):
     """find_links with .//a[@href] should return all linked <a> elements."""
     all_links = links_page.find_links(
         Selector.XPath(".//a[@href]"), "all links", min_count=0
@@ -363,7 +360,7 @@ def test_find_links_returns_all_links(links_page: LxmlPageElement):
     assert "https://external.com/page3" in urls
 
 
-def test_link_follow_creates_navigating_request(links_page: LxmlPageElement):
+def test_link_follow_creates_navigating_request(links_page: PageElement):
     """Link.follow() should create a Request with ViaLink."""
     links = links_page.find_links(
         Selector.XPath("//a[@class='nav-link']"), "nav links"
@@ -379,7 +376,7 @@ def test_link_follow_creates_navigating_request(links_page: LxmlPageElement):
     assert request.step == "testing"
 
 
-def test_find_form_raises_on_no_match(simple_page: LxmlPageElement):
+def test_find_form_raises_on_no_match(simple_page: PageElement):
     """find_form should raise if no form matches."""
     with pytest.raises(HTMLStructuralAssumptionException):
         simple_page.find_form(
@@ -389,7 +386,7 @@ def test_find_form_raises_on_no_match(simple_page: LxmlPageElement):
 
 def _page_from_html(html_content: str, base_url: str = "https://example.com/"):
     doc = html.fromstring(html_content)
-    return LxmlPageElement(doc, base_url)
+    return PageElement(doc, base_url)
 
 
 def test_unchecked_checkbox_with_value_is_omitted():
@@ -582,7 +579,7 @@ def test_only_first_submit_button_is_submitted():
 
 
 def test_submit_selector_activates_input_submit_by_id():
-    """submit_selector='#id' must activate the matching <input type=submit>.
+    """submit_selector=CSS("#id") must activate the matching <input type=submit>.
 
     The control's ``id`` has to be captured for input submits (not just
     <button>s) or ``_activated_submit`` can never match and silently falls
@@ -605,7 +602,7 @@ def test_submit_selector_activates_input_submit_by_id():
     }
     assert submit_ids == {"btn_search", "btn_clear"}
 
-    request = form.submit(submit_selector="#btn_clear", step="test")
+    request = form.submit(submit_selector=CSS("#btn_clear"), step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["q"] == "bees"
@@ -629,7 +626,9 @@ def test_submit_selector_resolves_input_submit_by_value_css():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(submit_selector='input[value="clear"]', step="test")
+    request = form.submit(
+        submit_selector=CSS('input[value="clear"]'), step="test"
+    )
     data = request.request.data
     assert isinstance(data, dict)
     assert data["action"] == "clear"
@@ -647,7 +646,7 @@ def test_submit_selector_resolves_input_submit_by_value_xpath():
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
     request = form.submit(
-        submit_selector='.//input[@value="clear"]', step="test"
+        submit_selector=XPath('.//input[@value="clear"]'), step="test"
     )
     data = request.request.data
     assert isinstance(data, dict)
@@ -670,7 +669,7 @@ def test_submit_selector_by_name_excludes_other_button():
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(submit_selector='[name="clear"]', step="test")
+    request = form.submit(submit_selector=CSS('[name="clear"]'), step="test")
     data = request.request.data
     assert isinstance(data, dict)
     assert data["clear"] == "Clear"
@@ -690,7 +689,7 @@ def test_submit_selector_unresolvable_falls_back_to_first():
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
     request = form.submit(
-        submit_selector="(.//input[@type='submit'])[2]", step="test"
+        submit_selector=XPath("(.//input[@type='submit'])[2]"), step="test"
     )
     data = request.request.data
     assert isinstance(data, dict)
@@ -789,7 +788,7 @@ def test_select_multiple_nothing_selected_submits_nothing():
     assert "court" not in data
 
 
-def test_query_count_validation(simple_page: LxmlPageElement):
+def test_query_count_validation(simple_page: PageElement):
     """Query methods should validate count constraints."""
     # Too few
     with pytest.raises(HTMLStructuralAssumptionException):
@@ -802,7 +801,7 @@ def test_query_count_validation(simple_page: LxmlPageElement):
         )
 
 
-def test_link_selector_includes_position(links_page: LxmlPageElement):
+def test_link_selector_includes_position(links_page: PageElement):
     """find_links should create positional selectors for each link."""
     links = links_page.find_links(
         Selector.XPath("//a[@class='nav-link']"), "nav links"
@@ -814,7 +813,7 @@ def test_link_selector_includes_position(links_page: LxmlPageElement):
 
 
 def test_link_selector_xpath_uses_positional_predicate(
-    links_page: LxmlPageElement,
+    links_page: PageElement,
 ):
     """XPath-found links get XPath positional predicate syntax."""
     links = links_page.find_links(
@@ -825,7 +824,7 @@ def test_link_selector_xpath_uses_positional_predicate(
     assert links[1].selector.value == "(//a[@class='nav-link'])[2]"
 
 
-def test_link_selector_css_uses_nth_match(links_page: LxmlPageElement):
+def test_link_selector_css_uses_nth_match(links_page: PageElement):
     """CSS-found links get Playwright :nth-match syntax.
 
     Wrapping a CSS selector in an XPath positional predicate produces a

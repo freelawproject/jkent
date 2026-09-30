@@ -13,18 +13,18 @@ from jkent.common.exceptions import (
     HTMLStructuralAssumptionException,
     ScraperConfigError,
 )
-from jkent.common.lxml_page_element import LxmlPageElement
+from jkent.common.page_element import PageElement
 
 
 @pytest.fixture
-def tree() -> LxmlPageElement:
-    return LxmlPageElement(
+def tree() -> PageElement:
+    return PageElement(
         html.fromstring("<div><p>x</p></div>"),
         "https://example.com/page",
     )
 
 
-def test_invalid_xpath_raises_scraper_config_error(tree: LxmlPageElement):
+def test_invalid_xpath_raises_scraper_config_error(tree: PageElement):
     """A broken XPath surfaces as a config error naming the selector.
 
     It used to escape as a raw lxml XPathEvalError with no description
@@ -35,7 +35,7 @@ def test_invalid_xpath_raises_scraper_config_error(tree: LxmlPageElement):
     assert "//p[" in str(exc_info.value)
 
 
-def test_invalid_css_raises_scraper_config_error(tree: LxmlPageElement):
+def test_invalid_css_raises_scraper_config_error(tree: PageElement):
     """A broken CSS selector surfaces as a config error.
 
     It used to raise HTMLStructuralAssumptionException with
@@ -47,11 +47,11 @@ def test_invalid_css_raises_scraper_config_error(tree: LxmlPageElement):
     assert "p:::bad" in str(exc_info.value)
 
 
-def test_valid_xpath_count_mismatch_is_still_structural(tree: LxmlPageElement):
+def test_valid_xpath_count_mismatch_is_still_structural(tree: PageElement):
     with pytest.raises(HTMLStructuralAssumptionException):
         tree.checked_xpath("//span", "missing spans")
 
 
-def test_valid_css_count_mismatch_is_still_structural(tree: LxmlPageElement):
+def test_valid_css_count_mismatch_is_still_structural(tree: PageElement):
     with pytest.raises(HTMLStructuralAssumptionException):
         tree.checked_css("span.missing", "missing spans")

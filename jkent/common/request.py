@@ -726,8 +726,10 @@ class Request:
         )
         new_via = self.via
         if isinstance(new_via, ViaFormSubmit):
-            new_via = replace(
-                new_via, field_data=substitute(new_via.field_data)
+            # A via is a pydantic model, not a dataclass — model_copy is its
+            # frozen-safe `replace`.
+            new_via = new_via.model_copy(
+                update={"field_data": substitute(new_via.field_data)}
             )
 
         return replace(self, request=new_params, via=new_via)

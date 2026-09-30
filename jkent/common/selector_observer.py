@@ -2,7 +2,7 @@
 
 Records XPath/CSS queries for debugging. Can be used either by direct
 injection into a PageElement, or as a context manager whose active instance
-LxmlPageElement picks up via ``get_active_observer()``.
+PageElement picks up via ``get_active_observer()``.
 
 The observer records query trees, deduplicates repeated selectors, captures
 sample content, and provides human-readable and JSON output formats.
@@ -18,18 +18,20 @@ from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 from lxml.html import HtmlElement
 from pydantic import Field, TypeAdapter
 
+from jkent.common.selectors import Selector
+
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from jkent.common.lxml_page_element import LxmlPageElement
+    from jkent.common.page_element import PageElement
 
     # A query yields either text/attribute strings or elements — never a
     # mix within one query. Element queries arrive either wrapped
-    # (LxmlPageElement, from checked_xpath) or raw (HtmlElement, from
+    # (PageElement, from checked_xpath) or raw (HtmlElement, from
     # checked_css), so the element side is the union of both. Sequence (not
     # list) keeps the element side covariant, so a list[HtmlElement] from
     # cssselect is accepted.
-    Element: TypeAlias = "LxmlPageElement | HtmlElement"
+    Element: TypeAlias = "PageElement | HtmlElement"
     QueryResults: TypeAlias = "Sequence[str] | Sequence[Element]"
     # The per-item view of QueryResults: a single sequence whose elements
     # may each be a str or an element. Slicing a QueryResults union yields
@@ -92,12 +94,12 @@ _QUERY_ADAPTER: TypeAdapter[SelectorQuery] = TypeAdapter(SelectorQuery)
 class SelectorObserver:
     """Observer that collects selector query information.
 
-    Used as a context manager; any LxmlPageElement queried inside the
+    Used as a context manager; any PageElement queried inside the
     ``with`` block picks the observer up via ``get_active_observer()`` and
     reports its queries to it::
 
         with SelectorObserver() as observer:
-            tree = LxmlPageElement(lxml_html.fromstring(content), url)
+            tree = PageElement(lxml_html.fromstring(content), url)
             rows = tree.checked_xpath("//tr", "table rows", min_count=1)
 
         print(observer.simple_tree())  # Human-readable tree
@@ -136,7 +138,7 @@ class SelectorObserver:
         self._tokens: list[contextvars.Token[SelectorObserver | None]] = []
 
     def __enter__(self) -> SelectorObserver:
-        """Activate this observer for any LxmlPageElement in this context."""
+        """Activate this observer for any PageElement in this context."""
         self._tokens.append(_active_observer.set(self))
         return self
 
@@ -247,7 +249,7 @@ class SelectorObserver:
         """Unwrap a result to the underlying HtmlElement.
 
         Args:
-            result: A query result: a string, a wrapped LxmlPageElement,
+            result: A query result: a string, a wrapped PageElement,
                 or a raw HtmlElement.
 
         Returns:
@@ -274,7 +276,7 @@ class SelectorObserver:
                 case str():
                     text = result
                 case _:
-                    # LxmlPageElement defines text_content() directly; a raw
+                    # PageElement defines text_content() directly; a raw
                     # HtmlElement also has it.
                     text = result.text_content()
 
@@ -409,36 +411,13 @@ class SelectorObserver:
             # Mixed types - can't compose
             return None
 
-        selector_type = selectors[0][0]
-
-        if selector_type == "xpath":
-            # Compose XPath selectors
-            # The first selector is the root (absolute), subsequent ones are relative
-            result = selectors[0][1]  # Root selector
-
-            for i in range(1, len(selectors)):
-                _, sel = selectors[i]
-                # Strip leading "./" or "." from relative selectors
-                if sel.startswith(".//"):
-                    # ".//tr" becomes "//tr" - descendant
-                    result += sel[1:]  # Keep the "//" part
-                elif sel.startswith("./"):
-                    # "./tr" becomes "/tr" - child
-                    result += sel[1:]
-                elif sel.startswith("."):
-                    # Rare case, just strip the dot
-                    result += sel[1:]
-                else:
-                    # Not relative - join with //
-                    result += "//" + sel
-
-            return result
-
-        elif selector_type == "css":
-            # Compose CSS selectors: join with a space (descendant combinator).
-            return " ".join(sel for _, sel in selectors)
-
-        return None
+        # Composition is grammar-specific, so it is the grammar's own method
+        # (see jkent.common.selectors); an unrecognized one composes to None.
+        try:
+            root = Selector.of(selectors[0][1], selectors[0][0])
+        except ValueError:
+            return None
+        return type(root).compose([sel for _, sel in selectors])
 
 
 def get_active_observer() -> SelectorObserver | None:
