@@ -15,7 +15,7 @@ class _Holder(BaseModel):
 def test_base_selector_cannot_be_constructed():
     # Abstract: a selector without a grammar has no meaning downstream.
     with pytest.raises(TypeError):
-        Selector("x")  # pyrefly: ignore[bad-instantiation]
+        Selector("x")  # type: ignore[abstract]  # pyrefly: ignore[bad-instantiation]
 
 
 @pytest.mark.parametrize(
