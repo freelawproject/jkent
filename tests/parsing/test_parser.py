@@ -134,3 +134,63 @@ def test_from_response_is_the_production_entry_point() -> None:
 def test_from_string_wraps_parse_failures_like_production() -> None:
     with pytest.raises(ScraperAssumptionException):
         TitleParser.from_string(b"")
+
+
+# --- Offline entry points run the parser a step would build -----------------
+
+
+class PrefixedTitleParser(TitleParser):
+    """Configured through its constructor, as many site parsers are."""
+
+    def __init__(self, prefix: str = "") -> None:
+        self.prefix = prefix
+
+    def __call__(
+        self, page: PageElement
+    ) -> list[DeferredValidation[CaseTitle]]:
+        return [
+            DeferredValidation(
+                CaseTitle, title=self.prefix + r.confirm().title
+            )
+            for r in super().__call__(page)
+        ]
+
+
+def test_entry_points_on_an_instance_use_its_configuration(
+    tmp_path: Path,
+) -> None:
+    parser = PrefixedTitleParser(prefix="No. ")
+    path = tmp_path / "page.html"
+    path.write_bytes(_HEADER_ONLY_UTF8)
+    headers = {"Content-Type": "text/html; charset=utf-8"}
+    response = Response(
+        status_code=200,
+        headers=headers,
+        content=_HEADER_ONLY_UTF8,
+        url="http://example.test/list",
+        request=None,  # type: ignore[arg-type]
+    )
+
+    expected = ["No. Acción v. Reacción"]
+    assert _titles(parser.from_string(_HEADER_ONLY_UTF8, headers=headers)) == (
+        expected
+    )
+    assert _titles(parser.from_file(path, headers=headers)) == expected
+    assert _titles(parser.from_response(response)) == expected
+
+
+def test_entry_points_on_the_class_use_a_default_instance() -> None:
+    assert _titles(PrefixedTitleParser.from_string(_HTML)) == [
+        "Ant v. Bee",
+        "Cricket v. Dragonfly",
+    ]
+
+
+def test_class_entry_point_needs_a_no_argument_constructor() -> None:
+    class NeedsPrefix(TitleParser):
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+
+    with pytest.raises(TypeError, match="prefix"):
+        NeedsPrefix.from_string(_HTML)
+    assert len(NeedsPrefix("x").from_string(_HTML)) == 2
