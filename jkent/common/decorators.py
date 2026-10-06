@@ -396,13 +396,11 @@ StepScraper = TypeVar("StepScraper", bound=BaseScraper[Any])
 def _resolve_yield(
     scraper_self: BaseScraper[Any], yielded: StepYield
 ) -> StepYield:
-    """Pass a yielded Request through :func:`inherit_step_metadata`.
-
-    ``inherit_step_metadata`` returns a ``Request``, which is the member of
-    the yield union we matched on, so the cast restores what the isinstance
-    narrowing established.
-    """
+    """Pass a yielded Request through :func:`inherit_step_metadata`."""
     if isinstance(yielded, Request):
+        # ``inherit_step_metadata`` returns a ``Request``, which is the member of
+        # the yield union we matched on, so the cast restores what the isinstance
+        # narrowing established.
         return cast("StepYield", inherit_step_metadata(scraper_self, yielded))
     return yielded
 
