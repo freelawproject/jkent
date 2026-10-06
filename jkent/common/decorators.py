@@ -77,8 +77,9 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
 
     Args:
         response: The HTTP response.
-        encoding: Fallback charset when neither the document nor the
-            ``Content-Type`` header declares one.
+        encoding: Last-resort charset, used only for bytes that no
+            declaration, no ``Content-Type`` header and not strict UTF-8
+            could decode.
 
     Returns:
         Parsed JSON data (dict, list, or other JSON types).
@@ -137,8 +138,9 @@ def _get_text(response: Response, encoding: str = "utf-8") -> str:
     """The response as text, for ``text`` injection and ``preprocess``.
 
     :meth:`Response.decode` — the same derivation as ``response.text`` —
-    with the step's ``encoding`` as the fallback when neither the document
-    nor the ``Content-Type`` header declares a charset.
+    with the step's ``encoding`` as the last resort, reached only when no
+    declaration, no ``Content-Type`` header and not strict UTF-8 decoded
+    the bytes. It never overrides a charset that did decode them.
 
     Raises:
         ScraperAssumptionException: If ``encoding`` names a codec Python
@@ -161,8 +163,9 @@ def _parse_page_element(
 
     Args:
         response: The HTTP response.
-        encoding: Fallback charset when neither the document nor the
-            ``Content-Type`` header declares one.
+        encoding: Last-resort charset, used only for bytes that no
+            declaration, no ``Content-Type`` header and not strict UTF-8
+            could decode.
         text: Already-decoded (typically ``preprocess``-repaired) document
             text to parse instead of the response bytes.
 
@@ -496,9 +499,13 @@ def step(
     Args:
         func: The scraper step method to decorate (when used without parens).
         priority: Priority hint for queue ordering (lower = higher priority).
-        encoding: Fallback charset for the ``text``, ``json_content``,
-            ``lxml_tree`` and ``page`` injections, used when neither the
-            document nor the ``Content-Type`` header declares one.
+        encoding: Last-resort charset for the ``text``, ``json_content``,
+            ``lxml_tree`` and ``page`` injections. Reached only for bytes
+            that no declaration, no ``Content-Type`` header and not strict
+            UTF-8 could decode, and then applied with ``errors="replace"``.
+            Pin it when a site serves a single-byte charset it does not
+            declare (or mislabels as UTF-8); it cannot override a charset
+            that already decoded the page.
         await_list: Optional list of wait conditions for Playwright driver
             (WaitForSelector, WaitForLoadState, WaitForURL, WaitForTimeout).
             HTTP driver ignores this parameter.

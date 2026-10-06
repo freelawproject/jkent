@@ -3,8 +3,9 @@
 Every row of the table is one set of bytes, one ``Content-Type``, and one
 ``@step(encoding=)``; every path that turns those bytes into text must agree
 on the word they spell. The rule (:func:`jkent.common.response.decode_text`):
-the document's own declaration, then the header charset, each decoded
-strictly and skipped on failure, then the step encoding with replacement.
+a BOM, then the header charset, then the markup declaration, then UTF-8,
+each decoded strictly and skipped on failure, then the step encoding with
+replacement.
 """
 
 from __future__ import annotations
@@ -143,14 +144,20 @@ _TABLE = {
         "utf-8",
         _ACCENTED,
     ),
-    "meta beats header": (
+    "meta when the header rejects the bytes": (
         _body(_CP1252, _META_1252),
         "text/html; charset=utf-8",
         "utf-8",
         _ACCENTED,
     ),
-    "meta http-equiv beats header": (
+    "meta http-equiv when the header rejects the bytes": (
         _body(_CP1252, _META_EQUIV_1252),
+        "text/html; charset=utf-8",
+        "utf-8",
+        _ACCENTED,
+    ),
+    "header beats meta when both decode": (
+        _body(_UTF8, _META_1252),
         "text/html; charset=utf-8",
         "utf-8",
         _ACCENTED,

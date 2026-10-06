@@ -6,11 +6,13 @@ against a response at runtime (``isinstance``), while a response only
 checking alone.
 
 This is also where response bytes become text. :func:`decode_text` is the
-one derivation, with one precedence: the document's own declaration (a
-BOM, an XML declaration, a ``<meta charset>``), then the HTTP
-``Content-Type`` charset, then a fallback. ``response.text`` and every
-``@step`` text injection — ``text``, ``lxml_tree``, ``page`` — read it, so
-they agree about the same bytes.
+one derivation, with one precedence — the WHATWG order, a BOM, then the
+HTTP ``Content-Type`` charset, then an XML declaration or ``<meta
+charset>`` — then strict UTF-8, then a fallback decoded with
+replacement. Everything before the fallback can reject the bytes and be
+skipped; the fallback cannot, so it is a last resort rather than an
+override. ``response.text`` and every ``@step`` text injection — ``text``,
+``lxml_tree``, ``page`` — read it, so they agree about the same bytes.
 """
 
 from __future__ import annotations
@@ -60,19 +62,22 @@ def header_charset(headers: Mapping[str, str]) -> str | None:
     return None
 
 
-def declared_charset(raw: bytes) -> str | None:
-    """The charset the document itself declares, if any.
-
-    A BOM wins outright (``utf-8-sig`` / ``utf-16`` consume it); otherwise
-    the first :data:`_SNIFF_LIMIT` bytes are scanned for an XML declaration
-    or a meta charset. A declared UTF-16 is read as UTF-8, as browsers do:
-    a document whose declaration can be found by an ASCII scan is not
-    UTF-16, whatever it says.
-    """
+def _bom_charset(raw: bytes) -> str | None:
+    """The charset a byte-order mark names (``utf-8-sig`` / ``utf-16`` consume it)."""
     if raw.startswith(codecs.BOM_UTF8):
         return "utf-8-sig"
     if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return "utf-16"
+    return None
+
+
+def _markup_charset(raw: bytes) -> str | None:
+    """The charset an XML declaration or meta charset names, if any.
+
+    Only the first :data:`_SNIFF_LIMIT` bytes are scanned. A declared UTF-16
+    is read as UTF-8, as browsers do: a document whose declaration can be
+    found by an ASCII scan is not UTF-16, whatever it says.
+    """
     match = _DOC_CHARSET.search(raw[:_SNIFF_LIMIT])
     if match is None:
         return None
@@ -82,15 +87,26 @@ def declared_charset(raw: bytes) -> str | None:
     return value or None
 
 
+def declared_charset(raw: bytes) -> str | None:
+    """The charset the document itself declares, if any.
+
+    A BOM wins outright; otherwise the first :data:`_SNIFF_LIMIT` bytes are
+    scanned for an XML declaration or a meta charset.
+    """
+    return _bom_charset(raw) or _markup_charset(raw)
+
+
 def utf8_document(text: str) -> bytes:
     """Encode an already-decoded document as UTF-8 that says it is UTF-8.
 
     A browser's DOM serialization keeps the page's own declaration, so
-    encoding it to UTF-8 leaves bytes that claim, say, windows-1252; and
-    since :func:`decode_text` trusts the document over the header, every
-    later read of those bytes would re-decode them wrongly. The declaration
-    :func:`declared_charset` would read is rewritten to ``utf-8``, as a
-    browser's "save page" does; nothing else in the document changes.
+    encoding it to UTF-8 leaves bytes that claim, say, windows-1252. A
+    stored snapshot's synthesized ``charset=utf-8`` header outranks that
+    claim, but a reader without the header — :meth:`JKentParser.from_file`,
+    a browser opening the saved page — would re-decode the bytes wrongly.
+    The declaration :func:`declared_charset` would read is rewritten to
+    ``utf-8``, as a browser's "save page" does; nothing else in the
+    document changes.
     """
     raw = text.encode("utf-8")
     match = _DOC_CHARSET.search(raw[:_SNIFF_LIMIT])
@@ -106,28 +122,42 @@ def utf8_document(text: str) -> bytes:
 def decode_text(
     content: bytes, headers: Mapping[str, str], fallback: str = "utf-8"
 ) -> str:
-    """Decode ``content`` by document declaration, then header, then ``fallback``.
+    """Decode ``content`` by BOM, header, markup, then UTF-8, then ``fallback``.
 
-    The declared and header charsets are each tried strictly and skipped
-    when Python does not know the codec or the bytes do not decode; only
-    ``fallback`` decodes with replacement, so undecodable bytes become
-    U+FFFD there and nowhere earlier. The document outranks the header, the
-    reverse of WHATWG order: a server sending a blanket
-    ``charset=iso-8859-1`` over a page that correctly declares UTF-8 is the
-    more common misconfiguration.
+    The first three follow the WHATWG encoding sniffing order: a BOM, then
+    the ``Content-Type`` charset, then an XML declaration or meta charset.
+    Each, and then UTF-8, is tried strictly and skipped when Python does
+    not know the codec or the bytes do not decode; only ``fallback``
+    decodes with replacement, so undecodable bytes become U+FFFD there and
+    nowhere earlier.
+
+    The strict UTF-8 attempt runs before ``fallback`` because a failed
+    decode is only a useful signal for UTF-8: non-ASCII bytes have to form
+    valid multi-byte sequences, while a single-byte codec accepts almost
+    anything and turns a wrong guess into mojibake without an error. A
+    ``fallback`` pinned to cp1252 therefore never gets to garble a page
+    that declares no charset but is really UTF-8 — it only decodes bytes
+    that UTF-8 itself rejected.
 
     Raises:
         LookupError: ``fallback`` names a codec Python does not know.
     """
     if not content:
         return ""
-    for charset in (declared_charset(content), header_charset(headers)):
+    for charset in (
+        _bom_charset(content),
+        header_charset(headers),
+        _markup_charset(content),
+        "utf-8",
+    ):
         if charset is None:
             continue
         try:
             return content.decode(charset)
         except (LookupError, UnicodeDecodeError):
             continue
+    # Nothing that can validate the bytes accepted them: use the caller's
+    # guess, which decodes anything.
     return content.decode(fallback, errors="replace")
 
 
@@ -175,12 +205,14 @@ class Response:
             self.text = self.decode()
 
     def decode(self, fallback: str = "utf-8") -> str:
-        """The response as text, with ``fallback`` when nothing declares a charset.
+        """The response as text, with ``fallback`` for bytes nothing else decodes.
 
         Supplied :attr:`text` is returned as is. Otherwise the same
         derivation as :attr:`text`; the step wrapper calls it with the
         ``@step`` ``encoding`` so that knob can name a site's real charset
-        when neither the document nor the server does.
+        when neither the document nor the server does and the bytes are not
+        UTF-8. It is a last resort, not an override: a declaration, a
+        header or strict UTF-8 that decodes the bytes wins over it.
         """
         if self._text_supplied:
             return self.text
