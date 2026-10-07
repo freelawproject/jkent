@@ -22,13 +22,14 @@ class Response:
 
     Modeled after httpx.Response to provide a familiar interface.
     The driver creates Response objects and passes them to scraper
-    continuation methods.
+    step methods.
 
     Attributes:
         status_code: HTTP status code (200, 404, etc.).
         headers: Response headers.
         content: Raw response bytes.
-        text: Decoded response text.
+        text: Decoded response text. A ``@step`` with ``encoding=`` replaces
+            it with ``content`` decoded by that charset.
         url: Final URL after any redirects.
         request: The Request that triggered this response.
         observer: SelectorObserver recorded while a @step with ``page``
@@ -58,19 +59,28 @@ class ArchiveResponse(Response):
     Attributes:
         file_url: path where the downloaded file was stored.
             Injected into steps as ``local_filepath``.
+        file_size: Bytes written to ``file_url``, or None when this fetch
+            wrote nothing (an existing file was reused).
+        content_hash: SHA-256 hex digest of those bytes, None likewise.
     """
 
     file_url: str = ""
+    file_size: int | None = None
+    content_hash: str | None = None
 
 
 @dataclass
 class ArchiveDecision:
-    """Decision from an ArchiveHandler about whether to download a file.
+    """An archive handler's answer to whether a file should be downloaded.
+
+    Returned by
+    :meth:`~jkent.driver.archive_handler.AsyncStreamingArchiveHandler.should_download`.
 
     Attributes:
         download: If True, the driver should proceed with downloading.
         file_url: When download=False, the location of the existing file.
-            When download=True, may be empty (save() determines final path).
+            When download=True, may be empty (``save_stream`` determines the
+            final path).
     """
 
     download: bool

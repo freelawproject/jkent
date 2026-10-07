@@ -39,7 +39,7 @@ class StepMetadata:
 
     Attributes:
         priority: Priority hint for queue ordering (lower = higher priority).
-        encoding: Character encoding for text/HTML decoding.
+        encoding: Charset overriding the transport's decoded text, or None.
         await_list: List of wait conditions for Playwright driver (WaitForSelector, etc).
         auto_await_timeout: Optional timeout in milliseconds for autowait retry logic.
         rate_limit: Rate-limit lane for requests routed to this step, or
@@ -54,7 +54,7 @@ class StepMetadata:
     def __init__(
         self,
         priority: int = DEFAULT_PRIORITY,
-        encoding: str = "utf-8",
+        encoding: str | None = None,
         await_list: list[WaitCondition] | None = None,
         auto_await_timeout: int | None = None,
         rate_limit: str | None = None,

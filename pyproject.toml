@@ -51,7 +51,7 @@ operational = [
     "camoufox[geoip]>=0.4.0",
     # API only, never the SDK: jkent.observability records against the global
     # providers and emits nothing until the host installs an SDK (see
-    # jkent/observability/METRICS.md and EN_BANC_OTEL.md).
+    # jkent/observability/METRICS.md).
     "opentelemetry-api>=1.43.0",
 ]
 
@@ -123,6 +123,8 @@ lint.select = [
   # import-outside-top-level — imports must be eager (top of file);
   # targeted allowances use `# noqa: PLC0415` with a justification
   "PLC0415",
+  # unused-noqa — a suppression for a rule that isn't enabled is dead
+  "RUF100",
   # flake8-tidy-imports
   "TID",
   # pyupgrade
@@ -152,6 +154,12 @@ lint.ignore = [
 ]
 
 [tool.mypy]
+# Check what pyrefly (strict) and zuban check, so a suppression one of them
+# needs is visible to mypy too and a stale one fails the build.
+check_untyped_defs = true
+warn_unreachable = true
+warn_unused_ignores = true
+
 [[tool.mypy.overrides]]
 module = []
 ignore_missing_imports = true

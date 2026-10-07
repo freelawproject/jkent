@@ -15,7 +15,7 @@ index into the lane list the run recorded at start. Under test:
 """
 
 from collections.abc import Generator, Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 from pyrate_limiter import Duration, Rate
@@ -230,7 +230,7 @@ class TestNamedRateLimitsValidation:
         )
 
         with pytest.raises(ScraperConfigError, match="list of Rate"):
-            RateLimitTable.for_scraper(built)  # type: ignore[arg-type]
+            RateLimitTable.for_scraper(cast("type[BaseScraper[Any]]", built))
 
     def test_step_naming_an_undeclared_lane_is_rejected(self):
         # Was caught only at the first enqueue of a request to the step.
