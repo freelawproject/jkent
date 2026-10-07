@@ -21,6 +21,7 @@ parameters; it is the only way a scraper declares where a run starts.
 """
 
 import inspect
+import re
 from collections.abc import Callable, Generator
 from functools import wraps
 from typing import (
@@ -72,23 +73,43 @@ from jkent.common.wait_conditions import WaitCondition
 T = TypeVar("T")
 
 
-def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
-    """Parse JSON from response content.
+def _apply_encoding(response: Response, encoding: str | None) -> None:
+    """Replace ``response.text`` with ``content`` decoded as strict UTF-8,
+    else by the step's charset.
 
-    Args:
-        response: The HTTP response.
-        encoding: Last-resort charset, used only for bytes that no
-            declaration, no ``Content-Type`` header and not strict UTF-8
-            could decode.
+    UTF-8 goes first because a step can see a mix of UTF-8 pages and pages
+    in ``encoding``, and only UTF-8 reliably rejects bytes it doesn't fit.
 
-    Returns:
-        Parsed JSON data (dict, list, or other JSON types).
+    Raises:
+        ScraperAssumptionException: If the bytes are not UTF-8 and
+            ``encoding`` is not a codec Python knows, or the bytes are not
+            valid in it.
+    """
+    if encoding is None:
+        return
+    try:
+        response.text = response.content.decode("utf-8")
+        return
+    except UnicodeDecodeError:
+        pass
+    try:
+        response.text = response.content.decode(encoding)
+    except (LookupError, UnicodeDecodeError) as e:
+        raise ScraperAssumptionException(
+            f"Failed to decode response with @step encoding {encoding!r}: {e}",
+            request_url=response.url,
+            context={"encoding": encoding, "error": str(e)},
+        ) from e
+
+
+def _parse_json(response: Response) -> Any:
+    """Parse JSON from the response text.
 
     Raises:
         ScraperAssumptionException: If JSON parsing fails.
     """
     try:
-        return from_json(response.decode(fallback=encoding))
+        return from_json(response.text)
     except Exception as e:
         raise ScraperAssumptionException(
             f"Failed to parse JSON: {e}",
@@ -97,77 +118,42 @@ def _parse_json(response: Response, encoding: str = "utf-8") -> Any:
         ) from e
 
 
-def _parse_html(
-    response: Response, encoding: str = "utf-8", *, text: str | None = None
-) -> PageElement:
-    """Parse HTML from the response text (or preprocessed text).
+# lxml refuses a ``str`` that carries an encoding declaration.
+_XML_DECLARATION = re.compile(r"\A\ufeff?\s*<\?xml[^>]*\?>")
 
-    The document is decoded once, by :func:`_get_text` — the derivation
-    ``response.text`` uses, with ``encoding`` as the fallback — and handed
-    to lxml as UTF-8 with the encoding forced, so libxml2's own sniffing
-    (which ignores an XML declaration's encoding and defaults to
-    ISO-8859-1) never gets a vote.
+
+def _parse_html(response: Response, *, text: str | None = None) -> PageElement:
+    """Parse HTML from the response text (or preprocessed text).
 
     Args:
         response: The HTTP response.
-        encoding: The ``@step`` encoding: the charset used when neither the
-            document nor the ``Content-Type`` header declares one.
         text: Already-decoded (typically ``preprocess``-repaired) document
-            text to parse instead of the response's.
-
-    Returns:
-        PageElement parsed from response content.
+            text to parse instead of ``response.text``.
 
     Raises:
         ScraperAssumptionException: If HTML parsing fails.
     """
-    source = text if text is not None else _get_text(response, encoding)
+    source = response.text if text is None else text
     try:
-        parser = lxml_html.HTMLParser(encoding="utf-8")
-        tree = lxml_html.fromstring(source.encode("utf-8"), parser=parser)
+        tree = lxml_html.fromstring(_XML_DECLARATION.sub("", source, count=1))
         return PageElement(tree, response.url)
     except Exception as e:
         raise ScraperAssumptionException(
             f"Failed to parse HTML: {e}",
             request_url=response.url,
-            context={"encoding": encoding, "error": str(e)},
-        ) from e
-
-
-def _get_text(response: Response, encoding: str = "utf-8") -> str:
-    """The response as text, for ``text`` injection and ``preprocess``.
-
-    :meth:`Response.decode` — the same derivation as ``response.text`` —
-    with the step's ``encoding`` as the last resort, reached only when no
-    declaration, no ``Content-Type`` header and not strict UTF-8 decoded
-    the bytes. It never overrides a charset that did decode them.
-
-    Raises:
-        ScraperAssumptionException: If ``encoding`` names a codec Python
-            does not know.
-    """
-    try:
-        return response.decode(fallback=encoding)
-    except LookupError as e:
-        raise ScraperAssumptionException(
-            f"Unknown @step encoding {encoding!r}: {e}",
-            request_url=response.url,
-            context={"encoding": encoding, "error": str(e)},
+            context={"error": str(e)},
         ) from e
 
 
 def _parse_page_element(
-    response: Response, encoding: str = "utf-8", *, text: str | None = None
+    response: Response, *, text: str | None = None
 ) -> tuple[PageElement, SelectorObserver]:
     """Parse HTML and create PageElement with SelectorObserver.
 
     Args:
         response: The HTTP response.
-        encoding: Last-resort charset, used only for bytes that no
-            declaration, no ``Content-Type`` header and not strict UTF-8
-            could decode.
         text: Already-decoded (typically ``preprocess``-repaired) document
-            text to parse instead of the response bytes.
+            text to parse instead of ``response.text``.
 
     Returns:
         Tuple of (PageElement, SelectorObserver) for injection and debugging.
@@ -178,7 +164,7 @@ def _parse_page_element(
     try:
         # Parse HTML straight into a PageElement (the count-validated
         # PageElement — no separate wrapper object).
-        page_element = _parse_html(response, encoding, text=text)
+        page_element = _parse_html(response, text=text)
 
         # Observer to track selector queries. It records through the
         # get_active_observer() contextvar (activated per-resume in the step
@@ -200,15 +186,15 @@ def _parse_page_element(
         raise ScraperAssumptionException(
             f"Failed to parse HTML for page element: {e}",
             request_url=response.url,
-            context={"encoding": encoding, "error": str(e)},
+            context={"error": str(e)},
         ) from e
 
 
 class InjectionContext:
     """Everything an injector may read, for one execution of one step.
 
-    Holds the per-execution state the injectors share: the response, the
-    step's ``encoding``, and the ``preprocess`` repair hook. :attr:`document`
+    Holds the per-execution state the injectors share: the response and
+    the ``preprocess`` repair hook. :attr:`document`
     memoises the repaired text so ``text``, ``lxml_tree``, and ``page`` in the
     same signature all see one repair rather than three.
 
@@ -218,16 +204,14 @@ class InjectionContext:
     of one step would clobber each other.
     """
 
-    __slots__ = ("_document", "encoding", "observer", "preprocess", "response")
+    __slots__ = ("_document", "observer", "preprocess", "response")
 
     def __init__(
         self,
         response: Response,
-        encoding: str,
         preprocess: Callable[[str], str] | None,
     ) -> None:
         self.response = response
-        self.encoding = encoding
         self.preprocess = preprocess
         self.observer: SelectorObserver | None = None
         self._document: str | None = None
@@ -244,9 +228,7 @@ class InjectionContext:
             return None
         if self._document is None:
             try:
-                self._document = self.preprocess(
-                    _get_text(self.response, self.encoding)
-                )
+                self._document = self.preprocess(self.response.text)
             except ScraperAssumptionException:
                 raise
             except Exception as e:
@@ -351,13 +333,13 @@ def _inject_accumulated_data(ctx: InjectionContext) -> dict[str, Any]:
 @register_injector("json_content")
 def _inject_json_content(ctx: InjectionContext) -> Any:
     """Response content parsed as JSON"""
-    return _parse_json(ctx.response, ctx.encoding)
+    return _parse_json(ctx.response)
 
 
 @register_injector("lxml_tree")
 def _inject_lxml_tree(ctx: InjectionContext) -> PageElement:
     """Response content parsed as PageElement"""
-    return _parse_html(ctx.response, ctx.encoding, text=ctx.document)
+    return _parse_html(ctx.response, text=ctx.document)
 
 
 @register_injector("page")
@@ -365,7 +347,7 @@ def _inject_page(ctx: InjectionContext) -> PageElement:
     """Response content parsed as PageElement (PageElement with
     observer)"""
     page_element, observer = _parse_page_element(
-        ctx.response, ctx.encoding, text=ctx.document
+        ctx.response, text=ctx.document
     )
     ctx.observer = observer
     ctx.response.observer = observer
@@ -378,7 +360,7 @@ def _inject_text(ctx: InjectionContext) -> str:
     document = ctx.document
     if document is not None:
         return document
-    return _get_text(ctx.response, ctx.encoding)
+    return ctx.response.text
 
 
 @register_injector("local_filepath")
@@ -423,7 +405,7 @@ def step(
     func: StepFunction[StepScraper, StepYield],
     *,
     priority: int = ...,
-    encoding: str = ...,
+    encoding: str | None = ...,
     await_list: list[WaitCondition] | None = ...,
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
@@ -435,7 +417,7 @@ def step(
     func: None = None,
     *,
     priority: int = ...,
-    encoding: str = ...,
+    encoding: str | None = ...,
     await_list: list[WaitCondition] | None = ...,
     auto_await_timeout: int | None = ...,
     preprocess: Callable[[str], str] | None = ...,
@@ -448,7 +430,7 @@ def step(
     func: StepFunction[StepScraper, StepYield] | None = None,
     *,
     priority: int = DEFAULT_PRIORITY,
-    encoding: str = "utf-8",
+    encoding: str | None = None,
     await_list: list[WaitCondition] | None = None,
     auto_await_timeout: int | None = None,
     preprocess: Callable[[str], str] | None = None,
@@ -497,13 +479,10 @@ def step(
     Args:
         func: The scraper step method to decorate (when used without parens).
         priority: Priority hint for queue ordering (lower = higher priority).
-        encoding: Last-resort charset for the ``text``, ``json_content``,
-            ``lxml_tree`` and ``page`` injections. Reached only for bytes
-            that no declaration, no ``Content-Type`` header and not strict
-            UTF-8 could decode, and then applied with ``errors="replace"``.
-            Pin it when a site serves a single-byte charset it does not
-            declare (or mislabels as UTF-8); it cannot override a charset
-            that already decoded the page.
+        encoding: Charset that overrides the transport's decoding, for sites
+            whose bytes don't match the charset they declare: when set,
+            ``response.text`` is replaced with ``content`` strictly decoded
+            as UTF-8, else by it. Not for Playwright steps, whose content is the DOM as UTF-8.
         await_list: Optional list of wait conditions for Playwright driver
             (WaitForSelector, WaitForLoadState, WaitForURL, WaitForTimeout).
             HTTP driver ignores this parameter.
@@ -511,7 +490,7 @@ def step(
             When set, Playwright driver will retry the step if it raises
             HTMLStructuralAssumptionException. HTTP driver ignores this parameter.
         preprocess: Optional document repair hook, ``str -> str``. When set,
-            the response text (decoded with ``encoding``) is run through it
+            the response text is run through it
             once, and the repaired text feeds the ``text``, ``lxml_tree``,
             and ``page`` injections — so a step can fix malformed HTML (e.g.
             unclosed ``<style>`` tags swallowing the document) *before* lxml
@@ -568,7 +547,8 @@ def step(
                     name for name in registry_names if name in param_names
                 ]
                 resolved_against = registry_names
-            ctx = InjectionContext(response, encoding, preprocess)
+            _apply_encoding(response, encoding)
+            ctx = InjectionContext(response, preprocess)
             injected_kwargs: dict[str, Any] = {
                 name: INJECTORS[name].builder(ctx) for name in wanted
             }

@@ -141,12 +141,12 @@ class StepInfo:
     Attributes:
         name: The method name (step string).
         priority: Priority hint for queue ordering (lower = higher priority).
-        encoding: Character encoding for text/HTML decoding.
+        encoding: Charset overriding the transport's decoded text, or None.
     """
 
     name: str
     priority: int
-    encoding: str
+    encoding: str | None
 
 
 def inherit_step_metadata(scraper: object, request: Request) -> Request:
@@ -515,8 +515,8 @@ class BaseScraper(Generic[ScraperReturnType]):
             ...     def parse_detail(self, lxml_tree): ...
             ...
             >>> MyScraper.list_steps()
-            [StepInfo(name='parse_listing', priority=9, encoding='utf-8'),
-             StepInfo(name='parse_detail', priority=5, encoding='utf-8')]
+            [StepInfo(name='parse_listing', priority=9, encoding=None),
+             StepInfo(name='parse_detail', priority=5, encoding=None)]
         """
         return [
             StepInfo(

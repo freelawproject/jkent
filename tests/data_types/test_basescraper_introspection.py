@@ -316,7 +316,7 @@ class TestListSteps:
         steps = MultiStepScraper.list_steps()
         by_name = {s.name: s for s in steps}
 
-        assert by_name["parse_listing"].encoding == "utf-8"  # default
+        assert by_name["parse_listing"].encoding is None  # default
         assert by_name["parse_document"].encoding == "latin-1"
 
     def test_excludes_non_step_methods(self):

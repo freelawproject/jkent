@@ -59,14 +59,18 @@ def test_from_string_runs_the_parser() -> None:
     assert all(r.model_name == "CaseTitle" for r in results)
 
 
-def test_from_string_bytes_honors_declared_encoding() -> None:
-    """Bytes input lets lxml read the page's declared (non-UTF-8) charset."""
+def test_from_string_bytes_decode_with_the_given_encoding() -> None:
     html = (
-        '<html><head><meta charset="iso-8859-1"></head>'
-        "<body><h2>S\xe9ance v. Apparition</h2></body></html>"
+        "<html><body><h2>S\xe9ance v. Apparition</h2></body></html>"
     ).encode("iso-8859-1")
-    results = TitleParser.from_string(html)
+    results = TitleParser.from_string(html, encoding="iso-8859-1")
     assert [r.confirm().title for r in results] == ["S\xe9ance v. Apparition"]
+
+
+def test_from_string_bytes_that_do_not_fit_the_encoding_raise() -> None:
+    html = "<h2>S\xe9ance</h2>".encode("iso-8859-1")
+    with pytest.raises(ScraperAssumptionException):
+        TitleParser.from_string(html)
 
 
 def test_from_file_reads_bytes(tmp_path: Path) -> None:
@@ -83,50 +87,27 @@ def test_from_file_reads_bytes(tmp_path: Path) -> None:
 
 
 # --- Offline parsing takes the production parse path -----------------------
-#
-# Production parses through ``jkent.common.decorators._parse_html``: a page that
-# declares its charset only in the HTTP ``Content-Type`` (no BOM, no meta) is
-# decoded from that header before lxml sees it, because libxml2's HTML4
-# default is ISO-8859-1 and would turn ``Acción`` into ``AcciÃ³n``. An offline
-# entry point that hands bytes straight to lxml exercises a different parser
-# than the one the scraper runs under — the exact bug class that helper exists
-# to prevent.
 
-_HEADER_ONLY_UTF8 = (
-    "<html><body><h2>Acción v. Reacción</h2></body></html>".encode()
-)
+_UTF8 = "<html><body><h2>Acción v. Reacción</h2></body></html>".encode()
 
 
 def _titles(results: list[DeferredValidation[CaseTitle]]) -> list[str]:
     return [r.confirm().title for r in results]
 
 
-def test_from_string_honors_the_header_charset() -> None:
-    results = TitleParser.from_string(
-        _HEADER_ONLY_UTF8,
-        headers={"Content-Type": "text/html; charset=utf-8"},
-    )
-    assert _titles(results) == ["Acción v. Reacción"]
-
-
-def test_from_file_honors_the_header_charset(tmp_path: Path) -> None:
-    path = tmp_path / "page.html"
-    path.write_bytes(_HEADER_ONLY_UTF8)
-    results = TitleParser.from_file(
-        path, headers={"Content-Type": "text/html; charset=utf-8"}
-    )
-    assert _titles(results) == ["Acción v. Reacción"]
-
-
-def test_from_response_is_the_production_entry_point() -> None:
-    response = Response(
+def _response(content: bytes) -> Response:
+    return Response(
         status_code=200,
         headers={"Content-Type": "text/html; charset=utf-8"},
-        content=_HEADER_ONLY_UTF8,
+        content=content,
+        text=content.decode("utf-8"),
         url="http://example.test/list",
         request=None,  # type: ignore[arg-type]
     )
-    assert _titles(TitleParser.from_response(response)) == [
+
+
+def test_from_response_is_the_production_entry_point() -> None:
+    assert _titles(TitleParser.from_response(_response(_UTF8))) == [
         "Acción v. Reacción"
     ]
 
@@ -161,22 +142,12 @@ def test_entry_points_on_an_instance_use_its_configuration(
 ) -> None:
     parser = PrefixedTitleParser(prefix="No. ")
     path = tmp_path / "page.html"
-    path.write_bytes(_HEADER_ONLY_UTF8)
-    headers = {"Content-Type": "text/html; charset=utf-8"}
-    response = Response(
-        status_code=200,
-        headers=headers,
-        content=_HEADER_ONLY_UTF8,
-        url="http://example.test/list",
-        request=None,  # type: ignore[arg-type]
-    )
+    path.write_bytes(_UTF8)
 
     expected = ["No. Acción v. Reacción"]
-    assert _titles(parser.from_string(_HEADER_ONLY_UTF8, headers=headers)) == (
-        expected
-    )
-    assert _titles(parser.from_file(path, headers=headers)) == expected
-    assert _titles(parser.from_response(response)) == expected
+    assert _titles(parser.from_string(_UTF8)) == expected
+    assert _titles(parser.from_file(path)) == expected
+    assert _titles(parser.from_response(_response(_UTF8))) == expected
 
 
 def test_entry_points_on_the_class_use_a_default_instance() -> None:

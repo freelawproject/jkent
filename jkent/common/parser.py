@@ -15,13 +15,13 @@ on the class is shorthand for a no-argument instance.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Concatenate, Generic, ParamSpec, TypeVar
 
 from pydantic import BaseModel
 
-from jkent.common.decorators import _parse_html
+from jkent.common.decorators import _apply_encoding, _parse_html
 from jkent.common.deferred_validation import DeferredValidation
 from jkent.common.page_element import PageElement
 from jkent.common.request import HttpMethod, HTTPRequestParams, Request
@@ -73,11 +73,9 @@ class JKentParser(ABC, Generic[T]):
 
     @_offline_entry
     def from_response(self, response: Response) -> list[DeferredValidation[T]]:
-        """Run the parser on a response exactly as a ``@step`` would.
+        """Run the parser on ``response.text`` exactly as a ``@step`` would.
 
-        The production parse path: bytes are decoded by the document's own
-        declaration, else the ``Content-Type`` charset, before lxml sees
-        them, and a parse failure surfaces as ``ScraperAssumptionException``.
+        A parse failure surfaces as ``ScraperAssumptionException``.
         ``from_string`` / ``from_file`` are conveniences over this.
         """
         return self(_parse_html(response))
@@ -88,24 +86,16 @@ class JKentParser(ABC, Generic[T]):
         html: str | bytes,
         url: str = "",
         *,
-        headers: Mapping[str, str] | None = None,
+        encoding: str = "utf-8",
     ) -> list[DeferredValidation[T]]:
         """Parse an HTML string/bytes and run the parser on it.
 
         Args:
-            html: Raw HTML markup. Bytes are what the scraper sees at run
-                time and are preferred: the page's declared encoding (a
-                ``<meta charset>``, else ``headers``' ``Content-Type``) is
-                honoured. A ``str`` is taken as already decoded.
+            html: Raw HTML markup. A ``str`` is taken as already decoded.
             url: Base URL for resolving relative links. Optional.
-            headers: The response headers the page was served with — the
-                ``Content-Type`` charset matters for a page that declares
-                its encoding nowhere else.
+            encoding: Charset that ``bytes`` are strictly decoded with.
         """
-        response = _offline_response(html, url, headers)
-        if isinstance(html, str):
-            return self(_parse_html(response, text=html))
-        return self.from_response(response)
+        return self.from_response(_offline_response(html, url, encoding))
 
     @_offline_entry
     def from_file(
@@ -113,15 +103,12 @@ class JKentParser(ABC, Generic[T]):
         path: str | Path,
         url: str = "",
         *,
-        headers: Mapping[str, str] | None = None,
+        encoding: str = "utf-8",
     ) -> list[DeferredValidation[T]]:
-        """Read an HTML file from disk and run the parser on it.
-
-        Reads as bytes so the declared encoding is honoured; ``headers``
-        supplies the ``Content-Type`` the page was served with.
-        """
+        """Read an HTML file from disk, decode it with ``encoding``, and run
+        the parser on it."""
         return self.from_string(
-            Path(path).read_bytes(), url=url, headers=headers
+            Path(path).read_bytes(), url=url, encoding=encoding
         )
 
 
@@ -130,17 +117,19 @@ class JKentParser(ABC, Generic[T]):
 _OFFLINE_STEP = "offline"
 
 
-def _offline_response(
-    html: str | bytes, url: str, headers: Mapping[str, str] | None
-) -> Response:
+def _offline_response(html: str | bytes, url: str, encoding: str) -> Response:
     """A ``Response`` standing in for the one a transport would have built."""
-    return Response(
+    response = Response(
         status_code=200,
-        headers=dict(headers or {}),
+        headers={},
         content=html.encode("utf-8") if isinstance(html, str) else html,
+        text=html if isinstance(html, str) else "",
         url=url,
         request=Request(
             request=HTTPRequestParams(method=HttpMethod.GET, url=url),
             step=_OFFLINE_STEP,
         ),
     )
+    if isinstance(html, bytes):
+        _apply_encoding(response, encoding)
+    return response

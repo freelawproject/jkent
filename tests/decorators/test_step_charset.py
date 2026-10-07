@@ -1,11 +1,9 @@
-"""One charset rule for ``response.text``, ``text``, ``lxml_tree`` and ``page``.
+"""``@step(encoding=)`` and the text every injection reads.
 
-Every row of the table is one set of bytes, one ``Content-Type``, and one
-``@step(encoding=)``; every path that turns those bytes into text must agree
-on the word they spell. The rule (:func:`jkent.common.response.decode_text`):
-a BOM, then the header charset, then the markup declaration, then UTF-8,
-each decoded strictly and skipped on failure, then the step encoding with
-replacement.
+Without ``encoding`` the transport's ``response.text`` is used as is. With
+it, ``response.text`` is replaced by ``content`` strictly decoded as UTF-8,
+else with that charset — for sites whose bytes don't match the charset they declare — and
+``text``, ``json_content``, ``lxml_tree`` and ``page`` all read the result.
 """
 
 from __future__ import annotations
@@ -24,32 +22,17 @@ from jkent.data_types import BaseScraper, PageElement, ParsedData, Response
 _ACCENTED = "Acción"
 _UTF8 = _ACCENTED.encode("utf-8")
 _CP1252 = _ACCENTED.encode("windows-1252")
-
-_META_1252 = b'<meta charset="windows-1252">'
-_META_EQUIV_1252 = b'<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">'
-_META_UTF16 = b'<meta charset="utf-16">'
-_XML_UTF8 = b'<?xml version="1.0" encoding="utf-8"?>'
-_XML_1252 = b'<?xml version="1.0" encoding="windows-1252"?>'
-_BOM = b"\xef\xbb\xbf"
+_XML_DECLARATION = b'<?xml version="1.0" encoding="utf-8"?>'
 
 
-def _body(word: bytes, head: bytes = b"", prolog: bytes = b"") -> bytes:
-    return (
-        prolog
-        + b"<html><head>"
-        + head
-        + b"</head><body><p id='w'>"
-        + word
-        + b"</p></body></html>"
-    )
+def _body(word: bytes, prolog: bytes = b"") -> bytes:
+    return prolog + b"<html><body><p id='w'>" + word + b"</p></body></html>"
 
 
-def _response(
-    content: bytes, content_type: str | None, text: str = ""
-) -> Response:
+def _response(content: bytes, text: str) -> Response:
     return Response(
         status_code=200,
-        headers={} if content_type is None else {"Content-Type": content_type},
+        headers={},
         content=content,
         text=text,
         url="http://example.test/detail",
@@ -66,7 +49,10 @@ def _word_in(text: str) -> str:
     return match.group(1)
 
 
-def _host(encoding: str) -> Any:
+_METHODS = ("parse_page", "parse_tree", "parse_text", "parse_repaired")
+
+
+def _host(encoding: str | None) -> Any:
     """Steps reading each text path, all declared with *encoding*."""
 
     class Host(BaseScraper[dict[str, Any]]):
@@ -94,153 +80,88 @@ def _host(encoding: str) -> Any:
         ) -> Generator[ParsedData[dict[str, Any]], None, None]:
             yield ParsedData(data={"word": page.text_content().strip()})
 
+        @step(encoding=encoding)
+        def parse_json(
+            self, json_content: dict[str, str]
+        ) -> Generator[ParsedData[dict[str, Any]], None, None]:
+            yield ParsedData(data=json_content)
+
     return Host()
 
 
-def _words(response: Response, encoding: str) -> dict[str, str]:
+def _words(response: Response, encoding: str | None) -> dict[str, str]:
     host = _host(encoding)
     return {
         method: list(getattr(host, method)(response=response))[0].data["word"]
-        for method in (
-            "parse_page",
-            "parse_tree",
-            "parse_text",
-            "parse_repaired",
-        )
+        for method in _METHODS
     }
 
 
-# (content, Content-Type, @step encoding, the word every path must read)
-_TABLE = {
-    "header only": (
-        _body(_UTF8),
-        "text/html; charset=utf-8",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "header quoted": (
-        _body(_UTF8),
-        'text/html; charset="UTF-8"',
-        "utf-8",
-        _ACCENTED,
-    ),
-    "header with params": (
-        _body(_UTF8),
-        "text/html;charset=utf-8; foo=bar",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "header cp1252": (
-        _body(_CP1252),
-        "text/html; charset=windows-1252",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "nothing declared": (_body(_UTF8), None, "utf-8", _ACCENTED),
-    "no header charset": (_body(_UTF8), "text/html", "utf-8", _ACCENTED),
-    "unknown header codec": (
-        _body(_UTF8),
-        "text/html; charset=definitely-not-a-codec",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "meta when the header rejects the bytes": (
-        _body(_CP1252, _META_1252),
-        "text/html; charset=utf-8",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "meta http-equiv when the header rejects the bytes": (
-        _body(_CP1252, _META_EQUIV_1252),
-        "text/html; charset=utf-8",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "header beats meta when both decode": (
-        _body(_UTF8, _META_1252),
-        "text/html; charset=utf-8",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "bom beats header": (
-        _BOM + _body(_UTF8),
-        "text/html; charset=windows-1252",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "xml declaration utf-8": (
-        _body(_UTF8, prolog=_XML_UTF8),
-        "text/html; charset=utf-8",
-        "utf-8",
-        _ACCENTED,
-    ),
-    "xml declaration cp1252": (
-        _body(_CP1252, prolog=_XML_1252),
-        None,
-        "utf-8",
-        _ACCENTED,
-    ),
-    "meta utf-16 on ascii-compatible bytes": (
-        _body(_UTF8, _META_UTF16),
-        None,
-        "utf-8",
-        _ACCENTED,
-    ),
-    "step encoding when nothing declares": (
-        _body(_CP1252),
-        None,
-        "windows-1252",
-        _ACCENTED,
-    ),
-    "step encoding when the header misdescribes": (
-        _body(_CP1252),
-        "text/html; charset=utf-8",
-        "windows-1252",
-        _ACCENTED,
-    ),
-    "header misdescribes, default step encoding": (
-        _body(_CP1252),
-        "text/html; charset=utf-8",
-        "utf-8",
-        "Acci�n",
-    ),
-}
+def test_without_encoding_every_path_reads_the_transport_text() -> None:
+    # The transport's text wins even where it disagrees with the bytes.
+    response = _response(_body(_CP1252), _body(_UTF8).decode("utf-8"))
+    assert _words(response, None) == dict.fromkeys(_METHODS, _ACCENTED)
+
+
+def test_encoding_overrides_a_misdeclared_charset() -> None:
+    # A server that says utf-8 over cp1252 bytes: the transport's text is
+    # garbled, the step's encoding repairs it for every path.
+    content = _body(_CP1252)
+    response = _response(content, content.decode("utf-8", errors="replace"))
+    assert _words(response, "windows-1252") == dict.fromkeys(
+        _METHODS, _ACCENTED
+    )
+    assert _word_in(response.text) == _ACCENTED
+
+
+def test_utf8_wins_over_encoding_when_the_bytes_are_utf8() -> None:
+    # A step that sees both UTF-8 and cp1252 pages: the UTF-8 ones must not
+    # be read as cp1252 (which would give "AcciÃ³n").
+    content = _body(_UTF8)
+    response = _response(content, "")
+    assert _words(response, "windows-1252") == dict.fromkeys(
+        _METHODS, _ACCENTED
+    )
+
+
+def test_encoding_overrides_json_content() -> None:
+    content = b'{"word": "' + _CP1252 + b'"}'
+    response = _response(content, content.decode("utf-8", errors="replace"))
+    [parsed] = list(_host("windows-1252").parse_json(response=response))
+    assert parsed.data == {"word": _ACCENTED}
+
+
+def test_bytes_that_do_not_fit_the_encoding_are_a_scraper_error() -> None:
+    content = _body(_CP1252)
+    response = _response(content, content.decode("utf-8", errors="replace"))
+    with pytest.raises(ScraperAssumptionException, match="@step encoding"):
+        _words(response, "utf-8")
+
+
+def test_unknown_encoding_is_a_scraper_error() -> None:
+    content = _body(_CP1252)
+    response = _response(content, content.decode("utf-8", errors="replace"))
+    with pytest.raises(ScraperAssumptionException, match="@step encoding"):
+        _words(response, "definitely-not-a-codec")
 
 
 @pytest.mark.parametrize(
-    ("content", "content_type", "encoding", "expected"),
-    list(_TABLE.values()),
-    ids=list(_TABLE),
+    "prolog",
+    [
+        _XML_DECLARATION,
+        b"\n  " + _XML_DECLARATION,
+        b"\xef\xbb\xbf" + _XML_DECLARATION,
+    ],
+    ids=["bare", "leading whitespace", "bom"],
 )
-def test_every_text_path_reads_the_same_word(
-    content: bytes, content_type: str | None, encoding: str, expected: str
-) -> None:
-    response = _response(content, content_type)
-    assert _words(response, encoding) == dict.fromkeys(
-        ("parse_page", "parse_tree", "parse_text", "parse_repaired"), expected
-    )
-    if encoding == "utf-8":
-        assert _word_in(response.text) == expected
-
-
-def test_supplied_text_is_what_every_path_reads() -> None:
-    """A transport's already-decoded text wins over re-decoding the bytes.
-
-    A browser's DOM serialization is UTF-8 but keeps the page's original
-    ``<meta charset>``; decoding those bytes by the meta would garble them.
-    """
-    content = _body(_UTF8, _META_1252)
-    response = _response(
-        content, "text/html; charset=utf-8", text=content.decode("utf-8")
-    )
-    assert set(_words(response, "utf-8").values()) == {_ACCENTED}
-
-
-def test_unknown_step_encoding_is_a_scraper_error() -> None:
-    with pytest.raises(ScraperAssumptionException, match="Unknown @step"):
-        _words(_response(_body(_CP1252), None), "definitely-not-a-codec")
+def test_xml_declaration_is_stripped_before_lxml(prolog: bytes) -> None:
+    # lxml rejects a ``str`` that carries an encoding declaration.
+    content = _body(_UTF8, prolog)
+    response = _response(content, content.decode("utf-8"))
+    assert _words(response, None) == dict.fromkeys(_METHODS, _ACCENTED)
+    assert _words(response, "utf-8") == dict.fromkeys(_METHODS, _ACCENTED)
 
 
 def test_empty_body_is_a_scraper_error() -> None:
     with pytest.raises(ScraperAssumptionException):
-        list(_host("utf-8").parse_page(response=_response(b"", None)))
+        list(_host(None).parse_page(response=_response(b"", "")))
