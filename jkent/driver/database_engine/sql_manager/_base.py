@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NamedTuple
 
@@ -29,7 +30,8 @@ class DictEntry(NamedTuple):
     dictionary: zstd.ZstdCompressionDict
 
 
-class DictCache:
+@dataclass(slots=True)
+class CompressionDictCache:
     """A database's in-memory cache of compression dictionaries.
 
     Without it, every stored response after compaction re-reads the ~110KB
@@ -44,11 +46,8 @@ class DictCache:
     past the negative cache.
     """
 
-    __slots__ = ("by_id", "latest")
-
-    def __init__(self) -> None:
-        self.by_id: dict[int, zstd.ZstdCompressionDict] = {}
-        self.latest: dict[str, DictEntry | None] = {}
+    by_id: dict[int, zstd.ZstdCompressionDict] = field(default_factory=dict)
+    latest: dict[str, DictEntry | None] = field(default_factory=dict)
 
 
 class SQLManagerBase:
@@ -62,8 +61,8 @@ class SQLManagerBase:
         session_factory: Async session factory bound to :attr:`engine`.
         lock: The write lock every SQLManager mutation holds. One instance
             per manager, so concurrent writers actually serialize.
-        dict_cache: The database's compression dictionaries, cached for
-            the life of the manager (see
+        compression_dict_cache: The database's compression dictionaries,
+            cached for the life of the manager (see
             :mod:`~jkent.driver.database_engine.compression`).
 
     Example::
@@ -93,7 +92,9 @@ class SQLManagerBase:
             session_factory
         )
         self.lock: Final[asyncio.Lock] = InstrumentedLock()
-        self.dict_cache: Final[DictCache] = DictCache()
+        self.compression_dict_cache: Final[CompressionDictCache] = (
+            CompressionDictCache()
+        )
 
     @classmethod
     @asynccontextmanager

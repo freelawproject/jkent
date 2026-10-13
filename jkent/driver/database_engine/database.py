@@ -22,12 +22,11 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import AsyncIterator, Mapping
 
-    from sqlalchemy import Connection
+    from sqlalchemy import Connection, Delete, Update
     from sqlalchemy.engine import CursorResult
     from sqlalchemy.engine.interfaces import DBAPIConnection
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
     from sqlalchemy.pool import ConnectionPoolEntry
-    from sqlalchemy.sql import Executable
 
 # For future migrations if they should become necessary
 BASELINE_VERSION = 1
@@ -209,12 +208,10 @@ async def init_database(
     return engine, get_session_factory(engine)
 
 
-async def execute_rowcount(session: AsyncSession, stmt: Executable) -> int:
-    """Execute a Core UPDATE/DELETE and return how many rows it touched.
-
-    ``session.execute``'s typed overload promises a ``Result``, which has no
-    ``rowcount``; what an UPDATE actually returns is a ``CursorResult``.
-    """
+async def execute_rowcount(
+    session: AsyncSession, stmt: Update | Delete
+) -> int:
+    """Execute a Core UPDATE/DELETE and return how many rows it touched."""
     result = cast("CursorResult[Any]", await session.execute(stmt))
     return result.rowcount
 

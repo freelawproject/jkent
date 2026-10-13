@@ -239,12 +239,13 @@ def classify_error(exc: Exception) -> ErrorType:
 
 
 def error_message(exc: BaseException) -> str:
-    """``exc``'s message, or its class name when it has none.
+    """``exc``'s ``repr`` — its class and its message together.
 
-    What a request row's ``last_error`` stores: a bare ``TimeoutError()``
-    reads as ``"TimeoutError"``, not as an empty reason.
+    What a request row's ``last_error`` stores. The class is as diagnostic
+    as the message and often more so, and a bare ``TimeoutError()`` reads as
+    ``"TimeoutError()"`` rather than as an empty reason.
     """
-    return str(exc) or type(exc).__name__
+    return repr(exc)
 
 
 def build_error(
