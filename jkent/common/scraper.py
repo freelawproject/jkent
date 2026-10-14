@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Any, ClassVar, Final, Generic, TypeVar, get_origin
 
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 from pyrate_limiter import Rate
 
 from jkent.common.decorator_metadata import (
@@ -571,7 +571,7 @@ class BaseScraper(Generic[ScraperReturnType]):
         ]
 
     def initial_seed(
-        self, params: list[dict[str, dict[str, Any]]]
+        self, params: list[dict[str, dict[str, JsonValue]]]
     ) -> Generator[Request, None, None]:
         """Dispatch parameter list to entry functions and yield combined requests.
 

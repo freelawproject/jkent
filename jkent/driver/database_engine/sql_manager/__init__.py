@@ -15,6 +15,9 @@ The SQLManager handles:
 
 from jkent.driver.database_engine.sql_manager._base import SQLManagerBase
 from jkent.driver.database_engine.sql_manager._errors import ErrorsMixin
+from jkent.driver.database_engine.sql_manager._incidental_requests import (
+    IncidentalRequestStorageMixin,
+)
 from jkent.driver.database_engine.sql_manager._requests import (
     RequestQueueMixin,
     RetryState,
@@ -25,12 +28,25 @@ from jkent.driver.database_engine.sql_manager._responses import (
 from jkent.driver.database_engine.sql_manager._results import (
     ResultStorageMixin,
 )
+from jkent.driver.database_engine.sql_manager._run_metadata import (
+    RUN_METADATA_ID,
+    FinalRunStatus,
+    RunMetadataMixin,
+    RunMetadataRecord,
+    SeedParams,
+)
+from jkent.driver.database_engine.sql_manager._speculation import (
+    SpeculationMixin,
+    SpeculationStateInsert,
+    SpeculationStateRecord,
+)
 from jkent.driver.database_engine.sql_manager._types import (
     ArchivedFileInsert,
     CompressedPayload,
     DequeuedRow,
     IncidentalCapture,
     IncidentalRequestRecord,
+    IncidentalStorageRecord,
     InsertResult,
     RequestInsert,
     ResultInsert,
@@ -41,10 +57,13 @@ from jkent.driver.database_engine.sql_manager._types import (
 
 
 class SQLManager(
+    RunMetadataMixin,
     ErrorsMixin,
     RequestQueueMixin,
     ResponseStorageMixin,
+    IncidentalRequestStorageMixin,
     ResultStorageMixin,
+    SpeculationMixin,
     SQLManagerBase,
 ):
     """Database manager for the unified driver's run database.
@@ -67,16 +86,23 @@ class SQLManager(
 
 __all__ = [
     "ArchivedFileInsert",
+    "RUN_METADATA_ID",
     "CompressedPayload",
     "DequeuedRow",
+    "FinalRunStatus",
     "IncidentalCapture",
     "IncidentalRequestRecord",
+    "IncidentalStorageRecord",
     "InsertResult",
     "RequestInsert",
     "ResultInsert",
     "RetryState",
     "RowModel",
+    "RunMetadataRecord",
+    "SeedParams",
     "SQLManager",
+    "SpeculationStateInsert",
+    "SpeculationStateRecord",
     "StoredResponse",
     "compute_cache_key",
 ]
