@@ -200,7 +200,7 @@ class TestNamedRateLimitsValidation:
         with pytest.raises(ScraperConfigError, match="list of Rate"):
 
             class Bad(BaseScraper[dict[str, Any]]):
-                named_rate_limits = {"downloads": Rate(1, Duration.SECOND)}  # type: ignore
+                named_rate_limits = {"downloads": Rate(1, Duration.SECOND)}  # type: ignore[assignment]
 
     def test_non_rate_member_is_rejected(self):
         with pytest.raises(ScraperConfigError, match="list of Rate"):

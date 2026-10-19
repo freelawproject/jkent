@@ -1,3 +1,11 @@
 {
-  "errors": []
+  "errors": [
+    {
+      "column": 39,
+      "path": "tests/decorators/test_entry.py",
+      "name": "bad-argument-type",
+      "concise_description": "Argument `None` is not assignable to parameter `params` with type `list[dict[str, dict[str, JsonValue]]]` in function `jkent.common.scraper.BaseScraper.initial_seed`",
+      "severity": "error"
+    }
+  ]
 }

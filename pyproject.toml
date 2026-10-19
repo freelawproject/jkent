@@ -26,7 +26,7 @@ authors = [{ name = "Free Law Project" }]
 license = "BSD-2-Clause"
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
 ]
 
 [project.urls]
@@ -62,7 +62,6 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.0.0",
     "pytest-xdist>=3.8.0",
-    "mypy>=1.19.0",
     "types-lxml>=2025.11.25",
     "aiohttp>=3.13.3",
     "ruff>=0.15.0",
@@ -154,8 +153,9 @@ lint.ignore = [
 ]
 
 [tool.mypy]
-# Check what pyrefly (strict) and zuban check, so a suppression one of them
-# needs is visible to mypy too and a stale one fails the build.
+# Zuban reads this section: it is mypy-compatible config, not a mypy install.
+# Kept in step with pyrefly (strict) so a suppression one of them needs is
+# visible to the other, and a stale one fails the build.
 python_version = "3.11"
 check_untyped_defs = true
 warn_unreachable = true
