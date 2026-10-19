@@ -3,3 +3,5 @@ project-includes = ["jkent", "tests"]
 preset = "strict"
 
 baseline = ".pyrefly-baseline.json"
+
+python-version = "3.11"

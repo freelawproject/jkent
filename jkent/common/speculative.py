@@ -43,8 +43,7 @@ Example::
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-
-from typing_extensions import Self
+from typing import Self
 
 
 class Speculative(ABC):

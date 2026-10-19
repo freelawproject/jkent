@@ -9,7 +9,7 @@ name = "jkent"
 version = "0.1.0"
 description = "Scraper-driver framework for structured web scraping"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # The main dependency group is the scraper SDK: everything jkent.common +
 # jkent.data_types need, and nothing more, so that importing jkent into
 # juriscraper pulls no driver/database machinery. Driver runtime deps live
@@ -156,6 +156,7 @@ lint.ignore = [
 [tool.mypy]
 # Check what pyrefly (strict) and zuban check, so a suppression one of them
 # needs is visible to mypy too and a stale one fails the build.
+python_version = "3.11"
 check_untyped_defs = true
 warn_unreachable = true
 warn_unused_ignores = true

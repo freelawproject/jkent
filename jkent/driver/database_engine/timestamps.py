@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -136,7 +136,7 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
             )
         # Stripped after conversion because the stored format has nowhere to
         # put an offset; keeping one would only be dropped a layer down.
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.astimezone(UTC).replace(tzinfo=None)
 
     @override
     def process_result_value(
@@ -146,8 +146,8 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
         if value is None:
             return None
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 def now_sql() -> sa.TextClause:
