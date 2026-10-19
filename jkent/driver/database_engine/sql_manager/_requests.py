@@ -400,9 +400,7 @@ class RequestQueueMixin(SQLManagerBase):
                 ).where(Request.status == RequestStatus.PENDING)
             )
             value = result.scalar()
-            if value is None:
-                return None
-            return max(0.0, float(value))
+            return None if value is None else float(value)
 
     async def restamp_request_start(self, request_id: int) -> None:
         """Reset a request's start timestamps to now, after the rate gate.

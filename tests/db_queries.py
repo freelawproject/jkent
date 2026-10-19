@@ -1,8 +1,8 @@
 """Direct-model query helpers for asserting against a run database.
 
-Small wrappers over ``select()`` on the ORM models, used where tests
-need to inspect rows the driver wrote (the production code has no
-inspection surface — it was deleted with ``ListingMixin``).
+Small wrappers over ``select()`` on the ORM models, for tests that need
+to inspect the rows the driver wrote. The driver itself exposes no
+row-inspection surface, so these live here rather than on ``SQLManager``.
 """
 
 from __future__ import annotations
