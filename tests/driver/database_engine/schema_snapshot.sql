@@ -118,7 +118,7 @@ CREATE TABLE incidental_request_storage (
 
 -- table: incidental_requests
 CREATE TABLE incidental_requests (
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 	parent_request_id INTEGER NOT NULL,
 	resource_type VARCHAR NOT NULL,
 	method VARCHAR NOT NULL,
@@ -132,7 +132,6 @@ CREATE TABLE incidental_requests (
 	from_cache BOOLEAN,
 	created_at DATETIME DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
 	storage_id INTEGER,
-	PRIMARY KEY (id),
 	CONSTRAINT ck_incidental_requests_headers_json_valid CHECK (json_valid(headers_json)),
 	FOREIGN KEY(parent_request_id) REFERENCES requests (id) ON DELETE CASCADE,
 	FOREIGN KEY(storage_id) REFERENCES incidental_request_storage (id)
@@ -266,3 +265,6 @@ CREATE TABLE speculation_tracking (
 	CONSTRAINT ck_speculation_tracking_seed_value_json_valid CHECK (json_valid(seed_value_json)),
 	UNIQUE (func_name)
 );
+
+-- table: sqlite_sequence
+CREATE TABLE sqlite_sequence(name,seq);

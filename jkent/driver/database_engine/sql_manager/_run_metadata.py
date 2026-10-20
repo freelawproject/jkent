@@ -252,7 +252,7 @@ class RunMetadataMixin(SQLManagerBase):
 
         ``started_at`` is stamped only the first time, so a resumed run's
         duration spans every session; a previous session's ``ended_at`` is
-        cleared.
+        cleared. We clean up any leftover error from a previous run here.
         """
         async with self._write_session() as session:
             await session.execute(
@@ -262,6 +262,7 @@ class RunMetadataMixin(SQLManagerBase):
                     status=RunStatus.RUNNING,
                     started_at=func.coalesce(RunMetadata.started_at, now()),
                     ended_at=None,
+                    error_message=None,
                 )
             )
             await session.commit()

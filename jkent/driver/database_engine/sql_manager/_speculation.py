@@ -29,20 +29,20 @@ class SpeculationStateInsert(RowModel):
     #: State key, e.g. ``"fetch_case:0"``.
     func_name: str
     #: Highest ID that returned 2xx; None before any has.
-    highest_successful_id: int | None = None
+    highest_successful_id: int | None
     #: Failures counted past ``highest_successful_id``.
-    consecutive_failures: int = 0
+    consecutive_failures: int
     #: Current upper bound of seeded IDs; None before seeding.
-    current_ceiling: int | None = None
+    current_ceiling: int | None
     #: Whether speculation has stopped for this entry.
-    stopped: bool = False
+    stopped: bool
     #: Index of this template in the params list.
-    param_index: int = 0
+    param_index: int
     #: JSON serialization of the Speculative template.
-    template_json: str | None = None
+    template_json: str | None
     #: JSON of the raw seed value the template came from (e.g. a host's
     #: "[cursor_key]" reference).
-    seed_value_json: str | None = None
+    seed_value_json: str | None
 
 
 class SpeculationStateRecord(SpeculationStateInsert):

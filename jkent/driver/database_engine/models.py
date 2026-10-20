@@ -1096,9 +1096,13 @@ class IncidentalRequest(Base):
         sa.Index("idx_incidental_requests_parent", "parent_request_id"),
         sa.Index("idx_incidental_requests_storage", "storage_id"),
         *json_checks("incidental_requests", "headers_json"),
+        {"sqlite_autoincrement": True},
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, doc="Surrogate key.")
+    id: Mapped[int] = mapped_column(
+        primary_key=True,
+        doc="Surrogate key.",
+    )
     parent_request_id: Mapped[int] = mapped_column(
         ForeignKey("requests.id", ondelete="CASCADE"),
         doc="The scraper request whose page load fired this sub-request.",
