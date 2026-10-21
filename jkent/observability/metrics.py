@@ -36,16 +36,13 @@ from opentelemetry.metrics import get_meter, get_meter_provider
 _METER_NAME = "jkent.driver"
 
 
-class Phase(str, enum.Enum):
+class Phase(enum.StrEnum):
     """The ``phase`` attribute vocabulary (see ``METRICS.md``).
 
     A ``str`` subclass, so members pass straight through as OTel attribute
-    values and interpolate into span names. ``__str__`` is pinned to the
-    value because plain ``str, Enum`` renders ``Phase.TOTAL`` on 3.10
-    (:class:`enum.StrEnum` does this for us from 3.11).
+    values and interpolate into span names as their value rather than as
+    ``Phase.TOTAL``.
     """
-
-    __str__ = str.__str__
 
     TOTAL = "total"
     CIRCUIT_BREAKER_GATE = "circuit_breaker.gate"
@@ -55,14 +52,11 @@ class Phase(str, enum.Enum):
     COMPRESS = "compress"
 
 
-class Outcome(str, enum.Enum):
+class Outcome(enum.StrEnum):
     """The ``jkent.outcome`` span attribute vocabulary (see ``METRICS.md``).
 
-    A ``str`` subclass with ``__str__`` pinned, for the same reasons as
-    :class:`Phase`.
+    A ``str`` subclass, for the same reasons as :class:`Phase`.
     """
-
-    __str__ = str.__str__
 
     OK = "ok"
     HALT = "halt"

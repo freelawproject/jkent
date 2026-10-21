@@ -5,8 +5,10 @@ This test module verifies the API call capabilities:
 1. Scrapers can yield Request(nonnavigating=True) for API calls
 2. The driver handles non-navigating requests without updating current_location
 3. Navigating requests update current_location, non-navigating requests do not
-4. Request provides shared URL resolution logic
-5. Both request types can be used together in the same scraper
+4. Both request types can be used together in the same scraper
+
+``Request``'s own construction and URL resolution live in
+test_navigating_request.py; only the non-navigating behaviour is here.
 
 These tests are driver-free: they exercise the data types and the scraper's
 parsing methods directly. The driver-level pipeline coverage lives in
@@ -29,90 +31,6 @@ from tests.mock_server import CASES, generate_case_detail_html
 from tests.scraper.example.bug_court import (
     BugCourtScraperWithAPI,
 )
-
-
-class TestRequest:
-    """Tests for the Request data type."""
-
-    def test_base_request_stores_url(self):
-        """Request shall store the URL to fetch."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/api/cases/BCC-2024-001",
-            ),
-            step="parse_api",
-        )
-
-        assert request.request.url == "/api/cases/BCC-2024-001"
-
-    def test_base_request_stores_step(self):
-        """Request shall store the step method name."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/api/cases",
-            ),
-            step="parse_api",
-        )
-
-        assert request.step == "parse_api"
-
-    def test_base_request_defaults_to_get(self):
-        """Request shall default to GET method."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/api/cases",
-            ),
-            step="parse_api",
-        )
-
-        assert request.request.method == HttpMethod.GET
-
-    def test_base_request_supports_post(self):
-        """Request shall support POST method."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.POST,
-                url="/api/search",
-                data={"query": "beetle"},
-            ),
-            step="parse_results",
-        )
-
-        assert request.request.method == HttpMethod.POST
-        assert request.request.data == {"query": "beetle"}
-
-    def test_base_request_resolve_url_absolute(self):
-        """Request shall return absolute URLs unchanged."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="http://other.example.com/api/cases",
-            ),
-            step="parse_api",
-        )
-
-        resolved = request.resolve_url("http://bugcourt.example.com/")
-
-        assert resolved == "http://other.example.com/api/cases"
-
-    def test_base_request_resolve_url_relative(self):
-        """Request shall resolve relative URLs against current_location."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/api/cases/BCC-2024-001",
-            ),
-            step="parse_api",
-        )
-
-        resolved = request.resolve_url(
-            "http://bugcourt.example.com/cases/BCC-2024-001"
-        )
-
-        assert resolved == "http://bugcourt.example.com/api/cases/BCC-2024-001"
 
 
 class TestNonNavigating:
@@ -333,15 +251,6 @@ class TestBugCourtScraperWithAPI:
             url=f"{server_url}/cases",
             request=request,
         )
-
-    def test_parse_list_yields_navigating_requests(
-        self, scraper: BugCourtScraperWithAPI, list_response: Response
-    ):
-        """The scraper shall yield Request for each case."""
-        results = list(scraper.parse_list(list_response))
-
-        assert len(results) == len(CASES)
-        assert all(isinstance(r, Request) for r in results)
 
     async def test_parse_detail_yields_non_navigating_request(
         self, scraper: BugCourtScraperWithAPI, server_url: str

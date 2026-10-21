@@ -6,11 +6,10 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple, Self
 
 import zstandard as zstd
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
-from typing_extensions import Self
 
 from jkent.driver.database_engine.database import init_database, write_session
 from jkent.observability import InstrumentedLock

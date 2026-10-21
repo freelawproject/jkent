@@ -106,11 +106,6 @@ class TestRateLimitTable:
         assert table.decode(2) == "downloads"
         assert table.decode(3) == "search"
 
-    def test_round_trip(self):
-        table = RateLimitTable.for_scraper(LanedScraper)
-        for name in (None, NO_RATE_LIMIT, "downloads", "search"):
-            assert table.decode(table.encode(name)) == name
-
     def test_encode_unknown_name_names_the_lanes(self):
         table = RateLimitTable.for_scraper(BareScraper)
         with pytest.raises(ValueError, match="'downloads'.*default.*none"):
@@ -200,7 +195,7 @@ class TestNamedRateLimitsValidation:
         with pytest.raises(ScraperConfigError, match="list of Rate"):
 
             class Bad(BaseScraper[dict[str, Any]]):
-                named_rate_limits = {"downloads": Rate(1, Duration.SECOND)}  # type: ignore
+                named_rate_limits = {"downloads": Rate(1, Duration.SECOND)}  # type: ignore[assignment]
 
     def test_non_rate_member_is_rejected(self):
         with pytest.raises(ScraperConfigError, match="list of Rate"):

@@ -3,8 +3,6 @@
 Tests checked-query behavior, observer integration, form and link handling.
 """
 
-from collections.abc import Mapping
-
 import pytest
 from lxml import html
 
@@ -81,15 +79,6 @@ def links_page() -> PageElement:
     """
     doc = html.fromstring(html_content)
     return PageElement(doc, "https://example.com/")
-
-
-def test_query_xpath_delegation(simple_page: PageElement):
-    """query with an XPath selector should delegate to checked_xpath."""
-    rows = simple_page.query(Selector.XPath("//tr[@class='row']"), "rows")
-
-    assert len(rows) == 2
-    # Results should be wrapped in PageElement
-    assert all(isinstance(row, PageElement) for row in rows)
 
 
 def test_query_xpath_returns_page_elements(simple_page: PageElement):
@@ -389,141 +378,234 @@ def _page_from_html(html_content: str, base_url: str = "https://example.com/"):
     return PageElement(doc, base_url)
 
 
-def test_unchecked_checkbox_with_value_is_omitted():
-    """Unchecked checkboxes must not appear in the submitted form data."""
+# Shared markup fragments for the table below.
+_Q = '<input name="q" value="bees"/>'
+_TWO_SUBMITS = (
+    '<input type="submit" name="action" value="search"/>'
+    '<input type="submit" name="action" value="clear"/>'
+)
+_TWO_ID_SUBMITS = (
+    '<input type="submit" name="action" id="btn_search" value="search"/>'
+    '<input type="submit" name="action" id="btn_clear" value="clear"/>'
+)
+
+
+# --- find_form submission semantics ----------------------------------------
+#
+# What a browser would submit for a given form, as a table: each row is
+# (name, controls, submit_selector, submitted data). The expectation is the
+# *whole* dict, so a row pins both what is sent and what is left out.
+#
+# The cross-transport version of this contract — the same markup shapes driven
+# through every transport against a vanilla-browser oracle — lives in
+# tests/form_conformance/.
+
+_FORM_CASES: list[tuple[str, str, Selector | None, dict[str, object]]] = [
+    # --- checkboxes: only checked ones submit, defaulting to "on" ---------
+    (
+        "unchecked checkbox is omitted",
+        '<input name="cb" type="checkbox" value="true"/>',
+        None,
+        {},
+    ),
+    (
+        "checked checkbox submits its value",
+        '<input name="cb" type="checkbox" value="yes" checked/>',
+        None,
+        {"cb": "yes"},
+    ),
+    (
+        "checked checkbox without a value submits 'on'",
+        '<input name="cb" type="checkbox" checked/>',
+        None,
+        {"cb": "on"},
+    ),
+    (
+        "unchecked checkbox without a value is omitted",
+        '<input name="cb" type="checkbox"/>',
+        None,
+        {},
+    ),
+    (
+        "same-named checkboxes submit only the checked one",
+        '<input name="cb" type="checkbox" value="a"/>'
+        '<input name="cb" type="checkbox" value="b" checked/>',
+        None,
+        {"cb": "b"},
+    ),
+    (
+        "checkbox group submits every checked box as a repeated key",
+        '<input name="court" type="checkbox" value="ca1" checked/>'
+        '<input name="court" type="checkbox" value="ca2"/>'
+        '<input name="court" type="checkbox" value="ca3" checked/>',
+        None,
+        {"court": ["ca1", "ca3"]},
+    ),
+    # --- radios: same rules, but at most one is checked -------------------
+    (
+        "checked radio without a value submits 'on'",
+        '<input name="choice" type="radio" checked/>',
+        None,
+        {"choice": "on"},
+    ),
+    (
+        "radio group submits only the checked radio",
+        '<input name="choice" type="radio" value="a"/>'
+        '<input name="choice" type="radio" value="b" checked/>'
+        '<input name="choice" type="radio" value="c"/>',
+        None,
+        {"choice": "b"},
+    ),
+    # --- <select> ---------------------------------------------------------
+    (
+        # Falling through to the label would turn an "All case types"
+        # placeholder into a bogus filter that silently returns no results.
+        "option value='' submits empty, not its label",
+        '<select name="case_type">'
+        '<option value="" selected>All</option>'
+        '<option value="civil">Civil</option>'
+        "</select>",
+        None,
+        {"case_type": ""},
+    ),
+    (
+        "option with no value attribute submits its label, per spec",
+        '<select name="category">'
+        "<option selected>News</option><option>Blog</option>"
+        "</select>",
+        None,
+        {"category": "News"},
+    ),
+    (
+        "select multiple submits every selected option",
+        '<select name="court" multiple>'
+        '<option value="ca1" selected>First</option>'
+        '<option value="ca2">Second</option>'
+        '<option value="ca3" selected>Third</option>'
+        "</select>",
+        None,
+        {"court": ["ca1", "ca3"]},
+    ),
+    (
+        "select multiple with nothing selected contributes nothing",
+        _Q + '<select name="court" multiple>'
+        '<option value="ca1">First</option><option value="ca2">Second</option>'
+        "</select>",
+        None,
+        {"q": "bees"},
+    ),
+    # --- submit controls --------------------------------------------------
+    (
+        # Sending every button at once is a request no browser produces, and
+        # changes server behaviour on e.g. ASP.NET sites.
+        "only the first submit travels when none is selected",
+        _Q + '<input type="submit" name="action" value="search"/>'
+        '<input type="submit" name="action_clear" value="clear"/>',
+        None,
+        {"q": "bees", "action": "search"},
+    ),
+    (
+        # An input submit's id has to be captured (not just a <button>'s) or
+        # _activated_submit never matches and falls back to the first button.
+        "submit_selector '#id' activates an input submit",
+        _Q + _TWO_ID_SUBMITS,
+        CSS("#btn_clear"),
+        {"q": "bees", "action": "clear"},
+    ),
+    (
+        # The Playwright transport runs the raw selector against the DOM, so
+        # the HTTP path must resolve value/name selectors too, not just "#id",
+        # or the two transports submit different buttons.
+        "submit_selector resolves a css value predicate",
+        _Q + _TWO_SUBMITS,
+        CSS('input[value="clear"]'),
+        {"q": "bees", "action": "clear"},
+    ),
+    (
+        "submit_selector resolves an xpath value predicate",
+        _Q + _TWO_SUBMITS,
+        XPath('.//input[@value="clear"]'),
+        {"q": "bees", "action": "clear"},
+    ),
+    (
+        # data= can add a key but cannot remove a wrongly-included button, so
+        # resolution has to be right here.
+        "a differently-named submit sends only its own name",
+        _Q + '<input type="submit" name="search" value="Search"/>'
+        '<input type="submit" name="clear" value="Clear"/>',
+        CSS('[name="clear"]'),
+        {"q": "bees", "clear": "Clear"},
+    ),
+    (
+        "an unresolvable submit_selector falls back to the first submit",
+        _Q + _TWO_SUBMITS,
+        XPath("(.//input[@type='submit'])[2]"),
+        {"q": "bees", "action": "search"},
+    ),
+    (
+        "a named <button> is an implicit type=submit",
+        _Q + '<button name="action" value="search">Search</button>',
+        None,
+        {"q": "bees", "action": "search"},
+    ),
+    (
+        "type=button and type=reset never contribute, either spelling",
+        _Q + '<button type="button" name="toggle" value="1">Toggle</button>'
+        '<button type="reset" name="reset" value="1">Reset</button>'
+        '<input type="reset" name="reset2" value="1"/>'
+        '<input type="button" name="btn" value="1"/>',
+        None,
+        {"q": "bees"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("controls", "submit_selector", "expected"),
+    [row[1:] for row in _FORM_CASES],
+    ids=[row[0] for row in _FORM_CASES],
+)
+def test_form_submits_what_a_browser_would(
+    controls: str,
+    submit_selector: Selector | None,
+    expected: dict[str, object],
+):
+    page = _page_from_html(
+        f'<form id="f" action="/x" method="post">{controls}</form>'
+    )
+    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
+
+    request = form.submit(submit_selector=submit_selector, step="test")
+
+    assert request.request.data == expected
+
+
+# The parsed fields behind three of the rows above: a group collapses to its
+# checked members, a <select> keeps every option, and an input submit's id is
+# recorded so a "#id" submit_selector has something to match.
+def test_find_form_collapses_a_checkbox_group_to_its_checked_boxes():
     page = _page_from_html(
         '<form id="f" action="/x" method="post">'
-        '<input name="cb" type="checkbox" value="true" />'
+        '<input name="court" type="checkbox" value="ca1" checked/>'
+        '<input name="court" type="checkbox" value="ca2"/>'
+        '<input name="court" type="checkbox" value="ca3" checked/>'
         "</form>"
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    assert form.get_field("cb") is None
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, Mapping)
-    assert "cb" not in data
+    assert [f.value for f in form.fields if f.name == "court"] == [
+        "ca1",
+        "ca3",
+    ]
 
 
-def test_checked_checkbox_with_value_is_submitted():
-    """Checked checkboxes submit their explicit value attribute."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="cb" type="checkbox" value="yes" checked />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    field = form.get_field("cb")
-    assert field is not None
-    assert field.value == "yes"
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["cb"] == "yes"
-
-
-def test_checked_checkbox_without_value_defaults_to_on():
-    """Checked checkboxes without a value attribute submit as 'on'."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="cb" type="checkbox" checked />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    field = form.get_field("cb")
-    assert field is not None
-    assert field.value == "on"
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["cb"] == "on"
-
-
-def test_unchecked_checkbox_without_value_is_omitted():
-    """Unchecked checkboxes without a value attribute are still omitted."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="cb" type="checkbox" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    assert form.get_field("cb") is None
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, Mapping)
-    assert "cb" not in data
-
-
-def test_mixed_checkboxes_only_checked_submitted():
-    """When two checkboxes share a name, only the checked one is submitted."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="cb" type="checkbox" value="a" />'
-        '<input name="cb" type="checkbox" value="b" checked />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    cb_fields = [f for f in form.fields if f.name == "cb"]
-    assert len(cb_fields) == 1
-    assert cb_fields[0].value == "b"
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["cb"] == "b"
-
-
-def test_checked_radio_without_value_defaults_to_on():
-    """Checked radios without a value attribute submit as 'on', per spec."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="choice" type="radio" checked />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    field = form.get_field("choice")
-    assert field is not None
-    assert field.value == "on"
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["choice"] == "on"
-
-
-def test_radio_group_only_checked_submitted():
-    """When radios share a name, only the checked one is submitted."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="choice" type="radio" value="a" />'
-        '<input name="choice" type="radio" value="b" checked />'
-        '<input name="choice" type="radio" value="c" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["choice"] == "b"
-
-
-def test_option_with_empty_value_submits_empty_string():
-    """<option value=""> submits "", not its label text.
-
-    Falling through to the label turns "All case types" placeholder
-    options into bogus filter values, silently returning zero results.
-    """
+def test_find_form_keeps_every_option_of_a_select():
     page = _page_from_html(
         '<form id="f" action="/x" method="post">'
         '<select name="case_type">'
         '<option value="" selected>All</option>'
         '<option value="civil">Civil</option>'
-        "</select>"
-        "</form>"
+        "</select></form>"
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
@@ -531,261 +613,18 @@ def test_option_with_empty_value_submits_empty_string():
     assert field is not None
     assert field.value == ""
     assert field.options == ["", "civil"]
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["case_type"] == ""
 
 
-def test_option_without_value_attribute_uses_label():
-    """An option with no value attribute submits its label text, per spec."""
+def test_find_form_records_the_id_of_an_input_submit():
     page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<select name="category">'
-        "<option selected>News</option>"
-        "<option>Blog</option>"
-        "</select>"
-        "</form>"
+        f'<form id="f" action="/x" method="post">{_TWO_ID_SUBMITS}</form>'
     )
     form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
 
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["category"] == "News"
-
-
-def test_only_first_submit_button_is_submitted():
-    """Only the activated (default: first) submit control's value submits.
-
-    Sending every submit button's name/value at once is a request no
-    browser produces, and changes server behavior on e.g. ASP.NET sites.
-    """
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<input type="submit" name="action" value="search" />'
-        '<input type="submit" name="action_clear" value="clear" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["q"] == "bees"
-    assert data["action"] == "search"
-    assert "action_clear" not in data
-
-
-def test_submit_selector_activates_input_submit_by_id():
-    """submit_selector=CSS("#id") must activate the matching <input type=submit>.
-
-    The control's ``id`` has to be captured for input submits (not just
-    <button>s) or ``_activated_submit`` can never match and silently falls
-    back to the first submit button, so the request carries the wrong
-    button's name/value.
-    """
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<input type="submit" name="action" id="btn_search" value="search" />'
-        '<input type="submit" name="action" id="btn_clear" value="clear" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    # The id attribute is captured for input submits, so the selector can
-    # resolve to a specific control.
-    submit_ids = {
-        f.element_id for f in form.fields if f.field_type == "submit"
+    assert {f.element_id for f in form.fields if f.field_type == "submit"} == {
+        "btn_search",
+        "btn_clear",
     }
-    assert submit_ids == {"btn_search", "btn_clear"}
-
-    request = form.submit(submit_selector=CSS("#btn_clear"), step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["q"] == "bees"
-    # The activated (clear) button's value submits, not the first button's.
-    assert data["action"] == "clear"
-
-
-def test_submit_selector_resolves_input_submit_by_value_css():
-    """A CSS attribute submit_selector resolves against the parsed fields.
-
-    The Playwright transport runs the raw selector against the DOM, so the
-    HTTP path must resolve the same value/name/attribute selectors (not just
-    ``#id``) or the two transports submit different buttons.
-    """
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<input type="submit" name="action" value="search" />'
-        '<input type="submit" name="action" value="clear" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(
-        submit_selector=CSS('input[value="clear"]'), step="test"
-    )
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["action"] == "clear"
-
-
-def test_submit_selector_resolves_input_submit_by_value_xpath():
-    """An XPath attribute submit_selector resolves the same way."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<input type="submit" name="action" value="search" />'
-        '<input type="submit" name="action" value="clear" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(
-        submit_selector=XPath('.//input[@value="clear"]'), step="test"
-    )
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["action"] == "clear"
-
-
-def test_submit_selector_by_name_excludes_other_button():
-    """Selecting a differently-named submit sends only that button's name.
-
-    A browser POSTs only the activated submit, so the non-activated submit's
-    name must be absent — the data= override can add a key but can't remove
-    the wrongly-included first button, so resolution has to be correct here.
-    """
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<input type="submit" name="search" value="Search" />'
-        '<input type="submit" name="clear" value="Clear" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(submit_selector=CSS('[name="clear"]'), step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["clear"] == "Clear"
-    assert "search" not in data
-
-
-def test_submit_selector_unresolvable_falls_back_to_first():
-    """A selector we can't resolve against parsed fields (no id/name/value
-    predicate, e.g. positional) falls back to the first submit, unchanged."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<input type="submit" name="action" value="search" />'
-        '<input type="submit" name="action" value="clear" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(
-        submit_selector=XPath("(.//input[@type='submit'])[2]"), step="test"
-    )
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["action"] == "search"
-
-
-def test_button_element_participates_in_submission():
-    """A named <button> (implicit type=submit) submits its value."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<button name="action" value="search">Search</button>'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["action"] == "search"
-
-
-def test_button_type_button_and_reset_not_submitted():
-    """type=button/reset controls never contribute to form data."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<button type="button" name="toggle" value="1">Toggle</button>'
-        '<button type="reset" name="reset" value="1">Reset</button>'
-        '<input type="reset" name="reset2" value="1" />'
-        '<input type="button" name="btn" value="1" />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data == {"q": "bees"}
-
-
-def test_checkbox_group_submits_all_checked_values():
-    """All checked same-named checkboxes submit, as repeated keys."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="court" type="checkbox" value="ca1" checked />'
-        '<input name="court" type="checkbox" value="ca2" />'
-        '<input name="court" type="checkbox" value="ca3" checked />'
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    court_fields = [f for f in form.fields if f.name == "court"]
-    assert [f.value for f in court_fields] == ["ca1", "ca3"]
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["court"] == ["ca1", "ca3"]
-
-
-def test_select_multiple_submits_all_selected_options():
-    """<select multiple> submits every selected option."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<select name="court" multiple>'
-        '<option value="ca1" selected>First</option>'
-        '<option value="ca2">Second</option>'
-        '<option value="ca3" selected>Third</option>'
-        "</select>"
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert data["court"] == ["ca1", "ca3"]
-
-
-def test_select_multiple_nothing_selected_submits_nothing():
-    """<select multiple> with no selected options contributes no value."""
-    page = _page_from_html(
-        '<form id="f" action="/x" method="post">'
-        '<input name="q" value="bees" />'
-        '<select name="court" multiple>'
-        '<option value="ca1">First</option>'
-        '<option value="ca2">Second</option>'
-        "</select>"
-        "</form>"
-    )
-    form = page.find_form(Selector.XPath("//form[@id='f']"), "f")
-
-    request = form.submit(step="test")
-    data = request.request.data
-    assert isinstance(data, dict)
-    assert "court" not in data
 
 
 def test_query_count_validation(simple_page: PageElement):

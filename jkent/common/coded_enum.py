@@ -41,12 +41,14 @@ import enum
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
+    from typing import Self
 
 __all__ = ["CodedEnum"]
 
 
-class CodedEnum(str, enum.Enum):
+# Not an ``enum.StrEnum``: members are constructed from a ``(code, label)``
+# pair, and ``StrEnum.__new__`` requires every argument to be a ``str``.
+class CodedEnum(str, enum.Enum):  # noqa: UP042
     """Base for enums stored as an integer but handled as their label.
 
     Has no members of its own, so it can be subclassed (an ``Enum`` that

@@ -402,7 +402,7 @@ class TestInitialSeed:
     def test_none_params_raises(self):
         scraper = SimpleScraper()
         with pytest.raises((ValueError, TypeError)):
-            list(scraper.initial_seed(None))  # type: ignore[arg-type]
+            list(scraper.initial_seed(None))
 
     def test_unknown_entry_raises(self):
         scraper = SimpleScraper()
