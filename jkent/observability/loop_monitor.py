@@ -51,14 +51,15 @@ class LoopLagMonitor:
             return
         task.cancel()
         try:
-            # ``wait`` raises CancelledError only if the caller is cancelled,
-            # so the sampler's own cancellation is absorbed and the caller's
-            # propagates (``Task.cancelling`` would need 3.11+).
-            await asyncio.wait({task})
+            await task
+        except asyncio.CancelledError:
+            # Absorb the sampler's own cancellation; re-raise only when this
+            # coroutine is itself being cancelled.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
         finally:
             self._task = None
-        if not task.cancelled():
-            task.result()
 
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
