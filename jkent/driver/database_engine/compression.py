@@ -56,7 +56,7 @@ from jkent.driver.database_engine.stored_body import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
 
     from jkent.driver.database_engine.sql_manager import SQLManager
 
@@ -729,6 +729,68 @@ async def count_off_dictionary(db: SQLManager, step: str, dict_id: int) -> int:
         return result.scalar_one()
 
 
+async def _iter_off_dictionary_chunks(
+    db: SQLManager,
+    step: str,
+    target_dict_id: int,
+    chunk_size: int,
+) -> AsyncIterator[list[tuple[int, bytes, int | None]]]:
+    """Walk ``step``'s rows not yet on ``target_dict_id``, a page at a time.
+
+    Keyset pagination on ``id``, not a streaming cursor, and deliberately
+    so. The caller rewrites the rows this walk yields, and the rewrite is
+    what takes them out of :func:`_off_dictionary` — a cursor held open
+    across those writes would be iterating a predicate its own consumer is
+    invalidating. Re-reading the predicate per page is also what makes an
+    interrupted pass resumable: the next run simply finds the rows the
+    last one never reached.
+
+    Each page reads in its own short session, so nothing holds a read
+    transaction open across the recompression threads or the write
+    transactions between pages. Reads use a plain session: the caller's
+    guarded UPDATE, not the transaction shape, is what protects against
+    concurrent writers.
+
+    The walk ends on the first short page. A page's rows may be fewer than
+    ``chunk_size`` after the NOT NULL narrowing below, so that decision
+    reads the page as fetched, not the yielded list, and cannot stall or
+    truncate the walk.
+    """
+    last_id = 0
+    while True:
+        async with db.session_factory() as session:
+            result = await session.execute(
+                select(
+                    Request.id,
+                    Request.content_compressed,
+                    Request.compression_dict_id,
+                )
+                .where(
+                    *_off_dictionary(step, target_dict_id),
+                    Request.id > last_id,
+                )
+                .order_by(Request.id)
+                .limit(chunk_size)
+            )
+            page = result.tuples().all()
+
+        if not page:
+            return
+        last_id = page[-1][0]
+
+        # ``content_compressed`` is NOT NULL across ``_off_dictionary``;
+        # restating it narrows the rows to ``(int, bytes, int | None)`` for
+        # the type checker.
+        yield [
+            (request_id, content, row_dict_id)
+            for request_id, content, row_dict_id in page
+            if content is not None
+        ]
+
+        if len(page) < chunk_size:
+            return
+
+
 async def recompress_responses(
     db: SQLManager,
     step: str,
@@ -750,7 +812,8 @@ async def recompress_responses(
     recompress it, write it back in one guarded transaction, move on — so
     peak memory is one chunk's worth of bodies (not the whole step,
     old and new at once) and no single transaction holds the run's DB lock
-    for the whole rewrite.
+    for the whole rewrite. :func:`_iter_off_dictionary_chunks` is the read
+    half of that walk.
 
     Args:
         db: The run database.
@@ -802,42 +865,10 @@ async def recompress_responses(
     total_original = 0
     total_compressed = 0
     skipped_count = 0
-    last_id = 0
 
-    while True:
-        # Reads use a plain session: the guarded UPDATE below (not the
-        # transaction shape) is what protects against concurrent writers.
-        async with db.session_factory() as session:
-            result = await session.execute(
-                select(
-                    Request.id,
-                    Request.content_compressed,
-                    Request.compression_dict_id,
-                )
-                .where(
-                    *_off_dictionary(step, target_dict_id),
-                    Request.id > last_id,
-                )
-                .order_by(Request.id)
-                .limit(chunk_size)
-            )
-            page = result.tuples().all()
-
-        if not page:
-            break
-        last_id = page[-1][0]
-
-        # ``content_compressed`` is NOT NULL across ``_off_dictionary``;
-        # restating it narrows the rows to ``(int, bytes, int | None)`` for
-        # the type checker. Pagination and the short-page exit below both
-        # read ``page``, not this list, so narrowing cannot stall or
-        # truncate the walk.
-        rows = [
-            (request_id, content, row_dict_id)
-            for request_id, content, row_dict_id in page
-            if content is not None
-        ]
-
+    async for rows in _iter_off_dictionary_chunks(
+        db, step, target_dict_id, chunk_size
+    ):
         # Resolve the chunk's old dictionaries on-loop (get_dict_by_id is
         # cached per-database, so a shared old_dict_id — the common case for
         # a single step — is fetched once), then hand the zstd work
@@ -901,9 +932,6 @@ async def recompress_responses(
                     total_original += update.original_size
                     total_compressed += update.new_size
                 await session.commit()
-
-        if len(page) < chunk_size:
-            break
 
     obs.instruments().compaction_duration.record(
         (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,
