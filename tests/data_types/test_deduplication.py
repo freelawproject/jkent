@@ -193,14 +193,14 @@ class TestBytesParams:
 
     def test_non_utf8_bytes_are_percent_encoded(self):
         # A cp1252 query (``é`` is 0xE9) raised UnicodeDecodeError on enqueue.
-        url, _ = serialize_url_and_body(self._params(b"q=caf\xe9"))
+        url = serialize_url_and_body(self._params(b"q=caf\xe9")).url
         assert url == "https://example.com/s?a=1&q=caf%E9"
         Request(request=self._params(b"q=caf\xe9"), step="parse")
 
     def test_encoded_bytes_are_kept_verbatim(self):
         # The caller encoded the query; its escapes must survive untouched,
         # or %2F would come back as a live path separator.
-        url, _ = serialize_url_and_body(self._params(b"q=a+b&r=%2F"))
+        url = serialize_url_and_body(self._params(b"q=a+b&r=%2F")).url
         assert url == "https://example.com/s?a=1&q=a+b&r=%2F"
 
     def test_bytes_that_would_change_the_url_are_encoded(self):
@@ -211,5 +211,5 @@ class TestBytesParams:
         hashed it: two requests differing only past the '#' would be
         dispatched as two and come back identical.
         """
-        url, _ = serialize_url_and_body(self._params(b"q=a b#3&r=1&s=%zz"))
+        url = serialize_url_and_body(self._params(b"q=a b#3&r=1&s=%zz")).url
         assert url == "https://example.com/s?a=1&q=a%20b%233&r=1&s=%25zz"
