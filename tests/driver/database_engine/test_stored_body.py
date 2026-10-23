@@ -13,10 +13,7 @@ import sqlalchemy as sa
 from sqlalchemy import select
 
 from jkent.data_types import HttpMethod
-from jkent.driver.database_engine.compression import (
-    compress,
-    count_off_dictionary,
-)
+from jkent.driver.database_engine.compression import compress
 from jkent.driver.database_engine.enums import RequestStatus
 from jkent.driver.database_engine.models import Request
 from jkent.driver.database_engine.sql_manager import SQLManager
@@ -152,6 +149,6 @@ async def test_stored_body_predicate(
     assert stored_count == int(stored)
     assert trainable_count == int(trainable)
     assert await sql_manager.resolved_response_count(_STEP) == int(trainable)
-    assert await count_off_dictionary(
-        sql_manager, _STEP, _UNUSED_DICT_ID
+    assert await sql_manager.count_off_dictionary(
+        _STEP, _UNUSED_DICT_ID
     ) == int(stored)

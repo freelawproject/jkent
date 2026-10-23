@@ -9,7 +9,6 @@ guard.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +20,9 @@ import jkent.driver.database_engine.compression as de_compression
 from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.enums import RequestStatus
 from jkent.driver.database_engine.sql_manager import SQLManager
+from jkent.driver.database_engine.sql_manager import (
+    _compression as de_compression_db,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -35,8 +37,14 @@ _HTML = (
 
 @pytest.fixture
 def comp() -> Any:
-    """The compression module under test."""
+    """The pure half of the compression module under test."""
     return de_compression
+
+
+@pytest.fixture
+def comp_db() -> Any:
+    """The manager-side half: the ``CompressionMixin`` module."""
+    return de_compression_db
 
 
 async def _insert_responses(
@@ -89,14 +97,14 @@ async def test_decompress_response_missing_dict(
 ) -> None:
     compressed = comp.compress(b"payload")
     with pytest.raises(ValueError, match="Dictionary 12345 not found"):
-        await comp.decompress_response(sql_manager, compressed, 12345)
+        await sql_manager.decompress_response(compressed, 12345)
 
 
 async def test_get_dict_lookups_miss(
     sql_manager: SQLManager, comp: Any
 ) -> None:
-    assert await comp.get_compression_dict(sql_manager, "no_such_step") is None
-    assert await comp.get_dict_by_id(sql_manager, 4242) is None
+    assert await sql_manager.get_compression_dict("no_such_step") is None
+    assert await sql_manager.get_dict_by_id(4242) is None
 
 
 async def test_cached_dictionaries_are_precomputed_for_compression(
@@ -113,13 +121,13 @@ async def test_cached_dictionaries_are_precomputed_for_compression(
     is the level the cache precomputes for.
     """
     await _insert_responses(sql_manager, comp, "parse", 30)
-    dict_id = await comp.train_compression_dict(sql_manager, "parse")
+    dict_id = await sql_manager.train_compression_dict("parse")
     body = b"".join(_HTML.replace(b"{n}", str(i).encode()) for i in range(30))
 
-    entry = await comp.get_compression_dict(sql_manager, "parse")
+    entry = await sql_manager.get_compression_dict("parse")
     assert entry is not None
     # The same object on every lookup: the digest is paid once, at fill.
-    again = await comp.get_compression_dict(sql_manager, "parse")
+    again = await sql_manager.get_compression_dict("parse")
     assert again is not None
     assert again.dictionary is entry.dictionary
 
@@ -136,7 +144,7 @@ async def test_cached_dictionaries_are_precomputed_for_compression(
     # The by-id path serves recompression, which compresses a whole chunk
     # per dictionary, so it precomputes too.
     sql_manager.compression_dict_cache.by_id.clear()
-    by_id = await comp.get_dict_by_id(sql_manager, dict_id)
+    by_id = await sql_manager.get_dict_by_id(dict_id)
     assert by_id is not None
     assert comp.compress(body, level=1, dictionary=by_id) == comp.compress(
         body, level=19, dictionary=by_id
@@ -155,7 +163,7 @@ async def test_train_with_no_responses(
     sql_manager: SQLManager, comp: Any
 ) -> None:
     with pytest.raises(ValueError, match="No responses found"):
-        await comp.train_compression_dict(sql_manager, "empty_step")
+        await sql_manager.train_compression_dict("empty_step")
 
 
 async def test_train_with_undecompressable_samples(
@@ -163,7 +171,7 @@ async def test_train_with_undecompressable_samples(
 ) -> None:
     await _insert_responses(sql_manager, comp, "bad_step", 5, garbage=True)
     with pytest.raises(ValueError, match="Could not decompress any samples"):
-        await comp.train_compression_dict(sql_manager, "bad_step")
+        await sql_manager.train_compression_dict("bad_step")
 
 
 async def test_train_refuses_a_corpus_too_small_to_train_on(
@@ -172,18 +180,16 @@ async def test_train_refuses_a_corpus_too_small_to_train_on(
     """Eight one-byte bodies segfault zstd's trainer; refuse before calling it."""
     await _insert_responses(sql_manager, comp, "tiny", 8, body=b"1")
     with pytest.raises(ValueError, match="too little sample data"):
-        await comp.train_compression_dict(sql_manager, "tiny")
+        await sql_manager.train_compression_dict("tiny")
 
 
 async def test_recompress_without_dictionary(
     sql_manager: SQLManager, comp: Any
 ) -> None:
     with pytest.raises(ValueError, match="No dictionary found for"):
-        await comp.recompress_responses(sql_manager, "no_such_step")
+        await sql_manager.recompress_responses("no_such_step")
     with pytest.raises(ValueError, match="No dictionary found with id"):
-        await comp.recompress_responses(
-            sql_manager, "no_such_step", dict_id=777
-        )
+        await sql_manager.recompress_responses("no_such_step", dict_id=777)
 
 
 async def test_train_then_recompress_round_trip(
@@ -192,13 +198,13 @@ async def test_train_then_recompress_round_trip(
     sf = sql_manager.session_factory
     await _insert_responses(sql_manager, comp, "parse", 30)
 
-    dict_id = await comp.train_compression_dict(sql_manager, "parse")
-    found = await comp.get_compression_dict(sql_manager, "parse")
+    dict_id = await sql_manager.train_compression_dict("parse")
+    found = await sql_manager.get_compression_dict("parse")
     assert found is not None and found[0] == dict_id
 
     # chunk_size=7 with 30 rows forces several read-recompress-write pages,
     # including a short final one.
-    stats = await comp.recompress_responses(sql_manager, "parse", chunk_size=7)
+    stats = await sql_manager.recompress_responses("parse", chunk_size=7)
     assert stats.recompressed_count == 30
     assert stats.skipped_count == 0
     assert stats.total_original_bytes > 0
@@ -222,22 +228,20 @@ async def test_train_then_recompress_round_trip(
         assert row_dict_id == dict_id
         assert url == f"https://comp.test/parse/{i}"
         expected = _HTML.replace(b"{n}", str(i).encode())
-        assert await comp.decompress_response(
-            sql_manager, compressed, row_dict_id
+        assert await sql_manager.decompress_response(
+            compressed, row_dict_id
         ) == (expected)
         assert (osize, csize) == (len(expected), len(compressed))
 
     # A second pass against the same dictionary is a no-op: every row is
     # already on the target dictionary, so nothing is rewritten.
-    again = await comp.recompress_responses(
-        sql_manager, "parse", dict_id=dict_id
-    )
+    again = await sql_manager.recompress_responses("parse", dict_id=dict_id)
     assert again == comp.RecompressStats(0, 0, 0, 0)
 
     # Retraining stores a new version; the latest wins the lookup.
-    second_id = await comp.train_compression_dict(sql_manager, "parse")
+    second_id = await sql_manager.train_compression_dict("parse")
     assert second_id != dict_id
-    latest = await comp.get_compression_dict(sql_manager, "parse")
+    latest = await sql_manager.get_compression_dict("parse")
     assert latest is not None and latest[0] == second_id
 
 
@@ -250,10 +254,10 @@ async def test_recompress_reports_skipped_rows(
     await _insert_responses(sql_manager, comp, "mixed", 4, garbage=True)
 
     # Training tolerates the garbage rows (they're skipped as samples).
-    dict_id = await comp.train_compression_dict(sql_manager, "mixed")
+    dict_id = await sql_manager.train_compression_dict("mixed")
 
-    stats = await comp.recompress_responses(
-        sql_manager, "mixed", dict_id=dict_id, chunk_size=10
+    stats = await sql_manager.recompress_responses(
+        "mixed", dict_id=dict_id, chunk_size=10
     )
     assert stats.recompressed_count == 30
     assert stats.skipped_count == 4
@@ -282,7 +286,10 @@ def test_decompress_samples_byte_cap(comp: Any) -> None:
 
 
 async def test_collect_training_samples_stops_at_the_byte_cap(
-    sql_manager: SQLManager, comp: Any, monkeypatch: pytest.MonkeyPatch
+    sql_manager: SQLManager,
+    comp: Any,
+    comp_db: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Collection stops mid-walk, so the ids past the cap are never read.
 
@@ -291,7 +298,7 @@ async def test_collect_training_samples_stops_at_the_byte_cap(
     fetched, not merely never decompressed.
     """
     await _insert_responses(sql_manager, comp, "capped", 40)
-    monkeypatch.setattr(comp, "TRAIN_SAMPLE_BATCH_SIZE", 10)
+    monkeypatch.setattr(comp_db, "TRAIN_SAMPLE_BATCH_SIZE", 10)
 
     async with sql_manager.session_factory() as session:
         sample_ids = list(
@@ -307,17 +314,17 @@ async def test_collect_training_samples_stops_at_the_byte_cap(
     assert len(sample_ids) == 40
 
     reads: list[int] = []
-    original = comp._decompress_samples
+    original = comp_db._decompress_samples
 
     def counting(rows: Any, *args: Any) -> Any:
         reads.append(len(rows))
         return original(rows, *args)
 
-    monkeypatch.setattr(comp, "_decompress_samples", counting)
+    monkeypatch.setattr(comp_db, "_decompress_samples", counting)
 
     body_size = len(_HTML.replace(b"{n}", b"0"))
-    samples = await comp._collect_training_samples(
-        sql_manager, "capped", sample_ids, body_size * 15
+    samples = await sql_manager._collect_training_samples(
+        "capped", sample_ids, body_size * 15
     )
 
     # Two batches read, not four: the walk stopped once the cap was met.
@@ -335,7 +342,7 @@ async def test_training_seeds_the_dictionary_cache(
     lookup a cache hit saves that pass a read and a precompute.
     """
     await _insert_responses(sql_manager, comp, "parse", 30)
-    dict_id = await comp.train_compression_dict(sql_manager, "parse")
+    dict_id = await sql_manager.train_compression_dict("parse")
 
     cache = sql_manager.compression_dict_cache
     assert cache.latest["parse"] is not None
@@ -351,7 +358,7 @@ async def test_training_seeds_the_dictionary_cache(
     )
 
     # And retraining replaces it rather than leaving the old version.
-    second_id = await comp.train_compression_dict(sql_manager, "parse")
+    second_id = await sql_manager.train_compression_dict("parse")
     assert second_id != dict_id
     assert cache.latest["parse"] is not None
     assert cache.latest["parse"].dict_id == second_id
@@ -375,7 +382,7 @@ async def _bodies_by_id(
     return {
         row[0]: (
             row[1],
-            await comp.decompress_response(sql_manager, row[2], row[1]),
+            await sql_manager.decompress_response(row[2], row[1]),
         )
         for row in rows
     }
@@ -393,13 +400,13 @@ async def test_recompress_moves_rows_off_an_older_dictionary(
             await _bodies_by_id(sql_manager, comp, "parse")
         ).items()
     }
-    dict_a = await comp.train_compression_dict(sql_manager, "parse")
-    await comp.recompress_responses(sql_manager, "parse", dict_id=dict_a)
-    dict_b = await comp.train_compression_dict(sql_manager, "parse")
+    dict_a = await sql_manager.train_compression_dict("parse")
+    await sql_manager.recompress_responses("parse", dict_id=dict_a)
+    dict_b = await sql_manager.train_compression_dict("parse")
     assert dict_b != dict_a
 
-    stats = await comp.recompress_responses(
-        sql_manager, "parse", dict_id=dict_b, chunk_size=7
+    stats = await sql_manager.recompress_responses(
+        "parse", dict_id=dict_b, chunk_size=7
     )
 
     assert stats.recompressed_count == 30
@@ -418,20 +425,18 @@ async def test_recompress_skips_a_row_changed_after_the_read(
     counted as skipped and keeps the concurrent writer's bytes."""
     sf = sql_manager.session_factory
     await _insert_responses(sql_manager, comp, "parse", 30)
-    dict_id = await comp.train_compression_dict(sql_manager, "parse")
+    dict_id = await sql_manager.train_compression_dict("parse")
     async with sf() as session:
         victim = (
             await session.execute(sa.text("SELECT MIN(id) FROM requests"))
         ).scalar_one()
     concurrent = comp.compress(b"<html>newer content</html>")
-    real_write_session = comp.write_session
+    real_write_session = sql_manager._write_session
 
     @asynccontextmanager
-    async def racing_write_session(
-        factory: Any, db_lock: asyncio.Lock
-    ) -> AsyncIterator[Any]:
+    async def racing_write_session() -> AsyncIterator[Any]:
         """Land a concurrent write to ``victim`` just before the chunk's."""
-        async with real_write_session(factory, db_lock) as session:
+        async with real_write_session() as session:
             await session.execute(
                 sa.text(
                     "UPDATE requests SET content_compressed = :c "
@@ -440,14 +445,12 @@ async def test_recompress_skips_a_row_changed_after_the_read(
                 {"c": concurrent, "id": victim},
             )
             await session.commit()
-        async with real_write_session(factory, db_lock) as session:
+        async with real_write_session() as session:
             yield session
 
-    monkeypatch.setattr(comp, "write_session", racing_write_session)
+    monkeypatch.setattr(sql_manager, "_write_session", racing_write_session)
 
-    stats = await comp.recompress_responses(
-        sql_manager, "parse", dict_id=dict_id
-    )
+    stats = await sql_manager.recompress_responses("parse", dict_id=dict_id)
 
     assert stats.recompressed_count == 29
     assert stats.skipped_count == 1

@@ -47,7 +47,7 @@ sharing the same scheduler set (async loop and cpu core).
 | Metric | Type | Unit | Attrs | Emitted from |
 |---|---|---|---|---|
 | `jkent.request.duration` | histogram | s | `scraper`, `step`, `phase` | `request_span` (`phase=total`) + `phase()` (`tracing.py`), wired in `worker.py` |
-| `jkent.request.cpu_time` | histogram | s | `scraper`, `step`, `phase` | `compress_response` / `decompress_response` (`compression.py`) |
+| `jkent.request.cpu_time` | histogram | s | `scraper`, `step`, `phase` | `compress_response` / `decompress_response` (`sql_manager/_compression.py`) |
 
 `request.duration` is recorded once per [phase](#phases) per request, plus a
 `phase=total` covering the whole request. The `rate_limiter.gate` slice is the
@@ -106,7 +106,7 @@ an outage that keeps outlasting the recovery window.
 
 | Metric | Type | Unit | Attrs | Emitted from |
 |---|---|---|---|---|
-| `jkent.compression.duration` | histogram | s | `scraper`, `step`, `kind=compress`/`decompress` | `compress_response` / `decompress_response` (`compression.py`) |
+| `jkent.compression.duration` | histogram | s | `scraper`, `step`, `kind=compress`/`decompress` | `compress_response` / `decompress_response` (`sql_manager/_compression.py`) |
 | `jkent.compression.ratio` | histogram | 1 | `scraper`, `step` | `compress_response` |
 | `jkent.compaction.duration` | histogram | s | `scraper`, `step`, `kind` | `train_compression_dict` / `recompress_responses` |
 
