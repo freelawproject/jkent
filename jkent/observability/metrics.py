@@ -50,6 +50,7 @@ class Phase(enum.StrEnum):
     TRANSPORT_RESOLVE = "transport.resolve"
     STEP = "step"
     COMPRESS = "compress"
+    DECOMPRESS = "decompress"
 
 
 class Outcome(enum.StrEnum):

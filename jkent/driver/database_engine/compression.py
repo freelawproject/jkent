@@ -62,6 +62,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Nanoseconds per second. The zstd leaves are timed on the integer ``_ns``
+#: clocks (no float rounding mid-measurement) and converted once, here, at
+#: the point of record — the metrics themselves are documented in seconds.
+NS_PER_SECOND: Final = 1_000_000_000
+
 #: Default compression level (3 is a good balance of speed/ratio).
 DEFAULT_COMPRESSION_LEVEL: Final = 3
 
@@ -269,23 +274,30 @@ async def compress_response(
     # Time the synchronous zstd call on both wall and on-loop CPU clocks: the
     # gap between the two, plus the loop-lag metric, is what tells us whether
     # this compression is blocking co-resident workers. compress() has no
-    # await, so time.thread_time() over it is this call's CPU alone (no other
-    # task can be co-scheduled onto this thread mid-call).
+    # await, so time.thread_time_ns() over it is this call's CPU alone (no
+    # other task can be co-scheduled onto this thread mid-call).
+    #
+    # Everything either clock would otherwise enclose — the label snapshot,
+    # the instrument lookup — is hoisted above the first reading, and the two
+    # closing readings are taken back to back, so neither measurement
+    # includes the other's bookkeeping.
     labels = obs.current_labels()
-    wall0 = time.monotonic()
-    cpu0 = time.thread_time()
+    inst = obs.instruments()
+    wall0 = time.monotonic_ns()
+    cpu0 = time.thread_time_ns()
     if dict_result is not None:
         dict_id, dictionary = dict_result
         compressed = compress(content, dictionary=dictionary)
     else:
         dict_id = None
         compressed = compress(content)
-    inst = obs.instruments()
+    wall_ns = time.monotonic_ns() - wall0
+    cpu_ns = time.thread_time_ns() - cpu0
     inst.compression_duration.record(
-        time.monotonic() - wall0, {**labels, "kind": "compress"}
+        wall_ns / NS_PER_SECOND, {**labels, "kind": "compress"}
     )
     inst.request_cpu.record(
-        time.thread_time() - cpu0, {**labels, "phase": obs.Phase.COMPRESS}
+        cpu_ns / NS_PER_SECOND, {**labels, "phase": obs.Phase.COMPRESS}
     )
     if content:
         inst.compression_ratio.record(len(compressed) / len(content), labels)
@@ -298,6 +310,12 @@ async def decompress_response(
     dict_id: int | None,
 ) -> bytes:
     """Decompress response content, using dictionary if one was used.
+
+    Timed on the same two clocks as :func:`compress_response`, and for the
+    same reason: this is the other synchronous zstd leaf on the loop. It is
+    the cheaper of the pair, but it is the one a read-heavy consumer runs
+    per response, so a regression here is worth seeing rather than
+    inferring.
 
     Args:
         db: The run database.
@@ -313,7 +331,20 @@ async def decompress_response(
         if dictionary is None:
             raise ValueError(f"Dictionary {dict_id} not found in database")
 
-    return decompress(compressed, dictionary=dictionary)
+    labels = obs.current_labels()
+    inst = obs.instruments()
+    wall0 = time.monotonic_ns()
+    cpu0 = time.thread_time_ns()
+    content = decompress(compressed, dictionary=dictionary)
+    wall_ns = time.monotonic_ns() - wall0
+    cpu_ns = time.thread_time_ns() - cpu0
+    inst.compression_duration.record(
+        wall_ns / NS_PER_SECOND, {**labels, "kind": "decompress"}
+    )
+    inst.request_cpu.record(
+        cpu_ns / NS_PER_SECOND, {**labels, "phase": obs.Phase.DECOMPRESS}
+    )
+    return content
 
 
 def _decompress_samples(
@@ -394,7 +425,7 @@ async def train_compression_dict(
     Raises:
         ValueError: If no responses found for step or training fails.
     """
-    compaction_started = time.monotonic()
+    compaction_started = time.monotonic_ns()
     if max_sample_bytes is None:
         max_sample_bytes = TRAIN_SAMPLE_BYTE_FACTOR * dict_size
     # Sampling is a pure read; no need to hold the writer lock for it.
@@ -496,7 +527,7 @@ async def train_compression_dict(
     db.compression_dict_cache.latest.pop(step, None)
 
     obs.instruments().compaction_duration.record(
-        time.monotonic() - compaction_started,
+        (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,
         {**obs.current_labels(), "step": step, "kind": "train"},
     )
     return dict_id
@@ -664,7 +695,7 @@ async def recompress_responses(
         ValueError: If no dictionary exists for this step or dict_id, or
             dict_id names a dictionary trained for another step.
     """
-    compaction_started = time.monotonic()
+    compaction_started = time.monotonic_ns()
 
     # Get the dictionary to use
     if dict_id is not None:
@@ -804,7 +835,7 @@ async def recompress_responses(
             break
 
     obs.instruments().compaction_duration.record(
-        time.monotonic() - compaction_started,
+        (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,
         {**obs.current_labels(), "step": step, "kind": "recompress"},
     )
     return RecompressStats(
