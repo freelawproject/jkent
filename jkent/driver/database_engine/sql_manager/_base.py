@@ -34,7 +34,10 @@ class CompressionDictCache:
     """A database's in-memory cache of compression dictionaries.
 
     Without it, every stored response after compaction re-reads the ~110KB
-    dictionary blob and rebuilds a ``ZstdCompressionDict`` from it.
+    dictionary blob and rebuilds a ``ZstdCompressionDict`` from it. Cached
+    entries are also precomputed for compression, so a ``ZstdCompressor``
+    built on one does not re-digest the dictionary either; see
+    :func:`~jkent.driver.database_engine.compression._load_dictionary`.
 
     Dictionary rows are immutable once written — retraining mints a new
     row/version — so ``by_id`` entries never invalidate. ``latest`` maps a
