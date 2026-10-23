@@ -84,6 +84,11 @@ RECOMPRESS_CHUNK_SIZE: Final = 500
 #: that, extra samples only cost memory (they are all held at once).
 TRAIN_SAMPLE_BYTE_FACTOR: Final = 100
 
+#: Rows per :func:`_collect_training_samples` batch. Bounds the compressed
+#: bytes resident while the sample is gathered: only one batch's bodies are
+#: held, rather than every sampled body at once.
+TRAIN_SAMPLE_BATCH_SIZE: Final = 50
+
 #: Fewest decompressed sample bytes training is attempted on. A dictionary
 #: learned from less is worthless, and zstandard 0.25's trainer segfaults on
 #: some such corpora (eight one-byte samples) instead of raising.
@@ -155,9 +160,9 @@ def _load_dictionary(blob: bytes) -> zstd.ZstdCompressionDict:
     precompute itself mutates, so it must happen here, on the loop, before
     the object reaches the cache and any thread.
 
-    The cost is memory: a precomputed dictionary is a few hundred KB rather
-    than its blob's length, paid even for dictionaries only ever used to
-    decompress. At one dictionary per step that is noise.
+    The cost is memory: a precomputed dictionary measures ~525KB resident
+    for a :data:`DEFAULT_DICT_SIZE` blob. That puts us at less than 15MB
+    for all of our current scrape runs, and less than 8MB for most.
     """
     dict_obj = zstd.ZstdCompressionDict(blob)
     dict_obj.precompute_compress(level=DEFAULT_COMPRESSION_LEVEL)
@@ -351,16 +356,18 @@ def _decompress_samples(
     rows: Sequence[tuple[bytes, int | None]],
     dictionaries: dict[int, zstd.ZstdCompressionDict],
     step: str,
-    max_sample_bytes: int,
+    budget: int,
 ) -> list[bytes | bytearray | memoryview[int]]:
-    """Decompress training samples; skip failures; stop at the byte cap.
+    """Decompress one batch of training samples; skip failures; stop at
+    ``budget``.
 
-    Runs in a worker thread — up to ``sample_limit`` back-to-back zstd calls
-    would stall co-resident workers if run on the loop. A sample whose
-    dictionary is missing or whose bytes fail to decompress is skipped with
-    a warning. Collection stops once ``max_sample_bytes`` of decompressed
-    content is gathered: past that point extra samples don't improve the
-    dictionary, they only hold memory (all samples are resident at once).
+    Runs in a worker thread — ``len(rows)`` back-to-back zstd calls would
+    stall co-resident workers if run on the loop. A sample whose dictionary
+    is missing or whose bytes fail to decompress is skipped with a warning.
+    Collection stops once ``budget`` decompressed bytes are gathered, which
+    is the caller's remaining share of ``max_sample_bytes``: past that
+    point extra samples don't improve the dictionary, they only hold
+    memory (all samples are resident at once).
 
     The element union of the returned list is wider than what this function
     produces — every sample is ``bytes`` — because ``zstd.train_dictionary``
@@ -390,7 +397,77 @@ def _decompress_samples(
             continue
         samples.append(content)
         total += len(content)
-        if total >= max_sample_bytes:
+        if total >= budget:
+            break
+    return samples
+
+
+async def _collect_training_samples(
+    db: SQLManager,
+    step: str,
+    sample_ids: Sequence[int],
+    max_sample_bytes: int,
+) -> list[bytes | bytearray | memoryview[int]]:
+    """Fetch and decompress ``sample_ids`` in batches, up to the byte cap.
+
+    The sample is chosen as a list of ids (see
+    :func:`train_compression_dict`), and the bodies behind it are read
+    :data:`TRAIN_SAMPLE_BATCH_SIZE` at a time. Only the current batch's
+    compressed bytes are resident, so peak memory is that batch plus the
+    decompressed samples kept so far — bounded by ``max_sample_bytes`` —
+    rather than every sampled body at once, which on a site with large
+    bodies is the difference between tens of megabytes and gigabytes.
+
+    Each batch reads in its own short session: nothing here holds a read
+    transaction open across the decompression threads.
+
+    Batching also means the dictionaries a batch's rows were compressed
+    with are resolved as that batch needs them. Sampling usually stops
+    well short of ``sample_ids``, and the ids past the stop cost nothing.
+    """
+    samples: list[bytes | bytearray | memoryview[int]] = []
+    collected = 0
+    for start in range(0, len(sample_ids), TRAIN_SAMPLE_BATCH_SIZE):
+        batch_ids = sample_ids[start : start + TRAIN_SAMPLE_BATCH_SIZE]
+        async with db.session_factory() as session:
+            result = await session.execute(
+                select(
+                    Request.content_compressed,
+                    Request.compression_dict_id,
+                ).where(Request.id.in_(batch_ids))
+            )
+            # ``content_compressed`` is NOT NULL across
+            # ``training_sample_clauses``, which selected these ids.
+            # Restating it narrows the fetched tuples to
+            # ``(bytes, int | None)`` for the type checker, which is what
+            # lets `_decompress_samples` take a precise row type instead
+            # of ``Row[Any]``.
+            rows = [
+                (content, sample_dict_id)
+                for content, sample_dict_id in result.tuples().all()
+                if content is not None
+            ]
+
+        # Resolve this batch's dictionaries on-loop (get_dict_by_id is
+        # cached per-database, so the single shared dict_id a step
+        # normally has is fetched once for the whole walk), then hand the
+        # zstd work to a thread.
+        dictionaries: dict[int, zstd.ZstdCompressionDict] = {}
+        for comp_dict_id in {row[1] for row in rows if row[1] is not None}:
+            dict_obj = await get_dict_by_id(db, comp_dict_id)
+            if dict_obj is not None:
+                dictionaries[comp_dict_id] = dict_obj
+
+        batch = await asyncio.to_thread(
+            _decompress_samples,
+            rows,
+            dictionaries,
+            step,
+            max_sample_bytes - collected,
+        )
+        samples.extend(batch)
+        collected += sum(len(sample) for sample in batch)
+        if collected >= max_sample_bytes:
             break
     return samples
 
@@ -416,8 +493,8 @@ async def train_compression_dict(
         max_sample_bytes: Cap on cumulative decompressed sample bytes held
             for training. Defaults to ``TRAIN_SAMPLE_BYTE_FACTOR *
             dict_size``, past which more data stops improving the
-            dictionary. The compressed rows (up to ``sample_limit``) are
-            fetched in full regardless.
+            dictionary. Collection stops at the cap, so the sampled bodies
+            past it are never read.
 
     Returns:
         The ID of the newly created dictionary.
@@ -428,46 +505,28 @@ async def train_compression_dict(
     compaction_started = time.monotonic_ns()
     if max_sample_bytes is None:
         max_sample_bytes = TRAIN_SAMPLE_BYTE_FACTOR * dict_size
-    # Sampling is a pure read; no need to hold the writer lock for it.
+
+    # Choose the sample as a list of ids, not as bodies: this is the only
+    # query that has to touch every candidate row, and taking just the
+    # ``id`` column keeps it to a few kilobytes however large the bodies
+    # are. :func:`_collect_training_samples` then reads the bodies behind
+    # these ids in batches, and stops at ``max_sample_bytes``.
+    #
+    # A pure read; no need to hold the writer lock for it.
     async with db.session_factory() as session:
         result = await session.execute(
-            select(
-                Request.content_compressed,
-                Request.compression_dict_id,
-            )
+            select(Request.id)
             .where(*training_sample_clauses(step))
             .order_by(sa.func.random())
             .limit(sample_limit)
         )
-        # ``content_compressed`` is NOT NULL across
-        # ``training_sample_clauses``. Restating that here narrows the
-        # fetched tuples to ``(bytes, int | None)`` for the type checker,
-        # which is what lets `_decompress_samples` take a precise row type
-        # instead of ``Row[Any]``.
-        rows = [
-            (content, sample_dict_id)
-            for content, sample_dict_id in result.tuples().all()
-            if content is not None
-        ]
+        sample_ids = list(result.scalars().all())
 
-    if not rows:
+    if not sample_ids:
         raise ValueError(f"No responses found for step '{step}'")
 
-    # Resolve the dictionaries the samples were compressed with up front
-    # (cached per-database), so the off-loop batch below needs no event-loop
-    # access.
-    dictionaries: dict[int, zstd.ZstdCompressionDict] = {}
-    for comp_dict_id in {row[1] for row in rows if row[1] is not None}:
-        dict_obj = await get_dict_by_id(db, comp_dict_id)
-        if dict_obj is not None:
-            dictionaries[comp_dict_id] = dict_obj
-
-    samples = await asyncio.to_thread(
-        _decompress_samples,
-        rows,
-        dictionaries,
-        step,
-        max_sample_bytes,
+    samples = await _collect_training_samples(
+        db, step, sample_ids, max_sample_bytes
     )
 
     if not samples:
@@ -523,8 +582,20 @@ async def train_compression_dict(
     # metric record must not extend — or, if it raises, strand — the lock.
     #
     # The new version supersedes whatever the cache holds for this
-    # step (including a cached "no dictionary yet").
-    db.compression_dict_cache.latest.pop(step, None)
+    # step (including a cached "no dictionary yet"). Drop the stale entry
+    # before building the replacement, so a failure to load the dictionary
+    # leaves the cache merely cold rather than wrong.
+    #
+    # Seeding the cache rather than only invalidating it saves the
+    # immediately following recompression pass a read and a precompute:
+    # the compactor trains and then recompresses against this very
+    # dictionary, so the next lookup is guaranteed and its answer is
+    # already in hand.
+    cache = db.compression_dict_cache
+    cache.latest.pop(step, None)
+    trained = _load_dictionary(dictionary_data.as_bytes())
+    cache.by_id[dict_id] = trained
+    cache.latest[step] = DictEntry(dict_id, trained)
 
     obs.instruments().compaction_duration.record(
         (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,

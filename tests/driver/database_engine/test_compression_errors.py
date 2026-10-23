@@ -281,6 +281,82 @@ def test_decompress_samples_byte_cap(comp: Any) -> None:
     assert all(s == b"x" * 100 for s in samples)
 
 
+async def test_collect_training_samples_stops_at_the_byte_cap(
+    sql_manager: SQLManager, comp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Collection stops mid-walk, so the ids past the cap are never read.
+
+    Batched so that the cap lands inside the second batch: the point of
+    the walk is that the bodies behind the remaining ids are never
+    fetched, not merely never decompressed.
+    """
+    await _insert_responses(sql_manager, comp, "capped", 40)
+    monkeypatch.setattr(comp, "TRAIN_SAMPLE_BATCH_SIZE", 10)
+
+    async with sql_manager.session_factory() as session:
+        sample_ids = list(
+            (
+                await session.execute(
+                    sa.text(
+                        "SELECT id FROM requests WHERE step = 'capped' "
+                        "ORDER BY id"
+                    )
+                )
+            ).scalars()
+        )
+    assert len(sample_ids) == 40
+
+    reads: list[int] = []
+    original = comp._decompress_samples
+
+    def counting(rows: Any, *args: Any) -> Any:
+        reads.append(len(rows))
+        return original(rows, *args)
+
+    monkeypatch.setattr(comp, "_decompress_samples", counting)
+
+    body_size = len(_HTML.replace(b"{n}", b"0"))
+    samples = await comp._collect_training_samples(
+        sql_manager, "capped", sample_ids, body_size * 15
+    )
+
+    # Two batches read, not four: the walk stopped once the cap was met.
+    assert reads == [10, 10]
+    assert sum(len(sample) for sample in samples) >= body_size * 15
+    assert len(samples) < len(sample_ids)
+
+
+async def test_training_seeds_the_dictionary_cache(
+    sql_manager: SQLManager, comp: Any
+) -> None:
+    """The dictionary a run just trained is cached, not merely invalidated.
+
+    The compactor recompresses against it immediately, so making the next
+    lookup a cache hit saves that pass a read and a precompute.
+    """
+    await _insert_responses(sql_manager, comp, "parse", 30)
+    dict_id = await comp.train_compression_dict(sql_manager, "parse")
+
+    cache = sql_manager.compression_dict_cache
+    assert cache.latest["parse"] is not None
+    assert cache.latest["parse"].dict_id == dict_id
+    assert cache.by_id[dict_id] is cache.latest["parse"].dictionary
+
+    # Seeded, not just stored: the cached entry is precomputed like any
+    # other, so the level no longer reaches zstd.
+    body = b"".join(_HTML.replace(b"{n}", str(i).encode()) for i in range(30))
+    cached = cache.by_id[dict_id]
+    assert comp.compress(body, level=1, dictionary=cached) == comp.compress(
+        body, level=19, dictionary=cached
+    )
+
+    # And retraining replaces it rather than leaving the old version.
+    second_id = await comp.train_compression_dict(sql_manager, "parse")
+    assert second_id != dict_id
+    assert cache.latest["parse"] is not None
+    assert cache.latest["parse"].dict_id == second_id
+
+
 async def _bodies_by_id(
     sql_manager: SQLManager, comp: Any, step: str
 ) -> dict[int, tuple[int | None, bytes]]:
