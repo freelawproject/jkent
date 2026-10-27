@@ -36,6 +36,7 @@ from jkent.contracts import require
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -213,19 +214,37 @@ class RecompressStats(NamedTuple):
     skipped_count: int = 0
 
 
-class _PendingUpdate(NamedTuple):
-    """One recompressed row awaiting its guarded UPDATE.
+class _OffDictionaryRow(NamedTuple):
+    """One stored body read for recompression, with its store stamp.
 
-    ``old_compressed`` is kept so the write can guard against a concurrent
-    writer having changed the row between the chunk's read and its write.
-    The guard compares the blob itself, not ``compression_dict_id``: a
-    rewrite that stored different content under the same dictionary (or
-    none at all) would slip past an id-only guard and be clobbered with
-    stale bytes here.
+    ``response_created_at`` and ``content_size_compressed`` are what the
+    guarded UPDATE compares (see :class:`_PendingUpdate`).
     """
 
     request_id: int
-    old_compressed: bytes
+    compressed: bytes
+    dict_id: int | None
+    response_created_at: datetime | None
+    content_size_compressed: int | None
+
+
+class _PendingUpdate(NamedTuple):
+    """One recompressed row awaiting its guarded UPDATE.
+
+    ``response_created_at`` and ``old_size`` are kept so the write can guard
+    against a concurrent writer having changed the row between the chunk's
+    read and its write. Every body write goes through ``store_response``,
+    which restamps ``response_created_at`` in the same UPDATE, so the stamp
+    moves whenever the body does — unlike ``retry_count``, which a retry
+    bumps before its re-store, and which autowait re-stores and re-runs
+    after an interrupted run never bump at all. The stamp has millisecond
+    resolution; the compressed size covers two stores landing in the same
+    millisecond, short of both also compressing to the same length.
+    """
+
+    request_id: int
+    response_created_at: datetime | None
+    old_size: int | None
     new_compressed: bytes
     original_size: int
     new_size: int
@@ -244,7 +263,7 @@ class _ChunkResult(NamedTuple):
 
 
 def _recompress_chunk(
-    rows: Sequence[tuple[int, bytes, int | None]],
+    rows: Sequence[_OffDictionaryRow],
     old_dictionaries: dict[int, zstd.ZstdCompressionDict],
     dictionary: zstd.ZstdCompressionDict,
     step: str,
@@ -258,7 +277,7 @@ def _recompress_chunk(
     """
     updates: list[_PendingUpdate] = []
     skipped = 0
-    for request_id, compressed, old_dict_id in rows:
+    for request_id, compressed, old_dict_id, stamp, old_size in rows:
         old_dictionary = (
             old_dictionaries.get(old_dict_id)
             if old_dict_id is not None
@@ -285,7 +304,8 @@ def _recompress_chunk(
         updates.append(
             _PendingUpdate(
                 request_id,
-                compressed,
+                stamp,
+                old_size,
                 new_compressed,
                 len(content),
                 len(new_compressed),

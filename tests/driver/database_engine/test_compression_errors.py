@@ -20,7 +20,7 @@ import zstandard as zstd
 import jkent.driver.database_engine.compression as de_compression
 from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.enums import RequestStatus
-from jkent.driver.database_engine.sql_manager import SQLManager
+from jkent.driver.database_engine.sql_manager import SQLManager, StoredResponse
 from jkent.driver.database_engine.sql_manager import (
     _compression as de_compression_db,
 )
@@ -502,21 +502,25 @@ async def test_recompress_skips_a_row_changed_after_the_read(
 
     @asynccontextmanager
     async def racing_write_session() -> AsyncIterator[Any]:
-        """Land a concurrent write to ``victim`` just before the first
+        """Land a concurrent store to ``victim`` just before the first
         chunk's, and only that one: a writer that kept rewriting the row
-        every page would just be the same race again."""
+        every page would just be the same race again.
+
+        Through ``store_response``, the one writer of stored bodies, so the
+        row is restamped the way a real re-store restamps it."""
         nonlocal raced
         if not raced:
             raced = True
-            async with real_write_session() as session:
-                await session.execute(
-                    sa.text(
-                        "UPDATE requests SET content_compressed = :c "
-                        "WHERE id = :id"
-                    ),
-                    {"c": concurrent, "id": victim},
-                )
-                await session.commit()
+            await sql_manager.store_response(
+                victim,
+                StoredResponse(
+                    response_status_code=200,
+                    response_url="https://comp.test/parse/0",
+                    content_compressed=concurrent,
+                    content_size_original=len(b"<html>newer content</html>"),
+                    content_size_compressed=len(concurrent),
+                ),
+            )
         async with real_write_session() as session:
             yield session
 

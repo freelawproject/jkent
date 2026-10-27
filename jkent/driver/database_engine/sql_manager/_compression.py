@@ -50,6 +50,7 @@ from jkent.driver.database_engine.compression import (
     RecompressStats,
     _decompress_samples,
     _load_dictionary,
+    _OffDictionaryRow,
     _recompress_chunk,
     compress,
     decompress,
@@ -492,7 +493,7 @@ class CompressionMixin(SQLManagerBase):
         step: str,
         target_dict_id: int,
         chunk_size: int,
-    ) -> list[tuple[int, bytes, int | None]]:
+    ) -> list[_OffDictionaryRow]:
         """One page of ``step``'s rows not yet on ``target_dict_id``.
         Calling this again without first updating rows will return the
         same results.
@@ -503,6 +504,8 @@ class CompressionMixin(SQLManagerBase):
                     Request.id,
                     Request.content_compressed,
                     Request.compression_dict_id,
+                    Request.response_created_at,
+                    Request.content_size_compressed,
                 )
                 .where(*_off_dictionary(step, target_dict_id))
                 .order_by(Request.id)
@@ -511,11 +514,10 @@ class CompressionMixin(SQLManagerBase):
             page = result.tuples().all()
 
         # ``content_compressed`` is NOT NULL across ``_off_dictionary``;
-        # restating it narrows the rows to ``(int, bytes, int | None)`` for
-        # the type checker.
+        # restating it narrows the body to ``bytes`` for the type checker.
         return [
-            (request_id, content, row_dict_id)
-            for request_id, content, row_dict_id in page
+            _OffDictionaryRow(request_id, content, row_dict_id, stamp, size)
+            for request_id, content, row_dict_id, stamp, size in page
             if content is not None
         ]
 
@@ -598,10 +600,11 @@ class CompressionMixin(SQLManagerBase):
             skipped_count += chunk_skipped
 
             # Persist the chunk in a single transaction. Each UPDATE guards on
-            # the content we read (content_compressed unchanged), so a row a
+            # the store stamp we read (see ``_PendingUpdate``), so a row a
             # concurrent writer touched between read and write is skipped
-            # rather than clobbered with stale bytes. Counts/totals reflect
-            # only rows actually written.
+            # rather than clobbered with stale bytes. IS NOT DISTINCT FROM,
+            # not ``=``: a NULL stamp must still match itself. Counts/totals
+            # reflect only rows actually written.
             page_written = 0
             if updates:
                 async with self._write_session() as session:
@@ -611,8 +614,12 @@ class CompressionMixin(SQLManagerBase):
                             sa.update(Request)
                             .where(
                                 Request.id == update.request_id,
-                                Request.content_compressed
-                                == update.old_compressed,
+                                Request.response_created_at.is_not_distinct_from(
+                                    update.response_created_at
+                                ),
+                                Request.content_size_compressed.is_not_distinct_from(
+                                    update.old_size
+                                ),
                             )
                             .values(
                                 {
