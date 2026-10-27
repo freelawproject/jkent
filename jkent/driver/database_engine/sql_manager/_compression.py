@@ -66,7 +66,7 @@ from jkent.driver.database_engine.stored_body import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -127,16 +127,13 @@ class CompressionMixin(SQLManagerBase):
         if row is None:
             cache.latest[step] = None
             return None
-        dict_obj = _load_dictionary(row[1])
-        cache.by_id[row[0]] = dict_obj
-        entry = DictEntry(row[0], dict_obj)
+        entry = DictEntry(row[0], _load_dictionary(row[1]), step)
+        cache.by_id[entry.dict_id] = entry
         cache.latest[step] = entry
         return entry
 
-    async def get_dict_by_id(
-        self, dict_id: int
-    ) -> zstd.ZstdCompressionDict | None:
-        """Get a compression dictionary by its ID.
+    async def get_dict_entry_by_id(self, dict_id: int) -> DictEntry | None:
+        """Get a compression dictionary, and the step it belongs to, by ID.
 
         Dictionary rows are immutable, so a hit caches forever in the
         manager's ``compression_dict_cache``, precomputed for compression
@@ -150,7 +147,7 @@ class CompressionMixin(SQLManagerBase):
             dict_id: The dictionary ID.
 
         Returns:
-            The dictionary or None if not found.
+            The :class:`DictEntry`, or None if not found.
         """
         cache = self.compression_dict_cache
         cached = cache.by_id.get(dict_id)
@@ -159,17 +156,34 @@ class CompressionMixin(SQLManagerBase):
 
         async with self.session_factory() as session:
             result = await session.execute(
-                select(CompressionDict.dictionary_data).where(
-                    CompressionDict.id == dict_id
-                )
+                select(
+                    CompressionDict.dictionary_data, CompressionDict.step
+                ).where(CompressionDict.id == dict_id)
             )
             row = result.first()
 
         if row is None:
             return None
-        dict_obj = _load_dictionary(row[0])
-        cache.by_id[dict_id] = dict_obj
-        return dict_obj
+        entry = DictEntry(dict_id, _load_dictionary(row[0]), row[1])
+        cache.by_id[dict_id] = entry
+        return entry
+
+    async def get_dict_by_id(
+        self, dict_id: int
+    ) -> zstd.ZstdCompressionDict | None:
+        """Get a compression dictionary by its ID.
+
+        :meth:`get_dict_entry_by_id`, for callers that need only the
+        dictionary.
+
+        Args:
+            dict_id: The dictionary ID.
+
+        Returns:
+            The dictionary or None if not found.
+        """
+        entry = await self.get_dict_entry_by_id(dict_id)
+        return None if entry is None else entry.dictionary
 
     async def compress_response(
         self, content: bytes, step: str
@@ -205,8 +219,8 @@ class CompressionMixin(SQLManagerBase):
         wall0 = time.monotonic_ns()
         cpu0 = time.thread_time_ns()
         if dict_result is not None:
-            dict_id, dictionary = dict_result
-            compressed = compress(content, dictionary=dictionary)
+            dict_id = dict_result.dict_id
+            compressed = compress(content, dictionary=dict_result.dictionary)
         else:
             dict_id = None
             compressed = compress(content)
@@ -450,9 +464,11 @@ class CompressionMixin(SQLManagerBase):
         # already in hand.
         cache = self.compression_dict_cache
         cache.latest.pop(step, None)
-        trained = _load_dictionary(dictionary_data.as_bytes())
-        cache.by_id[dict_id] = trained
-        cache.latest[step] = DictEntry(dict_id, trained)
+        entry = DictEntry(
+            dict_id, _load_dictionary(dictionary_data.as_bytes()), step
+        )
+        cache.by_id[dict_id] = entry
+        cache.latest[step] = entry
 
         obs.instruments().compaction_duration.record(
             (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,
@@ -471,67 +487,37 @@ class CompressionMixin(SQLManagerBase):
             )
             return result.scalar_one()
 
-    async def _iter_off_dictionary_chunks(
+    async def _read_off_dictionary_page(
         self,
         step: str,
         target_dict_id: int,
         chunk_size: int,
-    ) -> AsyncIterator[list[tuple[int, bytes, int | None]]]:
-        """Walk ``step``'s rows not yet on ``target_dict_id``, a page at
-        a time.
-
-        Keyset pagination on ``id``, not a streaming cursor, and deliberately
-        so. The caller rewrites the rows this walk yields, and the rewrite is
-        what takes them out of :func:`_off_dictionary` — a cursor held open
-        across those writes would be iterating a predicate its own consumer is
-        invalidating. Re-reading the predicate per page is also what makes an
-        interrupted pass resumable: the next run simply finds the rows the
-        last one never reached.
-
-        Each page reads in its own short session, so nothing holds a read
-        transaction open across the recompression threads or the write
-        transactions between pages. Reads use a plain session: the caller's
-        guarded UPDATE, not the transaction shape, is what protects against
-        concurrent writers.
-
-        The walk ends on the first short page. A page's rows may be fewer than
-        ``chunk_size`` after the NOT NULL narrowing below, so that decision
-        reads the page as fetched, not the yielded list, and cannot stall or
-        truncate the walk.
+    ) -> list[tuple[int, bytes, int | None]]:
+        """One page of ``step``'s rows not yet on ``target_dict_id``.
+        Calling this again without first updating rows will return the
+        same results.
         """
-        last_id = 0
-        while True:
-            async with self.session_factory() as session:
-                result = await session.execute(
-                    select(
-                        Request.id,
-                        Request.content_compressed,
-                        Request.compression_dict_id,
-                    )
-                    .where(
-                        *_off_dictionary(step, target_dict_id),
-                        Request.id > last_id,
-                    )
-                    .order_by(Request.id)
-                    .limit(chunk_size)
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(
+                    Request.id,
+                    Request.content_compressed,
+                    Request.compression_dict_id,
                 )
-                page = result.tuples().all()
+                .where(*_off_dictionary(step, target_dict_id))
+                .order_by(Request.id)
+                .limit(chunk_size)
+            )
+            page = result.tuples().all()
 
-            if not page:
-                return
-            last_id = page[-1][0]
-
-            # ``content_compressed`` is NOT NULL across ``_off_dictionary``;
-            # restating it narrows the rows to ``(int, bytes, int | None)`` for
-            # the type checker.
-            yield [
-                (request_id, content, row_dict_id)
-                for request_id, content, row_dict_id in page
-                if content is not None
-            ]
-
-            if len(page) < chunk_size:
-                return
+        # ``content_compressed`` is NOT NULL across ``_off_dictionary``;
+        # restating it narrows the rows to ``(int, bytes, int | None)`` for
+        # the type checker.
+        return [
+            (request_id, content, row_dict_id)
+            for request_id, content, row_dict_id in page
+            if content is not None
+        ]
 
     async def recompress_responses(
         self,
@@ -543,20 +529,7 @@ class CompressionMixin(SQLManagerBase):
         """Re-compress responses using a dictionary for a step.
 
         Decompresses responses for the step and re-compresses them using
-        the specified or latest trained dictionary. This can significantly
-        improve compression ratios after training a new dictionary.
-
-        Rows already compressed against the target dictionary are
-        excluded, so a second pass over an already-compacted step is a
-        no-op and an interrupted pass resumes where it stopped.
-
-        Work proceeds in id-ordered chunks of ``chunk_size`` rows — read
-        a page, recompress it, write it back in one guarded transaction,
-        move on — so peak memory is one chunk's worth of bodies (not the
-        whole step, old and new at once) and no single transaction holds
-        the run's DB lock for the whole rewrite.
-        :meth:`_iter_off_dictionary_chunks` is the read half of that
-        walk.
+        the specified or latest trained dictionary.
 
         Args:
             step: The step method name.
@@ -575,42 +548,36 @@ class CompressionMixin(SQLManagerBase):
 
         # Get the dictionary to use
         if dict_id is not None:
+            target = await self.get_dict_entry_by_id(dict_id)
+            if target is None:
+                raise ValueError(f"No dictionary found with id {dict_id}.")
             # Another step's dictionary would compress fine, and stamp every
             # row with an id this step's own compaction then treats as off.
-            async with self.session_factory() as session:
-                dict_step = (
-                    await session.execute(
-                        select(CompressionDict.step).where(
-                            CompressionDict.id == dict_id
-                        )
-                    )
-                ).scalar()
-            if dict_step is not None and dict_step != step:
+            if target.step != step:
                 raise ValueError(
                     f"Dictionary {dict_id} was trained for step "
-                    f"'{dict_step}', not '{step}'."
+                    f"'{target.step}', not '{step}'."
                 )
-            dictionary = await self.get_dict_by_id(dict_id)
-            if dictionary is None:
-                raise ValueError(f"No dictionary found with id {dict_id}.")
-            target_dict_id = dict_id
         else:
-            dict_result = await self.get_compression_dict(step)
-            if dict_result is None:
+            target = await self.get_compression_dict(step)
+            if target is None:
                 raise ValueError(
                     f"No dictionary found for step '{step}'. "
                     "Train a dictionary first using train_compression_dict()."
                 )
-            target_dict_id, dictionary = dict_result
+        target_dict_id, dictionary = target.dict_id, target.dictionary
 
         recompressed_count = 0
         total_original = 0
         total_compressed = 0
         skipped_count = 0
 
-        async for rows in self._iter_off_dictionary_chunks(
-            step, target_dict_id, chunk_size
-        ):
+        while True:
+            rows = await self._read_off_dictionary_page(
+                step, target_dict_id, chunk_size
+            )
+            if not rows:
+                break
             # Resolve the chunk's old dictionaries on-loop (get_dict_by_id is
             # cached per-database, so a shared old_dict_id — the common case
             # for a single step — is fetched once), then hand the zstd work to
@@ -635,6 +602,7 @@ class CompressionMixin(SQLManagerBase):
             # concurrent writer touched between read and write is skipped
             # rather than clobbered with stale bytes. Counts/totals reflect
             # only rows actually written.
+            page_written = 0
             if updates:
                 async with self._write_session() as session:
                     for update in updates:
@@ -672,10 +640,22 @@ class CompressionMixin(SQLManagerBase):
                                 update.request_id,
                             )
                             continue
+                        page_written += 1
                         recompressed_count += 1
                         total_original += update.original_size
                         total_compressed += update.new_size
                     await session.commit()
+
+            # If we get here, something went wrong and we should take a look
+            if page_written == 0:
+                logger.error(
+                    "recompress_responses: step '%s' stopped short of "
+                    "dictionary %s; none of a %d-row page could be rewritten",
+                    step,
+                    target_dict_id,
+                    len(rows),
+                )
+                break
 
         obs.instruments().compaction_duration.record(
             (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,

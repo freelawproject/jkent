@@ -9,6 +9,7 @@ guard.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -245,6 +246,34 @@ async def test_train_then_recompress_round_trip(
     assert latest is not None and latest[0] == second_id
 
 
+async def test_recompress_rejects_another_steps_dictionary(
+    sql_manager: SQLManager, comp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dict_id trained for another step is refused, from the cache alone.
+
+    The cached entry carries its step, so the guard needs no query of its
+    own once the dictionary has been seen.
+    """
+    await _insert_responses(sql_manager, comp, "parse", 30)
+    await _insert_responses(sql_manager, comp, "other", 30)
+    await sql_manager.train_compression_dict("parse")
+    other_id = await sql_manager.train_compression_dict("other")
+
+    def no_session() -> Any:
+        raise AssertionError("the step check should be a cache hit")
+
+    monkeypatch.setattr(sql_manager, "session_factory", no_session)
+    with pytest.raises(ValueError, match="trained for step 'other'"):
+        await sql_manager.recompress_responses("parse", dict_id=other_id)
+
+    # A cold cache reads the step along with the dictionary.
+    monkeypatch.undo()
+    sql_manager.compression_dict_cache.by_id.clear()
+    with pytest.raises(ValueError, match="trained for step 'other'"):
+        await sql_manager.recompress_responses("parse", dict_id=other_id)
+    assert sql_manager.compression_dict_cache.by_id[other_id].step == "other"
+
+
 async def test_recompress_reports_skipped_rows(
     sql_manager: SQLManager, comp: Any
 ) -> None:
@@ -274,6 +303,35 @@ async def test_recompress_reports_skipped_rows(
             )
         ).scalar_one()
     assert remaining == 4
+
+
+async def test_recompress_stops_when_a_page_cannot_be_rewritten(
+    sql_manager: SQLManager, comp: Any
+) -> None:
+    """A page that produces no write ends the pass instead of spinning.
+
+    Pages are "the next rows still off the dictionary", so the writes are
+    what advance the walk. Rows that can never be rewritten stay in the
+    predicate and would be handed back unchanged forever.
+    """
+    await _insert_responses(sql_manager, comp, "stuck", 30)
+    dict_id = await sql_manager.train_compression_dict("stuck")
+    assert (await sql_manager.recompress_responses("stuck")).skipped_count == 0
+
+    # Now every row left off the dictionary is one no pass can rewrite.
+    await _insert_responses(sql_manager, comp, "stuck", 3, garbage=True)
+    assert await sql_manager.count_off_dictionary("stuck", dict_id) == 3
+
+    stats = await asyncio.wait_for(
+        sql_manager.recompress_responses("stuck", dict_id=dict_id),
+        timeout=10,
+    )
+
+    assert stats.recompressed_count == 0
+    assert stats.skipped_count == 3
+    # Still off the dictionary, and still reported: this is the shape
+    # ``Compactor.for_step`` logs as a step that cannot converge.
+    assert await sql_manager.count_off_dictionary("stuck", dict_id) == 3
 
 
 def test_decompress_samples_byte_cap(comp: Any) -> None:
@@ -347,12 +405,13 @@ async def test_training_seeds_the_dictionary_cache(
     cache = sql_manager.compression_dict_cache
     assert cache.latest["parse"] is not None
     assert cache.latest["parse"].dict_id == dict_id
-    assert cache.by_id[dict_id] is cache.latest["parse"].dictionary
+    assert cache.by_id[dict_id] is cache.latest["parse"]
+    assert cache.by_id[dict_id].step == "parse"
 
     # Seeded, not just stored: the cached entry is precomputed like any
     # other, so the level no longer reaches zstd.
     body = b"".join(_HTML.replace(b"{n}", str(i).encode()) for i in range(30))
-    cached = cache.by_id[dict_id]
+    cached = cache.by_id[dict_id].dictionary
     assert comp.compress(body, level=1, dictionary=cached) == comp.compress(
         body, level=19, dictionary=cached
     )
@@ -422,7 +481,13 @@ async def test_recompress_skips_a_row_changed_after_the_read(
     sql_manager: SQLManager, comp: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A row rewritten between the chunk read and the guarded UPDATE is
-    counted as skipped and keeps the concurrent writer's bytes."""
+    counted as skipped and is never clobbered with the stale bytes.
+
+    The walk re-reads whatever is still off the dictionary, so the row comes
+    back on a later page and is then recompressed from the concurrent
+    writer's content. ``skipped_count`` therefore counts the skipped
+    *attempt*, not a row left behind.
+    """
     sf = sql_manager.session_factory
     await _insert_responses(sql_manager, comp, "parse", 30)
     dict_id = await sql_manager.train_compression_dict("parse")
@@ -433,18 +498,25 @@ async def test_recompress_skips_a_row_changed_after_the_read(
     concurrent = comp.compress(b"<html>newer content</html>")
     real_write_session = sql_manager._write_session
 
+    raced = False
+
     @asynccontextmanager
     async def racing_write_session() -> AsyncIterator[Any]:
-        """Land a concurrent write to ``victim`` just before the chunk's."""
-        async with real_write_session() as session:
-            await session.execute(
-                sa.text(
-                    "UPDATE requests SET content_compressed = :c "
-                    "WHERE id = :id"
-                ),
-                {"c": concurrent, "id": victim},
-            )
-            await session.commit()
+        """Land a concurrent write to ``victim`` just before the first
+        chunk's, and only that one: a writer that kept rewriting the row
+        every page would just be the same race again."""
+        nonlocal raced
+        if not raced:
+            raced = True
+            async with real_write_session() as session:
+                await session.execute(
+                    sa.text(
+                        "UPDATE requests SET content_compressed = :c "
+                        "WHERE id = :id"
+                    ),
+                    {"c": concurrent, "id": victim},
+                )
+                await session.commit()
         async with real_write_session() as session:
             yield session
 
@@ -452,7 +524,7 @@ async def test_recompress_skips_a_row_changed_after_the_read(
 
     stats = await sql_manager.recompress_responses("parse", dict_id=dict_id)
 
-    assert stats.recompressed_count == 29
+    assert stats.recompressed_count == 30
     assert stats.skipped_count == 1
     async with sf() as session:
         row = (
@@ -464,4 +536,13 @@ async def test_recompress_skips_a_row_changed_after_the_read(
                 {"id": victim},
             )
         ).one()
-    assert (row[0], row[1]) == (concurrent, None)
+    # Not clobbered: the row carries the concurrent writer's content, picked
+    # up on a later page and recompressed against the target dictionary.
+    assert row[0] != concurrent
+    assert row[1] == dict_id
+    assert (
+        comp.decompress(
+            row[0], dictionary=await sql_manager.get_dict_by_id(dict_id)
+        )
+        == b"<html>newer content</html>"
+    )
