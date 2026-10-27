@@ -22,11 +22,12 @@ if TYPE_CHECKING:
 
 
 class DictEntry(NamedTuple):
-    """A trained dictionary: its ``compression_dicts`` row id and the
-    loaded zstd object."""
+    """A trained dictionary: its ``compression_dicts`` row id, the loaded
+    zstd object, and the step it was trained for."""
 
     dict_id: int
     dictionary: zstd.ZstdCompressionDict
+    step: str
 
 
 @dataclass(slots=True)
@@ -34,18 +35,22 @@ class CompressionDictCache:
     """A database's in-memory cache of compression dictionaries.
 
     Without it, every stored response after compaction re-reads the ~110KB
-    dictionary blob and rebuilds a ``ZstdCompressionDict`` from it.
+    dictionary blob and rebuilds a ``ZstdCompressionDict`` from it. Cached
+    entries are also precomputed for compression, so a ``ZstdCompressor``
+    built on one does not re-digest the dictionary either; see
+    :func:`~jkent.driver.database_engine.compression._load_dictionary`.
 
     Dictionary rows are immutable once written — retraining mints a new
-    row/version — so ``by_id`` entries never invalidate. ``latest`` maps a
-    step to its newest :class:`DictEntry` and also caches the negative "no
-    dictionary yet" result (the pre-compaction common case); both are
-    dropped by ``train_compression_dict``, the only in-process writer. A run
-    database has a single writing process, so no external training can slip
-    past the negative cache.
+    row/version — so ``by_id`` entries never invalidate.
+    ``latest`` maps a step to its newest :class:`DictEntry`
+    and also caches the negative "no dictionary yet" result (the
+    pre-compaction common case); both are dropped by
+    ``train_compression_dict``, the only in-process writer. A run database
+    has a single writing process, so no external training can slip past the
+    negative cache.
     """
 
-    by_id: dict[int, zstd.ZstdCompressionDict] = field(default_factory=dict)
+    by_id: dict[int, DictEntry] = field(default_factory=dict)
     latest: dict[str, DictEntry | None] = field(default_factory=dict)
 
 

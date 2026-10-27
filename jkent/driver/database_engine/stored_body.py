@@ -22,7 +22,8 @@ def stored_body_clauses(step: str) -> tuple[sa.ColumnElement[bool], ...]:
     A stored body is a non-NULL ``content_compressed`` on a row with a
     ``response_status_code``, of any request status. Archive requests set a
     status code but store their file on disk, so they are excluded.
-    Recompression and :func:`~jkent.driver.database_engine.compression.count_off_dictionary` select from this set.
+    Recompression and ``SQLManager.count_off_dictionary`` select from
+    this set.
     """
     return (
         Request.step == step,
@@ -37,7 +38,7 @@ def training_sample_clauses(step: str) -> tuple[sa.ColumnElement[bool], ...]:
     The :func:`stored_body_clauses` rows whose request is ``COMPLETED``:
     failed and retried rows can carry an error-page or debug-snapshot body,
     which does not belong in a step's training set.
-    :func:`~jkent.driver.database_engine.compression.train_compression_dict` samples from this set and
+    ``SQLManager.train_compression_dict`` samples from this set and
     ``SQLManager.resolved_response_count`` counts it.
     """
     return (
