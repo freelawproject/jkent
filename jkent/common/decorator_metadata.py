@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Final
 from pydantic import (
     BaseModel,
     ConfigDict,
+    FiniteFloat,
     PydanticSchemaGenerationError,
     create_model,
 )
@@ -30,8 +31,8 @@ DEFAULT_PRIORITY: Final = 9
 
 #: A request timeout in seconds, or a (connect, read) tuple; None is unset.
 #: Shared by StepMetadata and HTTPRequestParams; the authoring facade
-#: (jkent.data_types) re-exports it.
-TimeoutType = float | tuple[float, float] | None
+#: (jkent.data_types) re-exports it. FiniteFloat for json roundtripping.
+TimeoutType = FiniteFloat | tuple[FiniteFloat, FiniteFloat] | None
 
 
 class StepMetadata:

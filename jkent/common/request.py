@@ -18,8 +18,19 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from functools import cached_property
-from typing import Any, BinaryIO, Final, TypeVar, cast, overload
+from typing import (
+    Annotated,
+    Any,
+    BinaryIO,
+    Final,
+    TypeVar,
+    cast,
+    overload,
+)
 from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
+
+from pydantic import ConfigDict, Field, PlainValidator
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import DEFAULT_PRIORITY, TimeoutType
@@ -69,7 +80,31 @@ class HttpMethod(CodedEnum):
 
 # Type aliases for complex parameter types
 QueryParams = dict[str, Any] | list[tuple[str, Any]] | bytes | None
-RequestData = dict[str, Any] | list[tuple[str, Any]] | bytes | BinaryIO | None
+
+
+def _as_stream(value: Any) -> Any:
+    """Pass a file-like body through unvalidated; reject anything else.
+
+    The one arm of :data:`RequestData` that cannot be a plain annotation:
+    ``BinaryIO`` is a protocol pydantic has no validator for, and a bare
+    ``SkipValidation`` arm would make the *whole* union permissive again —
+    every malformed body would be accepted as "a stream". The test is the
+    one :func:`encode_body` itself applies, so exactly the bodies it can
+    read are the bodies that validate.
+    """
+    if hasattr(value, "read"):
+        return value
+    raise ValueError("not a file-like body")
+
+
+#: A file-like request body, ducked typed.
+StreamBody = Annotated[BinaryIO, PlainValidator(_as_stream)]
+
+# Check StreamBody first so we don't accidentally exhaust a stream.
+RequestData = Annotated[
+    StreamBody | dict[str, Any] | list[tuple[str, Any]] | bytes | None,
+    Field(union_mode="left_to_right"),
+]
 HeadersType = dict[str, str] | None
 CookiesType = dict[str, str] | None
 
@@ -81,7 +116,9 @@ DEFAULT_TIMEOUT_S: float = 60.0
 VerifyType = bool | str
 
 
-@dataclass(frozen=True)
+@pydantic_dataclass(
+    frozen=True, config=ConfigDict(arbitrary_types_allowed=True)
+)
 class HTTPRequestParams:
     """Parameters for an HTTP request, mirroring the requests library interface.
 
