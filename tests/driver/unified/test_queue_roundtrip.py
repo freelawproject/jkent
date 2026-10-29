@@ -22,10 +22,17 @@ lossy:
 3. **``verify`` encoding.** Any ``VerifyType`` round-trips, including a
    CA-bundle path spelled ``"true"`` or ``"false"``.
 
-Plus the three things the write path refuses at enqueue rather than at
-dequeue — an undeclared rate-limit lane, a nameless callable step, and a
-value the dequeue types could not decode — and the
+Plus the lane table's enqueue-time rejection of an undeclared lane, and the
 ``SkipDeduplicationCheck`` opt-out, which has no stored form of its own.
+
+The strategies below stay inside the domain the queue accepts — str-to-str
+header and cookie maps, pair-list bodies, finite timeouts. That domain is
+enforced at the boundary rather than merely assumed here:
+``HTTPRequestParams`` validates its own annotations, so a value outside it
+never reaches a row. ``tests/data_types/test_request_params_validation``
+covers the refusals, and ``request_row_round_trips`` in
+``tests/contracts/properties.py`` is the property that explores *outside*
+the domain and states that everything is either refused or round-trips.
 """
 
 from __future__ import annotations
@@ -101,7 +108,9 @@ def _trip(request: Request) -> Request:
 _text = st.text(alphabet=st.characters(codec="utf-8"), max_size=8)
 _key = st.text(alphabet=string.ascii_lowercase + "_-", min_size=1, max_size=6)
 _str_dict = st.dictionaries(_key, _text, max_size=3)
-# Finite floats only: NaN breaks equality and json refuses infinities.
+# Finite floats only. NaN breaks equality, and a non-finite float cannot be
+# stored at all: ``dump_json`` refuses one (``json_valid`` rejects the
+# ``Infinity``/``NaN`` spelling, so the INSERT would fail).
 _finite = st.floats(
     min_value=0, max_value=10_000, allow_nan=False, allow_infinity=False
 )
@@ -433,12 +442,15 @@ def test_undeclared_lane_raises_at_serialize(
 ) -> None:
     """A lane the table does not declare is rejected when serialized.
 
-    ``RateLimitTable.encode`` raises ``ValueError`` so the failure lands at
-    enqueue, on the step that yielded the request (``Request.rate_limit``
-    docs: "an unknown one fails at enqueue").
+    ``RateLimitTable.encode`` raises ``ScraperConfigError`` so the failure
+    lands at enqueue, on the step that yielded the request
+    (``Request.rate_limit`` docs: "an unknown one fails at enqueue"). A
+    config error rather than a ``ValueError``: naming a lane the scraper
+    never declared is a mistake no retry fixes, and the code it would
+    otherwise store is one no dequeue can decode.
     """
     request = replace(request, rate_limit=lane)
-    with pytest.raises(ValueError, match="Unknown rate limit"):
+    with pytest.raises(ScraperConfigError, match="Unknown rate limit"):
         _queue().serialize_request(request)
 
 
@@ -479,61 +491,3 @@ def test_dedup_opt_out_survives_one_trip(request: Request) -> None:
     assert request.effective_deduplication_key is None
 
     assert _trip(request).effective_deduplication_key is None
-
-
-# --- A row the dequeue could not decode -------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("params", "match"),
-    [
-        pytest.param(
-            {"headers": {"X-Attempt": 3}},
-            "headers_json",
-            id="header value is not a string",
-        ),
-        pytest.param(
-            {"cookies": {"session": 7}},
-            "cookies_json",
-            id="cookie value is not a string",
-        ),
-        pytest.param(
-            {"timeout": (1.0, 2.0, 3.0)},
-            "timeout_json",
-            id="timeout is neither a float nor a connect/read pair",
-        ),
-    ],
-)
-def test_undequeuable_row_raises_at_serialize(
-    params: dict[str, Any], match: str
-) -> None:
-    """A value the dequeue types reject is refused at enqueue.
-
-    ``HTTPRequestParams`` is a plain dataclass and ``permanent`` headers
-    merge into it unchecked, so a non-string header value reaches the
-    column; the insert stores the JSON columns as text and only
-    :class:`DequeuedRow` enforces ``dict[str, str]``. Dequeue is far too
-    late to find out: the row is committed ``in_progress`` *before* it is
-    validated, so no later dequeue will offer it again, and the
-    ``ValidationError`` escapes the worker above its ``request_done``,
-    retiring a worker from a pinned pool. The failure belongs here, on the
-    step that yielded the request.
-    """
-    request = Request(
-        request=HTTPRequestParams(HttpMethod.GET, _URL, **params),
-        step="parse",
-    )
-    with pytest.raises(ScraperConfigError, match=match):
-        _queue().serialize_request(request)
-
-
-@given(request=_requests())
-def test_dequeuable_check_passes_every_round_trippable_request(
-    request: Request,
-) -> None:
-    """The enqueue-time check accepts everything the fixed point accepts.
-
-    The check is only worth having if it rejects nothing a dequeue would
-    have decoded — otherwise it refuses requests that work.
-    """
-    _queue().serialize_request(request)

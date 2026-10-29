@@ -255,15 +255,15 @@ class RateLimitTable:
         0.
 
         Raises:
-            ValueError: for a lane this scraper does not declare — the
-                failure lands at enqueue, on the step that yielded it.
+            ScraperConfigError: for a lane this scraper does not declare —
+                the failure lands at enqueue, on the step that yielded it.
         """
         if name is None:
             return 0
         try:
             return self.names.index(name)
         except ValueError:
-            raise ValueError(
+            raise ScraperConfigError(
                 f"Unknown rate limit {name!r}; this scraper's lanes are "
                 f"{list(self.names)}"
             ) from None
@@ -275,15 +275,17 @@ class RateLimitTable:
         round-trips through the database equal to the one enqueued.
 
         Raises:
-            ValueError: for a code past the end of the table — a row from a
-                run whose stored lanes were not the ones this table was
-                built with. Loud on purpose: silently gating it at the
-                default rate would hide the mismatch.
+            ScraperConfigError: for a code past the end of the table — a row
+                from a run whose stored lanes were not the ones this table
+                was built with. Loud on purpose: silently gating it at the
+                default rate would hide the mismatch. :meth:`encode` refuses
+                the same mismatch at enqueue, so a code reaching here with
+                no lane means the table was built against the wrong run.
         """
         if code == 0:
             return None
         if code < 0 or code >= len(self.names):
-            raise ValueError(
+            raise ScraperConfigError(
                 f"Stored rate limit code {code} has no lane; this table "
                 f"holds {list(self.names)}. Was it built without the run's "
                 "stored lane names?"

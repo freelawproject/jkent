@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from jkent.contracts import require
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -23,6 +25,28 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+async def _parent_is_in_progress(self: StagedWrites, db: SQLManager) -> bool:
+    """Whether the row :meth:`StagedWrites.flush` is about to complete is live.
+
+    Dev-time only (see :mod:`jkent.contracts`); production never calls it.
+    """
+    # Local imports: needed only when contracts are enabled.
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from jkent.driver.database_engine.enums import (  # noqa: PLC0415
+        RequestStatus,
+    )
+    from jkent.driver.database_engine.models import Request  # noqa: PLC0415
+
+    async with db.session_factory() as session:
+        status = (
+            await session.execute(
+                select(Request.status).where(Request.id == self.request_id)
+            )
+        ).scalar()
+    return status == RequestStatus.IN_PROGRESS
 
 
 @dataclass(frozen=True)
@@ -59,8 +83,6 @@ class StagedWrites:
     _deferred_callbacks: list[Callable[[], Awaitable[None]]] = field(
         default_factory=list
     )
-    # Set by ``flush``, cleared by ``reset``: a buffer is flushed once.
-    _flushed: bool = False
 
     def reset(self) -> None:
         """Discard everything staged so far (all buffers + deferred callbacks).
@@ -74,7 +96,6 @@ class StagedWrites:
         self._results.clear()
         self._requests.clear()
         self._deferred_callbacks.clear()
-        self._flushed = False
 
     def stage_result(self, result: ResultInsert) -> None:
         """Buffer one ``results``-row insert for the flush."""
@@ -109,6 +130,10 @@ class StagedWrites:
             )
         )
 
+    @require(
+        _parent_is_in_progress,
+        "the parent request is in_progress when its step's writes flush",
+    )
     async def flush(self, db: SQLManager) -> list[EnqueuedEvent]:
         """Commit all buffered writes and complete the parent request.
 
@@ -118,23 +143,7 @@ class StagedWrites:
         Returns the list of progress-event payloads for newly-inserted
         requests, so the caller can fire them post-commit (deduplicated
         inserts are omitted).
-
-        Once per buffer. A results row carries no dedup key to catch a
-        re-insert and a deferred callback has no idea it already ran, so a
-        second flush would duplicate every result and re-fire every
-        on_data/on_invalid_data — including after a flush that raised
-        partway. ``reset`` is how a buffer becomes flushable again (the
-        autowait retry path).
-
-        Raises:
-            RuntimeError: on a second flush of the same buffer.
         """
-        if self._flushed:
-            raise RuntimeError(
-                f"StagedWrites for request {self.request_id} was already "
-                "flushed; call reset() to re-stage it"
-            )
-        self._flushed = True
         emitted_events: list[EnqueuedEvent] = []
 
         async with db._write_session() as session:
@@ -158,20 +167,11 @@ class StagedWrites:
 
             await session.commit()
 
-        # Spent: the rows are committed, so drop what produced them. The
-        # ``_flushed`` guard above already refuses a second flush; clearing
-        # here means even a caller that reaches past it has nothing to
-        # re-insert.
-        callbacks = list(self._deferred_callbacks)
-        self._results.clear()
-        self._requests.clear()
-        self._deferred_callbacks.clear()
-
         # User callbacks fire after the rows they relate to are durable. The
         # commit has happened, so one raising cannot undo anything: log it
         # and keep going, or the later callbacks and the progress events for
         # children that were inserted are lost.
-        for cb in callbacks:
+        for cb in self._deferred_callbacks:
             try:
                 await cb()
             except Exception:

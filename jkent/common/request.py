@@ -18,8 +18,19 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from functools import cached_property
-from typing import Any, BinaryIO, Final, NamedTuple, TypeVar, cast, overload
+from typing import (
+    Annotated,
+    Any,
+    BinaryIO,
+    Final,
+    TypeVar,
+    cast,
+    overload,
+)
 from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
+
+from pydantic import ConfigDict, Field, PlainValidator
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from jkent.common.coded_enum import CodedEnum
 from jkent.common.decorator_metadata import DEFAULT_PRIORITY, TimeoutType
@@ -38,7 +49,6 @@ __all__ = [
     "QueryParams",
     "Request",
     "RequestData",
-    "SerializedRequest",
     "SkipDeduplicationCheck",
     "TimeoutType",
     "VerifyType",
@@ -70,7 +80,31 @@ class HttpMethod(CodedEnum):
 
 # Type aliases for complex parameter types
 QueryParams = dict[str, Any] | list[tuple[str, Any]] | bytes | None
-RequestData = dict[str, Any] | list[tuple[str, Any]] | bytes | BinaryIO | None
+
+
+def _as_stream(value: Any) -> Any:
+    """Pass a file-like body through unvalidated; reject anything else.
+
+    The one arm of :data:`RequestData` that cannot be a plain annotation:
+    ``BinaryIO`` is a protocol pydantic has no validator for, and a bare
+    ``SkipValidation`` arm would make the *whole* union permissive again —
+    every malformed body would be accepted as "a stream". The test is the
+    one :func:`encode_body` itself applies, so exactly the bodies it can
+    read are the bodies that validate.
+    """
+    if hasattr(value, "read"):
+        return value
+    raise ValueError("not a file-like body")
+
+
+#: A file-like request body, ducked typed.
+StreamBody = Annotated[BinaryIO, PlainValidator(_as_stream)]
+
+# Check StreamBody first so we don't accidentally exhaust a stream.
+RequestData = Annotated[
+    StreamBody | dict[str, Any] | list[tuple[str, Any]] | bytes | None,
+    Field(union_mode="left_to_right"),
+]
 HeadersType = dict[str, str] | None
 CookiesType = dict[str, str] | None
 
@@ -82,7 +116,9 @@ DEFAULT_TIMEOUT_S: float = 60.0
 VerifyType = bool | str
 
 
-@dataclass(frozen=True)
+@pydantic_dataclass(
+    frozen=True, config=ConfigDict(arbitrary_types_allowed=True)
+)
 class HTTPRequestParams:
     """Parameters for an HTTP request, mirroring the requests library interface.
 
@@ -227,33 +263,18 @@ def encode_body(data: RequestData) -> tuple[bytes | None, bool]:
     return None, False
 
 
-class SerializedRequest(NamedTuple):
-    """The request columns :func:`serialize_url_and_body` derives."""
-
-    url: str
-    body: bytes | None
-    body_is_form: bool
-
-
 def serialize_url_and_body(
     http_request: HTTPRequestParams,
-) -> SerializedRequest:
-    """The ``(url, body, body_is_form)`` the run database stores.
+) -> tuple[str, bytes | None]:
+    """The ``(url, body)`` the run database stores for *http_request*.
 
     Query params are folded into the URL (see :func:`_fold_params_into_url`)
     and the body is :func:`encode_body`'s. The queue's write path and
     replay's fallback-key derivation both go through this function.
-
-    The form flag comes back alongside the body because ``encode_body``
-    produces both in one pass, and the caller that stores the body stores
-    the flag with it: asking for them separately reads (and seeks back) a
-    file-like body twice.
     """
-    body, body_is_form = encode_body(http_request.data)
-    return SerializedRequest(
+    return (
         _fold_params_into_url(http_request.url, http_request.params),
-        body,
-        body_is_form,
+        encode_body(http_request.data)[0],
     )
 
 

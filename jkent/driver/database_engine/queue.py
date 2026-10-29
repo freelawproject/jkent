@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any, NamedTuple
-
-from pydantic import ValidationError
 
 from jkent.common.exceptions import ScraperConfigError
 from jkent.common.rate_limits import RateLimitTable
 from jkent.common.request import (
     SkipDeduplicationCheck,
+    encode_body,
     serialize_url_and_body,
 )
 from jkent.common.serialization import dump_json, dump_json_or_none
-from jkent.contracts import require
+from jkent.contracts import ensure
 from jkent.data_types import (
     HTTPRequestParams,
     Request,
@@ -24,11 +24,12 @@ from jkent.data_types import (
 )
 from jkent.driver.database_engine.enums import RequestType
 from jkent.driver.database_engine.sql_manager import (
-    DequeuedRow,
     InsertResult,
     RequestInsert,
     SQLManager,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Dequeued",
@@ -40,7 +41,10 @@ __all__ = [
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from jkent.driver.database_engine.sql_manager import StoredResponse
+    from jkent.driver.database_engine.sql_manager import (
+        DequeuedRow,
+        StoredResponse,
+    )
     from jkent.driver.database_engine.staging import StagedWrites
 
 
@@ -101,36 +105,26 @@ def _step_name(step: str | Callable[..., Any]) -> str:
     return name
 
 
-def _check_dequeuable(request_data: RequestInsert) -> None:
-    """Refuse a row the dequeue could not decode, at enqueue.
+def _row_round_trips(queue: RequestQueueDB, row: RequestInsert) -> bool:
+    """Whether *row* survives the trip through the database and back.
 
-    An insert carries the JSON columns as text, so anything ``json.dumps``
-    can spell inserts cleanly; the types are only enforced on the way back
-    out, against :class:`DequeuedRow` (``headers``/``cookies`` as
-    ``dict[str, str]``, ``timeout`` as a float or a connect/read pair).
-    ``HTTPRequestParams`` is an unvalidated dataclass and ``permanent``
-    headers merge into it unchecked, so ``headers={"X-Attempt": 3}`` reaches
-    the column intact — and pydantic will not coerce that int back to a str.
-
-    By then it is far too late: ``dequeue_next_request`` validates *after*
-    its commit, so the row is already ``in_progress`` and no second dequeue
-    will ever offer it again, and the ``ValidationError`` escapes the
-    worker's dequeue above its ``request_done`` guard, retiring a worker
-    from a pinned pool. Round-tripping the row through the dequeue types
-    here puts the failure on the step that yielded it, the way the unknown
-    rate-limit lane and the nameless callable step already do.
-
-    Raises:
-        ScraperConfigError: when the row would not decode at dequeue.
+    This is intended for runs only under the dev-time contract gate (see
+    :mod:`jkent.contracts`).
     """
-    try:
-        DequeuedRow.model_validate(
-            {**request_data.model_dump(), "id": 0, "preresolved": False}
-        )
-    except ValidationError as exc:
-        raise ScraperConfigError(
-            f"request {request_data.url} cannot be stored as queued: {exc}"
-        ) from exc
+    # Local import: the row models are only needed when contracts are on.
+    from jkent.driver.database_engine.sql_manager import (  # noqa: PLC0415
+        DequeuedRow,
+    )
+
+    dequeued = DequeuedRow.model_validate(
+        {**row.model_dump(), "id": 0, "preresolved": False}
+    )
+    restored = queue._deserialize_request(dequeued)
+    again = queue.serialize_request(restored)
+    again.priority = restored.effective_priority
+    again.deduplication_key = restored.effective_deduplication_key
+    again.parent_request_id = row.parent_request_id
+    return again == row
 
 
 class RequestQueueDB:
@@ -169,21 +163,9 @@ class RequestQueueDB:
         """Dequeued requests not yet marked done via :meth:`request_done`."""
         return self._in_flight
 
-    @require(
-        lambda self: self.in_flight_count > 0,  # pyrefly: ignore[implicit-any-lambda]
-        "request_done pairs with a dequeue that returned a request",
-    )
     def request_done(self) -> None:
-        """Mark one dequeued request as fully handled (children enqueued).
-
-        One call per dequeue that returned a request, and no more: the
-        count is the pinned pool's only termination signal, and a negative
-        one never returns to zero, so an unpaired call leaves every idle
-        worker polling a drained queue forever. The contract catches that
-        under test; the floor keeps a release build failing the run rather
-        than hanging it.
-        """
-        self._in_flight = max(0, self._in_flight - 1)
+        """Mark one dequeued request as fully handled (children enqueued)."""
+        self._in_flight -= 1
 
     async def _prepare_enqueue(
         self,
@@ -235,8 +217,20 @@ class RequestQueueDB:
             request_data.deduplication_key = None
         return await self.db.insert_request(request_data)
 
+    @ensure(
+        lambda self, result: (  # pyrefly: ignore[implicit-any-lambda]
+            _row_round_trips(self, result)
+        ),
+        "every requests row deserializes and re-serializes to itself",
+    )
     def _insert_payload(self, request: Request) -> RequestInsert:
-        """The serialized row with the effective priority and dedup key."""
+        """The serialized row with the effective priority and dedup key.
+
+        The single funnel for every ``requests`` insert — the staged
+        enqueue, the immediate one, and the root/probe path all build their
+        payload here — so the round-trip postcondition covers all three.
+        See :func:`_row_round_trips`.
+        """
         request_data = self.serialize_request(request)
         request_data.priority = request.effective_priority
         request_data.deduplication_key = request.effective_deduplication_key
@@ -299,25 +293,34 @@ class RequestQueueDB:
 
         # Fold query params into the URL and encode the body. Shared with
         # replay's key derivation so the two encodings can't drift.
-        url, body, body_is_form = serialize_url_and_body(http_request)
+        url, body = serialize_url_and_body(http_request)
+        body_is_form = encode_body(http_request.data)[1]
 
-        request_data = RequestInsert(
+        return RequestInsert(
             request_type=request_type,
             method=http_request.method,
             url=url,
-            headers_json=dump_json_or_none(http_request.headers),
-            cookies_json=dump_json_or_none(http_request.cookies),
+            headers_json=dump_json_or_none(
+                http_request.headers, name="headers"
+            ),
+            cookies_json=dump_json_or_none(
+                http_request.cookies, name="cookies"
+            ),
             body=body,
             body_is_form=body_is_form,
             step=step,
             current_location=request.current_location,
-            accumulated_data_json=dump_json_or_none(request.accumulated_data),
-            permanent_json=dump_json_or_none(request.permanent),
+            accumulated_data_json=dump_json_or_none(
+                request.accumulated_data, name="accumulated_data"
+            ),
+            permanent_json=dump_json_or_none(
+                request.permanent, name="permanent"
+            ),
             expected_type=expected_type,
             is_speculative=request.is_speculative,
             speculation_tracking_id=request.speculation_tracking_id,
             speculative_index=request.speculative_index,
-            verify_json=dump_json(http_request.verify),
+            verify_json=dump_json(http_request.verify, name="verify"),
             via_json=request.via.to_json()
             if request.via is not None
             else None,
@@ -325,14 +328,12 @@ class RequestQueueDB:
             rate_limit=self._rate_limits.encode(request.rate_limit),
             # a timeout=(connect, read) tuple stores as a JSON list;
             # DequeuedRow re-tuples it.
-            timeout_json=dump_json_or_none(http_request.timeout),
-            json_data=dump_json_or_none(http_request.json),
+            timeout_json=dump_json_or_none(
+                http_request.timeout, name="timeout"
+            ),
+            json_data=dump_json_or_none(http_request.json, name="json"),
             reseedable=request.reseedable,
         )
-        # Refuse a row the dequeue could not decode, here on the step that
-        # yielded it.
-        _check_dequeuable(request_data)
-        return request_data
 
     async def get_next_request(self) -> Dequeued | None:
         """Get the next pending request from the database.
@@ -351,22 +352,42 @@ class RequestQueueDB:
         # mid-commit still sees in_flight_count > 0 and keeps waiting instead
         # of retiring. The caller owns the matching request_done().
         self._in_flight += 1
+        handed_over = False
         try:
             row = await self.db.dequeue_next_request()
-        except BaseException:
-            self._in_flight -= 1
-            raise
+            if row is None:
+                return None
+            try:
+                request = self._deserialize_request(row)
+            except Exception as exc:
+                await self._fail_undeserializable(row.id, exc)
+                raise
+            dequeued = Dequeued(
+                row.id,
+                request,
+                row.parent_request_id,
+                row.preresolved,
+            )
+            handed_over = True
+            return dequeued
+        finally:
+            if not handed_over:
+                self._in_flight -= 1
 
-        if row is None:
-            self._in_flight -= 1
-            return None
-
-        return Dequeued(
-            row.id,
-            self._deserialize_request(row),
-            row.parent_request_id,
-            row.preresolved,
-        )
+    async def _fail_undeserializable(
+        self, request_id: int, exc: Exception
+    ) -> None:
+        """Mark a row that cannot be read back FAILED, then let it raise on."""
+        try:
+            await self.db.mark_request_failed(
+                request_id, f"request row could not be deserialized: {exc}"
+            )
+        except Exception:
+            logger.exception(
+                "Could not mark undeserializable request %d as failed; it "
+                "will be retried on the next resume",
+                request_id,
+            )
 
     async def seconds_until_next_pending(self) -> float | None:
         """Delay until the soonest pending request is dequeuable.
