@@ -11,9 +11,13 @@ The SQLManager handles:
 - Error tracking
 - Run metadata management
 - Speculative progress tracking
+- Response compression and per-step dictionary compaction
 """
 
 from jkent.driver.database_engine.sql_manager._base import SQLManagerBase
+from jkent.driver.database_engine.sql_manager._compression import (
+    CompressionMixin,
+)
 from jkent.driver.database_engine.sql_manager._errors import ErrorsMixin
 from jkent.driver.database_engine.sql_manager._incidental_requests import (
     IncidentalRequestStorageMixin,
@@ -64,6 +68,7 @@ class SQLManager(
     IncidentalRequestStorageMixin,
     ResultStorageMixin,
     SpeculationMixin,
+    CompressionMixin,
     SQLManagerBase,
 ):
     """Database manager for the unified driver's run database.

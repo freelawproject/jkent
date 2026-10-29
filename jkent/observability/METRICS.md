@@ -15,7 +15,7 @@ app sets up an sdk properly.
 | `scraper` | scraper class name | most metrics, request span |
 | `step` | step name | request metrics, request span; on lock metrics only when the lock is taken inside a request |
 | `phase` | see [phases](#phases) | `request.duration`, `request.cpu_time` |
-| `kind` | `compress` / `train` / `recompress` | compression + compaction metrics |
+| `kind` | `compress` / `decompress` / `train` / `recompress` | compression + compaction metrics |
 | `outcome` | see [outcomes](#outcomes) | request span only (**not** a metric dimension) |
 | `run_inst_id` | host-provided id (from baggage) | request span + the two per-run gauges only |
 
@@ -47,18 +47,18 @@ sharing the same scheduler set (async loop and cpu core).
 | Metric | Type | Unit | Attrs | Emitted from |
 |---|---|---|---|---|
 | `jkent.request.duration` | histogram | s | `scraper`, `step`, `phase` | `request_span` (`phase=total`) + `phase()` (`tracing.py`), wired in `worker.py` |
-| `jkent.request.cpu_time` | histogram | s | `scraper`, `step`, `phase` | `compress_response` (`compression.py`) |
+| `jkent.request.cpu_time` | histogram | s | `scraper`, `step`, `phase` | `compress_response` / `decompress_response` (`sql_manager/_compression.py`) |
 
 `request.duration` is recorded once per [phase](#phases) per request, plus a
 `phase=total` covering the whole request. The `rate_limiter.gate` slice is the
 rate-limiter token wait — a large one means rate-limit-bound, not
 throughput-bound.
 
-`request.cpu_time` is on-loop CPU (`time.thread_time`) for synchronous phases
-we can measure without pollution from co-scheduled tasks. Today that is
-`phase=compress` only (a sync leaf with no `await` inside). A phase whose
-`cpu_time` ≈ its `duration` is hogging the loop; one whose `cpu_time` ≪
-`duration` is awaiting I/O.
+`request.cpu_time` is on-loop CPU (`time.thread_time_ns`) for synchronous
+phases we can measure without pollution from co-scheduled tasks. Today that is
+`phase=compress` and `phase=decompress` only (sync leaves with no `await`
+inside). A phase whose `cpu_time` ≈ its `duration` is hogging the loop; one
+whose `cpu_time` ≪ `duration` is awaiting I/O.
 
 ### Database lock
 
@@ -106,7 +106,7 @@ an outage that keeps outlasting the recovery window.
 
 | Metric | Type | Unit | Attrs | Emitted from |
 |---|---|---|---|---|
-| `jkent.compression.duration` | histogram | s | `scraper`, `step`, `kind=compress` | `compress_response` (`compression.py`) |
+| `jkent.compression.duration` | histogram | s | `scraper`, `step`, `kind=compress`/`decompress` | `compress_response` / `decompress_response` (`sql_manager/_compression.py`) |
 | `jkent.compression.ratio` | histogram | 1 | `scraper`, `step` | `compress_response` |
 | `jkent.compaction.duration` | histogram | s | `scraper`, `step`, `kind` | `train_compression_dict` / `recompress_responses` |
 
@@ -165,6 +165,7 @@ defined by the `Phase` enum in `metrics.py`:
 | `transport.resolve` | fetching the response (network / browser) |
 | `step` | storing the response + running the scraper step |
 | `compress` | the synchronous zstd compress leaf (`cpu_time` only) |
+| `decompress` | the synchronous zstd decompress leaf (`cpu_time` only) |
 
 ### Outcomes
 
