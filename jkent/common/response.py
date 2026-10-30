@@ -70,6 +70,29 @@ class ArchiveResponse(Response):
 
 
 @dataclass
+class ArchiveWriteResult:
+    """What an archive handler persisted for one download.
+
+    Returned by
+    :meth:`~jkent.driver.archive_handler.AsyncStreamingArchiveHandler.save_stream`.
+    The handler already hashes and counts the bytes on their way to disk, so
+    it reports both rather than making the driver re-read or re-hash them;
+    the driver copies these onto the :class:`ArchiveResponse`, which is what
+    fills the ``archived_files`` row.
+
+    Attributes:
+        file_url: Where the file was stored -- a path, URL, or key,
+            depending on the handler.
+        file_size: Bytes written.
+        content_hash: SHA-256 hex digest of those bytes.
+    """
+
+    file_url: str
+    file_size: int
+    content_hash: str
+
+
+@dataclass
 class ArchiveDecision:
     """An archive handler's answer to whether a file should be downloaded.
 
