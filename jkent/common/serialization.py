@@ -8,16 +8,24 @@ for any other type it does not know — so a scraped value of an unexpected
 type lands as text instead of raising from inside the write path. Output is
 compact (no spaces after separators).
 
-Raw bytes (``bytes``, ``bytearray``, ``memoryview``) are the exception: JSON
-has no bytes type, and nothing on the read side would decode an encoding of
-them, so they would come back as a different value. Anywhere in the value —
-nested containers, dict keys, dataclass and pydantic-model fields — they
-raise :class:`TypeError` naming where they were found. Decode them to text
-(or keep them out of JSON columns) before writing. Diagnostic columns — an
-error's context and failed document, an invalid result — pass
-``bytes_as_repr=True`` instead, which writes each as its ``repr`` (and
-elides a circular reference), so recording a failure never fails on what
-it is recording.
+Two kinds of value are refused, because neither survives the trip:
+
+Raw bytes (``bytes``, ``bytearray``, ``memoryview``) — JSON has no bytes
+type, and nothing on the read side would decode an encoding of them, so
+they would come back as a different value.
+
+Non-finite floats aren't part of json, so we refuse them too.
+
+Both are reported anywhere in the value — nested containers, dict keys,
+dataclass and pydantic-model fields — as a :class:`TypeError` naming where
+they were found. Decode bytes to text and resolve non-finite floats (or
+keep them out of JSON columns) before writing.
+
+Diagnostic columns — an error's context and failed document, an invalid
+result — pass ``bytes_as_repr=True`` instead, which writes each bytes value
+as its ``repr`` (and elides a circular reference), so recording a failure
+never fails on what it is recording. On that path a non-finite float is
+written as ``null`` rather than refused, so we have some record.
 
 Reads decode on the row model: a field annotated with :data:`JsonColumn`
 (``Annotated[T, JsonColumn]``) parses the column text as the model is
@@ -28,6 +36,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from typing import Any, TypeVar, overload
 
 from pydantic import BaseModel, BeforeValidator
@@ -40,8 +49,11 @@ _BYTES_TYPES = (bytes, bytearray, memoryview)
 T = TypeVar("T")
 
 
-def _refuse_bytes(value: Any, path: str, seen: set[int]) -> None:
-    """Raise :class:`TypeError` for the first raw-bytes value in *value*.
+def _refuse_unstorable(value: Any, path: str, seen: set[int]) -> None:
+    """Raise :class:`TypeError` for the first value JSON cannot carry.
+
+    Raw bytes and non-finite floats; see this module's docstring for why
+    each is refused rather than encoded.
 
     Walks what :func:`~pydantic_core.to_json` would: mappings (keys and
     values), lists, tuples, sets, dataclass fields and pydantic-model
@@ -49,7 +61,7 @@ def _refuse_bytes(value: Any, path: str, seen: set[int]) -> None:
     (``Field(exclude=True)``). *seen* holds every container already walked, so each is walked
     once however many times it is referenced — a container that is reached
     a second time was walked in full the first time and raised then if it
-    held bytes — and a cycle stops the walk, left for ``to_json`` to
+    held one — and a cycle stops the walk, left for ``to_json`` to
     report. Nothing is removed from *seen*: everything reached is held
     alive by the value being walked, so an id cannot be reused mid-walk.
     """
@@ -57,6 +69,12 @@ def _refuse_bytes(value: Any, path: str, seen: set[int]) -> None:
         raise TypeError(
             f"{path}: {type(value).__name__} cannot be stored in a JSON "
             "column; decode it to str first"
+        )
+    if isinstance(value, float) and not math.isfinite(value):
+        raise TypeError(
+            f"{path}: {value!r} cannot be stored in a JSON column — JSON "
+            "has no syntax for it, and the column's json_valid CHECK "
+            "rejects the Infinity/NaN spelling, so the INSERT would fail"
         )
     if isinstance(value, str | int | float) or value is None:
         return
@@ -66,24 +84,24 @@ def _refuse_bytes(value: Any, path: str, seen: set[int]) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if isinstance(key, _BYTES_TYPES):
-                _refuse_bytes(key, f"{path} (key {key!r})", seen)
-            _refuse_bytes(item, f"{path}[{key!r}]", seen)
+                _refuse_unstorable(key, f"{path} (key {key!r})", seen)
+            _refuse_unstorable(item, f"{path}[{key!r}]", seen)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _refuse_bytes(item, f"{path}[{index}]", seen)
+            _refuse_unstorable(item, f"{path}[{index}]", seen)
     elif isinstance(value, (set, frozenset)):
         for item in value:
-            _refuse_bytes(item, f"{path}{{...}}", seen)
+            _refuse_unstorable(item, f"{path}{{...}}", seen)
     elif isinstance(value, BaseModel):
         for field, info in type(value).model_fields.items():
             if info.exclude:
                 continue
-            _refuse_bytes(getattr(value, field), f"{path}.{field}", seen)
+            _refuse_unstorable(getattr(value, field), f"{path}.{field}", seen)
         for field, item in (value.__pydantic_extra__ or {}).items():
-            _refuse_bytes(item, f"{path}.{field}", seen)
+            _refuse_unstorable(item, f"{path}.{field}", seen)
     elif dataclasses.is_dataclass(value) and not isinstance(value, type):
         for dc_field in dataclasses.fields(value):
-            _refuse_bytes(
+            _refuse_unstorable(
                 getattr(value, dc_field.name),
                 f"{path}.{dc_field.name}",
                 seen,
@@ -141,18 +159,19 @@ def dump_json(
         value: What to encode.
         name: What *value* is, as the root of the path a refusal names
             (``accumulated_data`` → ``accumulated_data['doc'][2]``).
-        bytes_as_repr: Write raw bytes as their ``repr`` instead of
-            refusing them — for diagnostic columns only.
+        bytes_as_repr: Write raw bytes as their ``repr``, and non-finite
+            floats as ``null``, instead of refusing them — for diagnostic
+            columns only.
 
     Raises:
-        TypeError: *value* holds raw bytes somewhere and ``bytes_as_repr``
-            is false.
+        TypeError: *value* holds raw bytes or a non-finite float somewhere
+            and ``bytes_as_repr`` is false.
     """
     if bytes_as_repr:
         value = _bytes_to_repr(value, set())
     else:
-        _refuse_bytes(value, name, set())
-    return to_json(value, fallback=str).decode()
+        _refuse_unstorable(value, name, set())
+    return to_json(value, fallback=str, inf_nan_mode="null").decode()
 
 
 @overload

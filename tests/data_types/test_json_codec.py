@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -205,3 +206,67 @@ def test_an_excluded_model_field_is_not_walked(bytes_as_repr: bool):
     written = json.loads(dump_json(value, bytes_as_repr=bytes_as_repr))
 
     assert written == {"body": "ok"}
+
+
+# --- non-finite floats ------------------------------------------------------
+#
+# ``Infinity``/``NaN`` are JavaScript spellings JSON has no syntax for.
+# ``json.loads`` accepts them, so a round-trip through Python looks clean;
+# SQLite's ``json_valid`` does not, and every ``*_json`` column carries that
+# CHECK — so what actually happened was an IntegrityError at the INSERT,
+# rolling back the whole staged flush.
+
+
+@pytest.mark.parametrize(
+    ("value", "path"),
+    [
+        (float("nan"), "value"),
+        (float("inf"), "value"),
+        (float("-inf"), "value"),
+        ({"score": float("nan")}, "value['score']"),
+        ({"doc": [1, float("inf")]}, "value['doc'][1]"),
+        ((1, (float("nan"),)), "value[1][0]"),
+        (_Doc(body={"x": float("inf")}), "value.body['x']"),
+        (_Model(body=[float("nan")]), "value.body[0]"),
+    ],
+)
+def test_non_finite_floats_anywhere_are_refused_with_their_path(
+    value: Any, path: str
+):
+    with pytest.raises(TypeError) as excinfo:
+        dump_json(value)
+
+    assert f"{path}:" in str(excinfo.value)
+    assert "json_valid" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        float("nan"),
+        float("inf"),
+        {"a": [float("-inf")]},
+        _Doc(body=float("nan")),
+    ],
+)
+def test_every_encoded_value_is_json_sqlite_accepts(value: Any):
+    """The diagnostic path writes ``null`` rather than refusing.
+
+    An error's context and an invalid result carry whatever the scrape
+    produced, and recording a failure must not fail on what it is
+    recording — but the text still has to satisfy ``json_valid``.
+    """
+    text = dump_json(value, bytes_as_repr=True)
+    assert (
+        sqlite3.connect(":memory:")
+        .execute("select json_valid(?)", (text,))
+        .fetchone()[0]
+        == 1
+    )
+
+
+def test_a_finite_float_still_encodes():
+    assert json.loads(dump_json({"a": 1.5, "b": -0.0})) == {
+        "a": 1.5,
+        "b": -0.0,
+    }

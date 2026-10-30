@@ -8,7 +8,9 @@ steps select one by name; the run database stores the lane as an integer
 index into the lane list the run recorded at start. Under test:
 
 - ``RateLimitTable`` codes: ``default`` 0, ``none`` 1, declared lanes 2+ in
-  order; unknown names fail to encode, out-of-range codes fail to decode.
+  order; unknown names fail to encode and out-of-range codes fail to decode,
+  both as ``ScraperConfigError`` — naming a lane the scraper never declared
+  is a config mistake, and no retry fixes it.
 - ``stored_names`` (the lane list a run recorded) fixes those codes across a
   reorder, appends lanes declared since, and refuses a lane that is gone.
 - ``BaseScraper`` rejects a bad ``named_rate_limits`` at class definition.
@@ -106,23 +108,20 @@ class TestRateLimitTable:
         assert table.decode(2) == "downloads"
         assert table.decode(3) == "search"
 
-    def test_round_trip(self):
-        table = RateLimitTable.for_scraper(LanedScraper)
-        for name in (None, NO_RATE_LIMIT, "downloads", "search"):
-            assert table.decode(table.encode(name)) == name
-
     def test_encode_unknown_name_names_the_lanes(self):
         table = RateLimitTable.for_scraper(BareScraper)
-        with pytest.raises(ValueError, match="'downloads'.*default.*none"):
+        with pytest.raises(
+            ScraperConfigError, match="'downloads'.*default.*none"
+        ):
             table.encode("downloads")
 
     def test_decode_past_the_table_is_loud(self):
         # A code from a run whose stored lanes are not this table's: never
         # silently the default rate.
         table = RateLimitTable.for_scraper(BareScraper)
-        with pytest.raises(ValueError, match="has no lane"):
+        with pytest.raises(ScraperConfigError, match="has no lane"):
             table.decode(2)
-        with pytest.raises(ValueError):
+        with pytest.raises(ScraperConfigError):
             table.decode(-1)
 
 
