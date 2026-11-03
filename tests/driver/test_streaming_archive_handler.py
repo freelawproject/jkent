@@ -5,9 +5,8 @@ deduplication key at ``{storage_dir}/{xx}/{yy}/{sha}.{expected_type}``, where
 ``sha`` is the SHA-256 of the key and ``xx``/``yy`` are its first two pairs of
 hex digits; a download that skipped the dedup check is content-addressed
 under the same fanout at
-``{storage_dir}/{xx}/{yy}/{sha256-of-payload}.{expected_type}``, with a
-``_1``, ``_2`` ... suffix rather than clobbering an earlier copy. These
-tests lock in
+``{storage_dir}/{xx}/{yy}/{sha256-of-payload}_{n}.{expected_type}``, the
+counter rising rather than clobbering an earlier copy. These tests lock in
 that layout -- including that no part of it comes from the key's own text --
 and confirm the hashing + atomic-rename plumbing, plus the skip/cleanup of
 partial temp files left by an interrupted download.
@@ -74,7 +73,7 @@ def _content_path(
 ) -> Path:
     """Mirror of the handler's content-addressed path for a payload."""
     sha = hashlib.sha256(payload).hexdigest()
-    stem = sha if index == 0 else f"{sha}_{index}"
+    stem = f"{sha}_{index}"
     name = f"{stem}.{expected_type}" if expected_type else stem
     return storage_dir / sha[:2] / sha[2:4] / name
 
