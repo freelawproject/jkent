@@ -55,7 +55,12 @@ from jkent.common.request import (
     TimeoutType,
     VerifyType,
 )
-from jkent.common.response import ArchiveDecision, ArchiveResponse, Response
+from jkent.common.response import (
+    ArchiveDecision,
+    ArchiveResponse,
+    ArchiveWriteResult,
+    Response,
+)
 from jkent.common.scraper import (
     BaseScraper,
     DriverRequirement,
@@ -94,6 +99,7 @@ __all__ = [
     "T",
     "ArchiveDecision",
     "ArchiveResponse",
+    "ArchiveWriteResult",
     "BaseScraper",
     "CookiesType",
     "DataFormatAssumptionException",

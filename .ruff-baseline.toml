@@ -1,0 +1,61 @@
+# Docstring-rule baseline for ruff. Generated 2026-11-03; NOT policy.
+#
+# Each line freezes the D/DOC rules a file was already breaking when those
+# rules were switched on: 223 findings across 41 files, 94 file/rule pairs.
+# The gate catches new breakage while this backlog is burned down.
+#
+# Read by pyproject.toml via `[tool.ruff] extend = ".ruff-baseline.toml"`.
+# The filename matters: ruff auto-discovers `ruff.toml` and `.ruff.toml`
+# and either would override pyproject wholesale, so this file must NOT be
+# named either of those. It is inert unless `extend` names it.
+#
+# Shrink this file; never add to it. Fixing a file means deleting its line.
+# Granularity is per file, so a second violation of a rule already listed
+# for that file slips through -- the cost of a file-level baseline. Ruff
+# does not report stale entries either, so an entry outlives its findings
+# until someone regenerates: empty the table below, run
+#   uv run ruff check --output-format json jkent/
+# and rebuild it from what that reports.
+
+[lint.per-file-ignores]
+"jkent/common/__init__.py" = ["D104"]
+"jkent/common/coded_enum.py" = ["D102", "DOC201", "DOC501"]
+"jkent/common/decorator_metadata.py" = ["D105", "D107", "DOC502"]
+"jkent/common/decorators.py" = ["D107", "D205", "D209", "D415", "DOC201", "DOC501", "DOC502"]
+"jkent/common/exceptions.py" = ["D107"]
+"jkent/common/headers.py" = ["DOC201"]
+"jkent/common/incidental.py" = ["D105", "DOC201"]
+"jkent/common/page_element.py" = ["D202", "DOC201", "DOC501", "DOC502"]
+"jkent/common/param_models.py" = ["D102"]
+"jkent/common/parser.py" = ["D102", "D205", "D209", "DOC201"]
+"jkent/common/rate_limits.py" = ["DOC201", "DOC501", "DOC502"]
+"jkent/common/request.py" = ["D102", "DOC201", "DOC501"]
+"jkent/common/scraper.py" = ["D102", "D105", "DOC201", "DOC501"]
+"jkent/common/selector_observer.py" = ["DOC201"]
+"jkent/common/selectors.py" = ["D105", "DOC201"]
+"jkent/common/serialization.py" = ["DOC201", "DOC501", "DOC502"]
+"jkent/common/speculative.py" = ["D102"]
+"jkent/common/via.py" = ["DOC201", "DOC502"]
+"jkent/contracts.py" = ["D102", "DOC201"]
+"jkent/driver/archive_handler.py" = ["D102", "DOC502"]
+"jkent/driver/database_engine/compression.py" = ["D205", "D209", "DOC201"]
+"jkent/driver/database_engine/database.py" = ["D107", "DOC201", "DOC402", "DOC501"]
+"jkent/driver/database_engine/enums.py" = ["DOC201", "DOC501"]
+"jkent/driver/database_engine/errors.py" = ["DOC201"]
+"jkent/driver/database_engine/queue.py" = ["D205", "D212", "DOC201", "DOC501"]
+"jkent/driver/database_engine/sql_manager/_base.py" = ["D205", "D209", "DOC201"]
+"jkent/driver/database_engine/sql_manager/_compression.py" = ["D205", "D209", "DOC201", "DOC501"]
+"jkent/driver/database_engine/sql_manager/_incidental_requests.py" = ["DOC201", "DOC501"]
+"jkent/driver/database_engine/sql_manager/_requests.py" = ["DOC201", "DOC501"]
+"jkent/driver/database_engine/sql_manager/_responses.py" = ["DOC201"]
+"jkent/driver/database_engine/sql_manager/_results.py" = ["DOC201"]
+"jkent/driver/database_engine/sql_manager/_run_metadata.py" = ["DOC201"]
+"jkent/driver/database_engine/sql_manager/_speculation.py" = ["D205", "DOC201"]
+"jkent/driver/database_engine/sql_manager/_types.py" = ["D205", "D209", "DOC201", "DOC501"]
+"jkent/driver/database_engine/staging.py" = ["DOC201"]
+"jkent/driver/database_engine/storage.py" = ["D107", "DOC201"]
+"jkent/driver/database_engine/stored_body.py" = ["DOC201"]
+"jkent/driver/database_engine/timestamps.py" = ["DOC201"]
+"jkent/observability/loop_monitor.py" = ["D107", "DOC501"]
+"jkent/observability/metrics.py" = ["DOC201"]
+"jkent/observability/tracing.py" = ["DOC201", "DOC402"]

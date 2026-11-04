@@ -99,6 +99,10 @@ filterwarnings = [
 include = ["jkent*"]
 
 [tool.ruff]
+# Load the generated docstring baseline. WITHOUT THIS LINE that file is
+# inert and ~220 pre-existing D/DOC findings come back: ruff only reads
+# .ruff-baseline.toml because `extend` names it here.
+extend = ".ruff-baseline.toml"
 line-length = 79
 lint.extend-safe-fixes = [
   # non-pep585-annotation
@@ -126,18 +130,20 @@ lint.select = [
   "RUF100",
   # flake8-tidy-imports
   "TID",
+  # Documentation standards
+  "D", "DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501", "DOC502",
+
+  # flake8-use-pathlib
+   "PTH",
   # pyupgrade
   "UP",
   # Pyflakes warnings
   "W",
 ]
 lint.mccabe.max-complexity = 39
-
-lint.per-file-ignores = { "tests/conftest.py" = [
-  # module-import-not-at-top: JKENT_ENFORCE_CONTRACTS must be set before
-  # any jkent import (contracts gate at decoration time)
-  "E402",
-] }
+lint.pydocstyle.convention = "google"
+lint.preview = true
+lint.explicit-preview-rules = true
 
 lint.ignore = [
   # flake8-bugbear opinionated rules
@@ -151,6 +157,24 @@ lint.ignore = [
   # printf-string-formatting
   "UP031",
 ]
+
+# Policy ignores: deliberate and permanent, unlike the generated docstring
+# baseline in .ruff-baseline.toml that `extend` loads above.
+#
+# This MUST stay `extend-per-file-ignores`. The plain `per-file-ignores`
+# key REPLACES the extended file's table instead of adding to it, which
+# silently voids all 41 baseline entries -- ruff reports no error, the
+# backlog just reappears.
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/conftest.py" = [
+  # module-import-not-at-top: JKENT_ENFORCE_CONTRACTS must be set before
+  # any jkent import (contracts gate at decoration time)
+  "E402",
+]
+# Test functions say what they cover in a sentence; an Args section per
+# fixture would be noise rather than documentation.
+"tests/**" = ["D", "DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501", "DOC502"]
+
 
 [tool.mypy]
 # Zuban reads this section: it is mypy-compatible config, not a mypy install.
