@@ -215,6 +215,9 @@ def _clear_stale_stream_tmps(target_dir: Path) -> None:
     try:
         entries = list(target_dir.iterdir())
     except OSError:
+        logger.error(
+            "stale tmp sweep: cannot list dir=%s", target_dir, exc_info=True
+        )
         return
     cutoff = time.time() - STALE_STREAM_TMP_AGE_S
     for entry in entries:
@@ -224,7 +227,9 @@ def _clear_stale_stream_tmps(target_dir: Path) -> None:
             if entry.stat().st_mtime < cutoff:
                 entry.unlink()
         except OSError:
-            pass
+            logger.error(
+                "stale tmp sweep: cannot remove path=%s", entry, exc_info=True
+            )
 
 
 def _header(headers: Mapping[str, str] | None, name: str) -> str | None:
@@ -347,25 +352,25 @@ def verify_download(
     Raises:
         TransientException: A check failed.
     """
-    detail: str | None = None
     stated_length = _stated_content_length(headers)
     expected_md5 = _etag_md5(headers)
     if stated_length is not None and stated_length != bytes_total:
-        detail = (
+        raise TransientException(
+            f"archive download from {url} failed its integrity check: "
             f"Content-Length said {stated_length} bytes, received "
-            f"{bytes_total}"
+            f"{bytes_total}",
+            url=url,
+            kind=TransientKind.ARCHIVE,
         )
-    elif expected_md5 is not None and "md5" in digests:
+    if expected_md5 is not None and "md5" in digests:
         actual = digests["md5"].hexdigest()
         if actual != expected_md5:
-            detail = f"ETag MD5 {expected_md5} != received {actual}"
-    if detail is None:
-        return
-    raise TransientException(
-        f"archive download from {url} failed its integrity check: {detail}",
-        url=url,
-        kind=TransientKind.ARCHIVE,
-    )
+            raise TransientException(
+                f"archive download from {url} failed its integrity check: "
+                f"ETag MD5 {expected_md5} != received {actual}",
+                url=url,
+                kind=TransientKind.ARCHIVE,
+            )
 
 
 def _hash_and_write(

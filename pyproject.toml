@@ -130,16 +130,11 @@ lint.select = [
   "RUF100",
   # flake8-tidy-imports
   "TID",
-  # pydocstyle — every public function carries a docstring, and once it has
-  # an Args section that section names every parameter (D417)
-  "D",
-  # pydoclint (preview) — Returns/Yields/Raises sections match what the body
-  # actually does. Selected by exact code because explicit-preview-rules
-  # keeps every other preview rule off.
-  "DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501", "DOC502",
-  # flake8-use-pathlib — pathlib over os for path manipulation. Already
-  # clean, so it needs no baseline entries below.
-  "PTH",
+  # Documentation standards
+  "D", "DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501", "DOC502",
+
+  # flake8-use-pathlib
+   "PTH",
   # pyupgrade
   "UP",
   # Pyflakes warnings
@@ -179,8 +174,6 @@ lint.ignore = [
 # Test functions say what they cover in a sentence; an Args section per
 # fixture would be noise rather than documentation.
 "tests/**" = ["D", "DOC102", "DOC201", "DOC202", "DOC402", "DOC403", "DOC501", "DOC502"]
-# Local dev scripts, not shipped API.
-"tools/**" = ["D104"]
 
 
 [tool.mypy]
