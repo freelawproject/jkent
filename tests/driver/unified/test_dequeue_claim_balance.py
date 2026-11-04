@@ -26,9 +26,12 @@ next one gets past it.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 from typing import Any
 
 import pytest
+from icontract import ViolationError
 
 from jkent.common.rate_limits import RateLimitTable
 from jkent.data_types import HttpMethod
@@ -179,6 +182,56 @@ async def test_a_handover_keeps_the_claim() -> None:
     dequeued = await queue.get_next_request()
 
     assert dequeued is not None
+    assert queue.in_flight_count == 1
+    queue.request_done()
+    assert queue.in_flight_count == 0
+
+
+async def test_an_unpaired_release_violates_the_contract() -> None:
+    """Releasing a claim that was never taken fails the caller under test.
+
+    Contracts are enforced for the whole suite (``tests/conftest.py``), so
+    a caller that double-releases — a ``finally`` on a path where the
+    dequeue returned None, a retry loop releasing twice — fails the test
+    that caused it rather than quietly arming a hang.
+    """
+    queue = _queue(_StubDB(None))
+
+    with pytest.raises(ViolationError):
+        queue.request_done()
+
+    assert queue.in_flight_count == 0
+
+
+async def test_an_unpaired_release_is_logged_and_floored(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """In a release build the floor takes the contract's place.
+
+    ``JKENT_ENFORCE_CONTRACTS`` is off in production, where the
+    precondition is not even evaluated, so the undecorated body is what
+    ships — reached here by unwrapping the contract. The pool retires on
+    ``in_flight_count == 0``; below zero that is never true again and
+    every idle worker polls a drained queue forever. The floor only
+    engages with nothing in flight, so zero is the honest count — but the
+    caller is still wrong, hence the log.
+    """
+    queue = _queue(_StubDB(None))
+
+    with caplog.at_level(logging.ERROR):
+        inspect.unwrap(RequestQueueDB.request_done)(queue)
+
+    assert queue.in_flight_count == 0
+    assert "never taken" in caplog.text
+
+
+async def test_the_floor_does_not_swallow_a_real_release() -> None:
+    """Claims still released one for one while any are outstanding."""
+    queue = _queue(_StubDB(DequeuedRow.model_validate(_BASE)))
+    assert await queue.get_next_request() is not None
+    queue._in_flight += 1  # a sibling worker's claim on the same queue
+
+    queue.request_done()
     assert queue.in_flight_count == 1
     queue.request_done()
     assert queue.in_flight_count == 0

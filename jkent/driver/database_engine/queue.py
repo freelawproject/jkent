@@ -14,7 +14,7 @@ from jkent.common.request import (
     serialize_url_and_body,
 )
 from jkent.common.serialization import dump_json, dump_json_or_none
-from jkent.contracts import ensure
+from jkent.contracts import ensure, require
 from jkent.data_types import (
     HTTPRequestParams,
     Request,
@@ -163,8 +163,19 @@ class RequestQueueDB:
         """Dequeued requests not yet marked done via :meth:`request_done`."""
         return self._in_flight
 
+    @require(
+        lambda self: self.in_flight_count > 0,  # pyrefly: ignore[implicit-any-lambda]
+        "request_done pairs with a dequeue that handed a request over",
+    )
     def request_done(self) -> None:
         """Mark one dequeued request as fully handled (children enqueued)."""
+        if self._in_flight == 0:
+            logger.error(
+                "request_done() with nothing in flight: a claim was "
+                "released that was never taken",
+                stack_info=True,
+            )
+            return
         self._in_flight -= 1
 
     async def _prepare_enqueue(
