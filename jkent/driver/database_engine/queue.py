@@ -79,7 +79,11 @@ class EnqueuedEvent(NamedTuple):
     priority: int
 
     def payload(self) -> dict[str, Any]:
-        """The event as a progress callback's ``data`` mapping."""
+        """The event as a progress callback's ``data`` mapping.
+
+        Returns:
+            The event's fields, keyed by name.
+        """
         return self._asdict()
 
 
@@ -90,6 +94,12 @@ def _step_name(step: str | Callable[..., Any]) -> str:
     getattr(scraper, name). A callable with no ``__name__`` (a
     functools.partial, a callable object) has no name to resolve, so refuse
     it here, on the step that yielded it, not at dequeue.
+
+    Args:
+        step: The step a request named, as a string or a callable.
+
+    Returns:
+        The step's name.
 
     Raises:
         ScraperConfigError: when *step* is a callable with no ``__name__``.
@@ -110,6 +120,13 @@ def _row_round_trips(queue: RequestQueueDB, row: RequestInsert) -> bool:
 
     This is intended for runs only under the dev-time contract gate (see
     :mod:`jkent.contracts`).
+
+    Args:
+        queue: The queue whose serialization is under test.
+        row: The row about to be inserted.
+
+    Returns:
+        ``True`` when deserializing and re-serializing *row* reproduces it.
     """
     # Local import: the row models are only needed when contracts are on.
     from jkent.driver.database_engine.sql_manager import (  # noqa: PLC0415
@@ -145,7 +162,8 @@ class RequestQueueDB:
     def __init__(
         self, db: SQLManager, *, rate_limits: RateLimitTable | None = None
     ) -> None:
-        """
+        """Bind the queue to a run database and its rate-limit lanes.
+
         Args:
             db: The run database.
             rate_limits: The scraper's rate-limit lanes, which encode a
@@ -191,10 +209,17 @@ class RequestQueueDB:
         ``_stage_enqueue_request`` — so the two cannot drift on serialization,
         the dedup-key / priority / parent-id rules, or the progress payload.
 
-        Returns ``(request_data, progress_event)`` where ``request_data``
-        already carries the effective ``priority``, ``deduplication_key``,
-        and ``parent_request_id``, ready for ``insert_request`` /
-        ``stage_request``.
+        Args:
+            new_request: The request a step yielded.
+            context: The response or request to resolve its URL against.
+            parent_request_id: The ``requests`` row that yielded it, or
+                ``None``.
+
+        Returns:
+            ``(request_data, progress_event)``, where ``request_data``
+            already carries the effective ``priority``,
+            ``deduplication_key``, and ``parent_request_id``, ready for
+            ``insert_request`` / ``stage_request``.
         """
         # Await any async field resolvers first: serialization needs concrete
         # values, and the regenerated dedup key must hash them.
@@ -220,6 +245,14 @@ class RequestQueueDB:
         have no response or request context. Probes pass
         ``deduplicate=False``: a deduplicated probe would never run, and the
         speculation tracker would never see its outcome.
+
+        Args:
+            request: The request to insert.
+            deduplicate: Keep the request's dedup key. ``False`` clears it,
+                so the row always inserts.
+
+        Returns:
+            The insert's outcome, as ``insert_request`` reports it.
         """
         # A hand-built request can still carry async field resolvers.
         request = await request.resolve_deferred_fields()
@@ -241,6 +274,12 @@ class RequestQueueDB:
         enqueue, the immediate one, and the root/probe path all build their
         payload here — so the round-trip postcondition covers all three.
         See :func:`_row_round_trips`.
+
+        Args:
+            request: The request to serialize.
+
+        Returns:
+            The row to insert.
         """
         request_data = self.serialize_request(request)
         request_data.priority = request.effective_priority
@@ -406,6 +445,9 @@ class RequestQueueDB:
         0.0 if one is ready now, the positive gap until the soonest retry
         still in backoff, or None if nothing is pending. See
         :meth:`SQLManager.seconds_until_next_pending`.
+
+        Returns:
+            Seconds to wait, or ``None`` when nothing is pending.
         """
         return await self.db.seconds_until_next_pending()
 
@@ -432,6 +474,10 @@ class RequestQueueDB:
             query already in the URL. This is intentional: restoring ``params``
             would either drop the query (transport ignores ``params``) or
             double-encode it on re-serialization.
+
+        Raises:
+            ValueError: If the row's form body decodes to neither a mapping
+                nor a pair list; see :meth:`_decode_body`.
         """
         decoded_body = self._decode_body(row)
 
@@ -498,6 +544,12 @@ class RequestQueueDB:
 
         The inverse of ``encode_body``: a JSON body is a dict or a pair list
         (re-tupled), anything else is raw bytes, verbatim.
+
+        Args:
+            row: The dequeued row to read the body off.
+
+        Returns:
+            The body as ``HTTPRequestParams.data`` took it.
 
         Raises:
             ValueError: when a ``body_is_form`` body decodes to neither a

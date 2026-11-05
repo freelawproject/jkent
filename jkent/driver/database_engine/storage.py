@@ -62,6 +62,14 @@ def serialize_result(
     arbitrary scraped values — so it is written with ``bytes_as_repr`` and
     the ``str()`` fallback, and recording it cannot raise over the
     ``DataFormatAssumptionException`` the caller is recording.
+
+    Args:
+        data: The scraped record.
+        validation_errors: Pydantic's error dicts, or ``None`` when the
+            record validated.
+
+    Returns:
+        The ``results`` row to insert.
     """
     invalid = validation_errors is not None
     return ResultInsert(
@@ -91,6 +99,18 @@ class ResponseStorageDB:
         retry_base_delay: float = 1.0,
         retry_jitter: float = DEFAULT_RETRY_JITTER,
     ) -> None:
+        """Configure the store and its retry backoff.
+
+        Args:
+            db: The run database.
+            max_backoff_time: Ceiling on a retry wait, in seconds.
+            retry_base_delay: The first retry's wait, in seconds, doubled
+                each attempt.
+            retry_jitter: Fraction of the computed wait to randomize by.
+
+        Raises:
+            ValueError: If a backoff parameter is out of range.
+        """
         # A jitter of 1 or more can draw a zero or negative wait (the floor
         # then catches a share of every generation, which re-synchronises the
         # pool), and a non-positive base never grows past the floor.
@@ -132,6 +152,13 @@ class ResponseStorageDB:
         ``preresolved`` is an invariant violation the caller treats as an
         error). The body is decompressed with the same dictionary it was
         stored under; headers round-trip from JSON.
+
+        Args:
+            request_id: The ``requests`` row to load.
+            request: The request the response is attached to.
+
+        Returns:
+            The rebuilt response, or ``None`` when none is stored.
         """
         stored = await self.db.get_stored_response(request_id)
         if stored is None:

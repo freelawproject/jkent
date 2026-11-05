@@ -17,10 +17,9 @@ from jkent.driver.database_engine.timestamps import now
 
 
 class SpeculationStateInsert(RowModel):
-    """One ``speculation_tracking`` upsert, as
-    :meth:`SpeculationMixin.save_speculation_state` consumes it.
+    """One ``speculation_tracking`` upsert.
 
-    Fields are ``speculation_tracking`` column names, so ``model_dump()`` is
+    Consumed by :meth:`SpeculationMixin.save_speculation_state`. Fields are ``speculation_tracking`` column names, so ``model_dump()`` is
     the upsert payload; ``func_name`` is the conflict key. The row's ``id``
     is not among them — the conflict key decides which row is written, and
     the id comes back out of the upsert.
@@ -46,10 +45,10 @@ class SpeculationStateInsert(RowModel):
 
 
 class SpeculationStateRecord(SpeculationStateInsert):
-    """One ``speculation_tracking`` row, as
-    :meth:`SpeculationMixin.load_all_speculation_states` reads it back.
+    """One ``speculation_tracking`` row, as it is read back.
 
-    The upsert columns plus the surrogate key, which a stored row always
+    Read by :meth:`SpeculationMixin.load_all_speculation_states`. The
+    upsert columns plus the surrogate key, which a stored row always
     has: requests built from the template carry it as
     ``requests.speculation_tracking_id``.
     """
@@ -85,6 +84,12 @@ class SpeculationMixin(SQLManagerBase):
         template carry as ``requests.speculation_tracking_id`` — so callers
         can use this both to persist progress and to create the row up front,
         before its probes are enqueued.
+
+        Args:
+            state: The row to upsert, keyed by ``func_name``.
+
+        Returns:
+            The tracking row's id.
         """
         values = state.model_dump(include=_INSERT_FIELDS)
         async with self._write_session() as session:
@@ -113,7 +118,11 @@ class SpeculationMixin(SQLManagerBase):
     async def load_all_speculation_states(
         self,
     ) -> dict[str, SpeculationStateRecord]:
-        """Load all speculation tracking states, keyed by ``func_name``."""
+        """Load all speculation tracking states, keyed by ``func_name``.
+
+        Returns:
+            Every stored tracking row.
+        """
         async with self.session_factory() as session:
             result = await session.execute(select(*_ROW_COLUMNS))
             return {

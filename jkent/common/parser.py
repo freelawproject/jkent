@@ -69,7 +69,9 @@ class JKentParser(ABC, Generic[T]):
     """
 
     @abstractmethod
-    def __call__(self, page: PageElement) -> list[DeferredValidation[T]]: ...
+    def __call__(self, page: PageElement) -> list[DeferredValidation[T]]:
+        """Extract one deferred record per logical record on *page*."""
+        ...
 
     @_offline_entry
     def from_response(self, response: Response) -> list[DeferredValidation[T]]:
@@ -77,6 +79,12 @@ class JKentParser(ABC, Generic[T]):
 
         A parse failure surfaces as ``ScraperAssumptionException``.
         ``from_string`` / ``from_file`` are conveniences over this.
+
+        Args:
+            response: The response whose text to parse.
+
+        Returns:
+            One deferred record per logical record on the page.
         """
         return self(_parse_html(response))
 
@@ -94,6 +102,9 @@ class JKentParser(ABC, Generic[T]):
             html: Raw HTML markup. A ``str`` is taken as already decoded.
             url: Base URL for resolving relative links. Optional.
             encoding: Charset that ``bytes`` are strictly decoded with.
+
+        Returns:
+            One deferred record per logical record on the page.
         """
         return self.from_response(_offline_response(html, url, encoding))
 
@@ -105,8 +116,16 @@ class JKentParser(ABC, Generic[T]):
         *,
         encoding: str = "utf-8",
     ) -> list[DeferredValidation[T]]:
-        """Read an HTML file from disk, decode it with ``encoding``, and run
-        the parser on it."""
+        """Read an HTML file from disk and run the parser on it.
+
+        Args:
+            path: The file to read.
+            url: Base URL for resolving relative links. Optional.
+            encoding: Charset the file's bytes are strictly decoded with.
+
+        Returns:
+            One deferred record per logical record on the page.
+        """
         return self.from_string(
             Path(path).read_bytes(), url=url, encoding=encoding
         )
@@ -118,7 +137,16 @@ _OFFLINE_STEP = "offline"
 
 
 def _offline_response(html: str | bytes, url: str, encoding: str) -> Response:
-    """A ``Response`` standing in for the one a transport would have built."""
+    """A ``Response`` standing in for the one a transport would have built.
+
+    Args:
+        html: The markup to stand in as the body.
+        url: The URL the response claims to come from.
+        encoding: Charset recorded for a ``bytes`` body.
+
+    Returns:
+        A 200 response carrying *html*, attached to an offline request.
+    """
     response = Response(
         status_code=200,
         headers={},

@@ -175,7 +175,11 @@ class RunMetadataMixin(SQLManagerBase):
             await session.commit()
 
     async def get_seed_params(self) -> SeedParams | None:
-        """The seed parameters for initial_seed(), or None if not stored."""
+        """The seed parameters for initial_seed(), or None if not stored.
+
+        Returns:
+            The stored seed parameters, or ``None``.
+        """
         metadata = await self.get_run_metadata()
         return metadata.seed_params if metadata is not None else None
 

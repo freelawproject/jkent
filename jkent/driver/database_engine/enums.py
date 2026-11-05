@@ -85,17 +85,28 @@ class RequestStatus(CodedEnum):
 
         What ``ScrapeRun.status()`` and ``count_active_requests`` mean by
         "active".
+
+        Returns:
+            The active statuses.
         """
         return _ACTIVE
 
     @classmethod
     def terminal(cls) -> frozenset[RequestStatus]:
-        """Settled for good; nothing will move these rows again."""
+        """Settled for good; nothing will move these rows again.
+
+        Returns:
+            The terminal statuses.
+        """
         return _TERMINAL
 
     @classmethod
     def dequeuable(cls) -> frozenset[RequestStatus]:
-        """What ``dequeue_next_request`` may claim."""
+        """What ``dequeue_next_request`` may claim.
+
+        Returns:
+            The dequeuable statuses.
+        """
         return _DEQUEUABLE
 
     @classmethod
@@ -104,6 +115,9 @@ class RequestStatus(CodedEnum):
 
         ``STUBBED`` is replay's intermediate state, resolved to ``PENDING``
         by ``finalize_stubs``.
+
+        Returns:
+            The parked statuses.
         """
         return _PARKED
 
@@ -227,7 +241,19 @@ class CodedEnumType(TypeDecorator[CodedEnum]):
     def process_bind_param(
         self, value: CodedEnum | None, dialect: Dialect
     ) -> int | None:
-        """Member in, integer code out."""
+        """Member in, integer code out.
+
+        Args:
+            value: The member to store, or ``None``.
+            dialect: The SQLAlchemy dialect in use.
+
+        Returns:
+            The member's integer code, or ``None``.
+
+        Raises:
+            LookupError: If *value* is not a member of this enum — a raw
+                code must go through ``from_code()`` first.
+        """
         if value is None:
             return None
         if isinstance(value, self.enum_class):
@@ -242,7 +268,15 @@ class CodedEnumType(TypeDecorator[CodedEnum]):
     def process_result_value(
         self, value: int | None, dialect: Dialect
     ) -> CodedEnum | None:
-        """Integer code in, member out."""
+        """Integer code in, member out.
+
+        Args:
+            value: The stored code, or ``None``.
+            dialect: The SQLAlchemy dialect in use.
+
+        Returns:
+            The member carrying that code, or ``None``.
+        """
         if value is None:
             return None
         return self.enum_class.from_code(value)

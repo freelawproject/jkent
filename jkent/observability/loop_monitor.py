@@ -35,6 +35,11 @@ class LoopLagMonitor:
     """
 
     def __init__(self, interval: float = DEFAULT_INTERVAL) -> None:
+        """Configure the sampler.
+
+        Args:
+            interval: Seconds between samples.
+        """
         self._interval = interval
         self._task: asyncio.Task[None] | None = None
 
@@ -45,7 +50,13 @@ class LoopLagMonitor:
         self._task = asyncio.ensure_future(self._run())
 
     async def stop(self) -> None:
-        """Cancel and await the sampling task."""
+        """Cancel and await the sampling task.
+
+        Raises:
+            asyncio.CancelledError: Re-raised only when this coroutine is
+                itself being cancelled; the sampler's own cancellation is
+                absorbed.
+        """
         task = self._task
         if task is None:
             return

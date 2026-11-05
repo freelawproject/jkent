@@ -22,8 +22,13 @@ if TYPE_CHECKING:
 
 
 class DictEntry(NamedTuple):
-    """A trained dictionary: its ``compression_dicts`` row id, the loaded
-    zstd object, and the step it was trained for."""
+    """A trained dictionary, as the cache holds it.
+
+    Attributes:
+        dict_id: Its ``compression_dicts`` row id.
+        dictionary: The loaded zstd object.
+        step: The step it was trained for.
+    """
 
     dict_id: int
     dictionary: zstd.ZstdCompressionDict
@@ -147,5 +152,8 @@ class SQLManagerBase:
         ``self.lock, self.session_factory()`` — see
         :func:`~jkent.driver.database_engine.database.write_session` for why
         a writer must not open a deferred transaction.
+
+        Returns:
+            The session context manager to enter.
         """
         return write_session(self.session_factory, self.lock)

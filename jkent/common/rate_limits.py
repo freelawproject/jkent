@@ -89,6 +89,19 @@ def _lane_order(
     the run already wrote wins, so a reorder of ``named_rate_limits``
     between resumes moves no row to another rate; lanes declared since are
     appended, taking fresh codes.
+
+    Args:
+        named: The scraper's declared lanes, in declaration order.
+        stored_names: The full lane list the run recorded, or ``None`` on
+            a fresh run.
+        owner: The scraper's name, for error messages.
+
+    Returns:
+        The scraper's lane names in code order, reserved pair excluded.
+
+    Raises:
+        ScraperConfigError: If *stored_names* is not a lane list jkent
+            wrote, or names a lane the scraper no longer declares.
     """
     if stored_names is None:
         return tuple(named)
@@ -218,11 +231,14 @@ class RateLimitTable:
                 fresh run: the codes then follow declaration order, and the
                 caller persists :attr:`names`.
 
-        Raises:
-            ScraperConfigError: from the validators, or when *stored_names*
-                is not a lane list this scraper could have written (it must
-                begin with the reserved pair), or names a lane the scraper
-                no longer declares.
+        Returns:
+            The table, with the reserved pair at codes 0 and 1 and the
+            scraper's own lanes after them.
+
+        The validators and :func:`_lane_order` raise
+        :class:`ScraperConfigError` for an invalid declaration, or for
+        *stored_names* that is not a lane list this scraper could have
+        written.
         """
         default_rates = scraper.rate_limits
         named = scraper.named_rate_limits
@@ -242,7 +258,12 @@ class RateLimitTable:
 
     @classmethod
     def bare(cls) -> RateLimitTable:
-        """The two framework lanes only, with an unlimited default."""
+        """The two framework lanes only, with an unlimited default.
+
+        Returns:
+            A table that round-trips ``None`` and ``"none"`` and rejects
+            every scraper-declared lane.
+        """
         return cls(
             names=RESERVED_RATE_LIMIT_NAMES,
             rates={DEFAULT_RATE_LIMIT: None, NO_RATE_LIMIT: None},
@@ -253,6 +274,12 @@ class RateLimitTable:
 
         ``None`` (the field's unset value) and ``"default"`` both encode to
         0.
+
+        Args:
+            name: The lane a request asked for, or ``None``.
+
+        Returns:
+            The integer ``requests.rate_limit`` stores.
 
         Raises:
             ScraperConfigError: for a lane this scraper does not declare —
@@ -273,6 +300,12 @@ class RateLimitTable:
 
         0 decodes to ``None``, the field's unset value, so a request
         round-trips through the database equal to the one enqueued.
+
+        Args:
+            code: The integer read off a ``requests`` row.
+
+        Returns:
+            The lane name, or ``None`` for the default lane.
 
         Raises:
             ScraperConfigError: for a code past the end of the table — a row

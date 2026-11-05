@@ -31,6 +31,13 @@ async def _parent_is_in_progress(self: StagedWrites, db: SQLManager) -> bool:
     """Whether the row :meth:`StagedWrites.flush` is about to complete is live.
 
     Dev-time only (see :mod:`jkent.contracts`); production never calls it.
+
+    Args:
+        self: The staged writes about to flush.
+        db: The run database to check against.
+
+    Returns:
+        ``True`` when the parent request is still ``in_progress``.
     """
     # Local imports: needed only when contracts are enabled.
     from sqlalchemy import select  # noqa: PLC0415
@@ -140,9 +147,13 @@ class StagedWrites:
         The results, the queued requests and the parent's ``completed``
         status land in a single transaction.
 
-        Returns the list of progress-event payloads for newly-inserted
-        requests, so the caller can fire them post-commit (deduplicated
-        inserts are omitted).
+        Args:
+            db: The run database to commit into.
+
+        Returns:
+            The progress-event payloads for newly-inserted requests, so the
+            caller can fire them post-commit (deduplicated inserts are
+            omitted).
         """
         emitted_events: list[EnqueuedEvent] = []
 

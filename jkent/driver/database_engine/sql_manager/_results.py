@@ -36,7 +36,16 @@ class ResultStorageMixin(SQLManagerBase):
     async def store_result_in_session(
         self, session: AsyncSession, request_id: int, result: ResultInsert
     ) -> int:
-        """Stage a result row inside an existing session (no commit)."""
+        """Stage a result row inside an existing session (no commit).
+
+        Args:
+            session: The open session to add to.
+            request_id: The request the result came from.
+            result: The row to insert.
+
+        Returns:
+            The new ``results`` row id.
+        """
         res = Result(request_id=request_id, **result.model_dump())
         session.add(res)
         await session.flush()

@@ -184,7 +184,11 @@ class _Instruments:
 
 @lru_cache(maxsize=1)
 def instruments() -> _Instruments:
-    """The process-wide jkent instrument set (built once, lazily)."""
+    """The process-wide jkent instrument set (built once, lazily).
+
+    Returns:
+        The shared instrument set.
+    """
     return _Instruments()
 
 
@@ -197,6 +201,9 @@ def sdk_active() -> bool:
     work can be skipped entirely when nothing would be emitted. Heuristic:
     a provider from an ``opentelemetry.sdk`` module (the proxy/no-op
     providers live under the API package).
+
+    Returns:
+        ``True`` when a real SDK provider is installed.
     """
     return "opentelemetry.sdk" in type(get_meter_provider()).__module__
 
@@ -228,5 +235,9 @@ def labeled(**new: str) -> Generator[None, None, None]:
 
 
 def current_labels() -> dict[str, str]:
-    """A copy of the labels in scope (``scraper`` / ``step`` when set)."""
+    """A copy of the labels in scope (``scraper`` / ``step`` when set).
+
+    Returns:
+        The current labels, as a fresh dict.
+    """
     return dict(_labels.get() or {})

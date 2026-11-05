@@ -139,7 +139,14 @@ class ErrorDetails:
 
 
 def _context_json(exc: ScraperAssumptionException) -> str | None:
-    """JSON of an assumption exception's context dict (``'{}'`` when empty)."""
+    """JSON of an assumption exception's context dict.
+
+    Args:
+        exc: The exception whose context to encode.
+
+    Returns:
+        The JSON text (``'{}'`` when the context is empty).
+    """
     return dump_json_or_none(exc.context, bytes_as_repr=True)
 
 
@@ -244,6 +251,12 @@ def error_message(exc: BaseException) -> str:
     What a request row's ``last_error`` stores. The class is as diagnostic
     as the message and often more so, and a bare ``TimeoutError()`` reads as
     ``"TimeoutError()"`` rather than as an empty reason.
+
+    Args:
+        exc: The exception to describe.
+
+    Returns:
+        Its ``repr``.
     """
     return repr(exc)
 

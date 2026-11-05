@@ -79,6 +79,13 @@ def _off_dictionary(
 
     The NULL arm matters: a bare ``!=`` would drop the pre-dictionary rows,
     which are exactly the ones a first pass most needs to recompress.
+
+    Args:
+        step: The step whose rows to select.
+        dict_id: The dictionary the rows should end up on.
+
+    Returns:
+        The clauses, to be ANDed into a query.
     """
     return (
         *stored_body_clauses(step),
@@ -256,6 +263,9 @@ class CompressionMixin(SQLManagerBase):
 
         Returns:
             Decompressed data bytes.
+
+        Raises:
+            ValueError: If ``dict_id`` names no stored dictionary.
         """
         dictionary = None
         if dict_id is not None:
@@ -300,6 +310,14 @@ class CompressionMixin(SQLManagerBase):
         Batching also means the dictionaries a batch's rows were compressed
         with are resolved as that batch needs them. Sampling usually stops
         well short of ``sample_ids``, and the ids past the stop cost nothing.
+
+        Args:
+            step: The step being trained, for log messages.
+            sample_ids: The ``requests`` rows to sample, in sample order.
+            max_sample_bytes: Decompressed bytes to gather before stopping.
+
+        Returns:
+            The decompressed samples, failures skipped.
         """
         samples: list[bytes | bytearray | memoryview[int]] = []
         collected = 0
@@ -478,8 +496,15 @@ class CompressionMixin(SQLManagerBase):
         return dict_id
 
     async def count_off_dictionary(self, step: str, dict_id: int) -> int:
-        """How many rows :meth:`recompress_responses` would select for
-        ``step``."""
+        """How many rows :meth:`recompress_responses` would select.
+
+        Args:
+            step: The step to count.
+            dict_id: The dictionary the rows should end up on.
+
+        Returns:
+            The number of rows still off that dictionary.
+        """
         async with self.session_factory() as session:
             result = await session.execute(
                 select(sa.func.count())
@@ -495,8 +520,17 @@ class CompressionMixin(SQLManagerBase):
         chunk_size: int,
     ) -> list[_OffDictionaryRow]:
         """One page of ``step``'s rows not yet on ``target_dict_id``.
+
         Calling this again without first updating rows will return the
         same results.
+
+        Args:
+            step: The step whose rows to read.
+            target_dict_id: The dictionary the rows should end up on.
+            chunk_size: Most rows to return.
+
+        Returns:
+            The page, ordered by request id.
         """
         async with self.session_factory() as session:
             result = await session.execute(
