@@ -74,10 +74,10 @@ T = TypeVar("T")
 
 
 def _apply_encoding(response: Response, encoding: str | None) -> None:
-    """Replace ``response.text`` with ``content`` decoded as strict UTF-8,
-    else by the step's charset.
+    """Re-decode the response body using the step's declared charset.
 
-    UTF-8 goes first because a step can see a mix of UTF-8 pages and pages
+    ``response.text`` is replaced with ``content`` decoded as strict UTF-8,
+    falling back to *encoding*. UTF-8 goes first because a step can see a mix of UTF-8 pages and pages
     in ``encoding``, and only UTF-8 reliably rejects bytes it doesn't fit.
 
     Raises:
@@ -105,6 +105,12 @@ def _apply_encoding(response: Response, encoding: str | None) -> None:
 def _parse_json(response: Response) -> Any:
     """Parse JSON from the response text.
 
+    Args:
+        response: The HTTP response whose ``text`` holds the document.
+
+    Returns:
+        Whatever the document decodes to — usually a ``dict`` or ``list``.
+
     Raises:
         ScraperAssumptionException: If JSON parsing fails.
     """
@@ -129,6 +135,10 @@ def _parse_html(response: Response, *, text: str | None = None) -> PageElement:
         response: The HTTP response.
         text: Already-decoded (typically ``preprocess``-repaired) document
             text to parse instead of ``response.text``.
+
+    Returns:
+        The parsed document, rooted at its top element and carrying the
+        response URL for relative-link resolution.
 
     Raises:
         ScraperAssumptionException: If HTML parsing fails.
@@ -211,6 +221,12 @@ class InjectionContext:
         response: Response,
         preprocess: Callable[[str], str] | None,
     ) -> None:
+        """Open a context for one execution of one step.
+
+        Args:
+            response: The response being handed to the step.
+            preprocess: The step's document repair hook, or ``None``.
+        """
         self.response = response
         self.preprocess = preprocess
         self.observer: SelectorObserver | None = None
@@ -223,6 +239,11 @@ class InjectionContext:
         Computed at most once per execution, and only if an injector that
         feeds on the document is actually in the signature — asking for
         ``json_content`` alone never runs the repair.
+
+        Raises:
+            ScraperAssumptionException: Propagated unchanged when the hook
+                raises one itself.
+            PreprocessPageException: If the hook fails for any other reason.
         """
         if self.preprocess is None:
             return None
@@ -272,14 +293,25 @@ def register_injector(
             from the builder's first docstring line when omitted.
 
     Returns:
-        The decorator, which returns the builder unchanged.
-
-    Raises:
-        ValueError: ``name`` is already registered to a different injector,
-            or ``doc`` was omitted and the builder has no docstring.
+        The decorator, which returns the builder unchanged. It rejects a
+        *name* already registered to a different injector, and a builder
+        with neither ``doc=`` nor a docstring.
     """
 
     def decorate(builder: Builder) -> Builder:
+        """Record *builder* under *name* and hand it back untouched.
+
+        Args:
+            builder: The function that produces the injected value.
+
+        Returns:
+            *builder*, unchanged.
+
+        Raises:
+            ValueError: ``name`` is already registered to a different
+                injector, or ``doc`` was omitted and *builder* has no
+                docstring.
+        """
         summary = doc
         if summary is None:
             docstring = inspect.getdoc(builder) or ""
@@ -299,7 +331,14 @@ def register_injector(
 
 
 def _injector_doc(indent: str = "    ") -> str:
-    """The registry rendered as the documented parameter list."""
+    """The registry rendered as the documented parameter list.
+
+    Args:
+        indent: Leading whitespace for each rendered line.
+
+    Returns:
+        One ``- name: description`` line per registered injector.
+    """
     return "\n".join(
         f"{indent}- {name}: {injector.doc}"
         for name, injector in INJECTORS.items()
@@ -308,44 +347,74 @@ def _injector_doc(indent: str = "    ") -> str:
 
 @register_injector("response")
 def _inject_response(ctx: InjectionContext) -> Response:
-    """The Response object"""
+    """The Response object.
+
+    Returns:
+        The response the step was handed.
+    """
     return ctx.response
 
 
 @register_injector("request")
 def _inject_request(ctx: InjectionContext) -> Request:
-    """The current Request"""
+    """The current Request.
+
+    Returns:
+        The request this response answered.
+    """
     return ctx.response.request
 
 
 @register_injector("previous_request")
 def _inject_previous_request(ctx: InjectionContext) -> Request | None:
-    """The parent request from the chain (None for entry requests)"""
+    """The parent request from the chain (None for entry requests).
+
+    Returns:
+        The request that yielded this one, or ``None`` at the chain root.
+    """
     return ctx.response.request.parent_request
 
 
 @register_injector("accumulated_data")
 def _inject_accumulated_data(ctx: InjectionContext) -> dict[str, Any]:
-    """Data collected across the request chain (from request)"""
+    """Data collected across the request chain (from request).
+
+    Returns:
+        The chain's accumulated data, carried on the request.
+    """
     return ctx.response.request.accumulated_data
 
 
 @register_injector("json_content")
 def _inject_json_content(ctx: InjectionContext) -> Any:
-    """Response content parsed as JSON"""
+    """Response content parsed as JSON.
+
+    Returns:
+        The decoded document.
+    """
     return _parse_json(ctx.response)
 
 
 @register_injector("lxml_tree")
 def _inject_lxml_tree(ctx: InjectionContext) -> PageElement:
-    """Response content parsed as PageElement"""
+    """Response content parsed as PageElement.
+
+    Returns:
+        The parsed document, without selector observation.
+    """
     return _parse_html(ctx.response, text=ctx.document)
 
 
 @register_injector("page")
 def _inject_page(ctx: InjectionContext) -> PageElement:
-    """Response content parsed as PageElement (PageElement with
-    observer)"""
+    """Response content parsed as PageElement, with a selector observer.
+
+    The observer is recorded on both the context and the response, so the
+    wrapper can read back which selectors the step exercised.
+
+    Returns:
+        The parsed document, wired to a fresh observer.
+    """
     page_element, observer = _parse_page_element(
         ctx.response, text=ctx.document
     )
@@ -356,7 +425,12 @@ def _inject_page(ctx: InjectionContext) -> PageElement:
 
 @register_injector("text")
 def _inject_text(ctx: InjectionContext) -> str:
-    """Response content as string"""
+    """Response content as string.
+
+    Returns:
+        The ``preprocess``-repaired document when the step set a hook,
+        else the response text as decoded.
+    """
     document = ctx.document
     if document is not None:
         return document
@@ -365,7 +439,12 @@ def _inject_text(ctx: InjectionContext) -> str:
 
 @register_injector("local_filepath")
 def _inject_local_filepath(ctx: InjectionContext) -> str | None:
-    """Local file path from ArchiveResponse (None otherwise)"""
+    """Local file path from ArchiveResponse (None otherwise).
+
+    Returns:
+        Where the archived body was written, or ``None`` for a response
+        that was not archived to disk.
+    """
     if isinstance(ctx.response, ArchiveResponse):
         return ctx.response.file_url
     return None
@@ -378,7 +457,16 @@ StepScraper = TypeVar("StepScraper", bound=BaseScraper[Any])
 def _resolve_yield(
     scraper_self: BaseScraper[Any], yielded: StepYield
 ) -> StepYield:
-    """Pass a yielded Request through :func:`inherit_step_metadata`."""
+    """Pass a yielded Request through :func:`inherit_step_metadata`.
+
+    Args:
+        scraper_self: The scraper whose step did the yielding.
+        yielded: One item off the step generator.
+
+    Returns:
+        The request with the step's metadata applied, or *yielded*
+        unchanged when it is not a :class:`Request`.
+    """
     if isinstance(yielded, Request):
         # ``inherit_step_metadata`` returns a ``Request``, which is the member of
         # the yield union we matched on, so the cast restores what the isinstance
@@ -508,11 +596,9 @@ def step(
             it to the transport's timeout.
 
     Returns:
-        Decorated function with automatic argument injection.
-
-    Raises:
-        ScraperAssumptionException: If content parsing or ``preprocess``
-            fails.
+        Decorated function with automatic argument injection. Calling it
+        raises :class:`ScraperAssumptionException` if content parsing or
+        the ``preprocess`` hook fails.
     """
 
     def decorator(

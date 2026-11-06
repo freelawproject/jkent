@@ -38,7 +38,15 @@ _DEQUEUED_COLUMNS: Final = model_columns(DequeuedRow, Request).values()
 
 
 def mark_failed(request_id: int, error_message: str) -> sa.Update:
-    """The UPDATE that marks ``request_id`` FAILED with ``error_message``."""
+    """The UPDATE that marks ``request_id`` FAILED with ``error_message``.
+
+    Args:
+        request_id: The row to mark.
+        error_message: What to store as ``last_error``.
+
+    Returns:
+        The statement to execute.
+    """
     return (
         update(Request)
         .where(Request.id == request_id)
@@ -55,6 +63,9 @@ def next_pending_id() -> Select[tuple[int]]:
 
     Pending and past any retry backoff, by priority, then FIFO by id —
     the order ``idx_requests_status_priority`` stores, so no sort.
+
+    Returns:
+        The select yielding that one id, if any row qualifies.
     """
     return (
         select(Request.id)
@@ -83,7 +94,15 @@ class RequestQueueMixin(SQLManagerBase):
     async def _find_by_dedup_key_in_session(
         self, session: AsyncSession, dedup_key: str
     ) -> int | None:
-        """Find a request ID by deduplication key inside an existing session."""
+        """Find a request ID by deduplication key inside an existing session.
+
+        Args:
+            session: The open session to query.
+            dedup_key: The key to look up.
+
+        Returns:
+            The row's id, or ``None`` when no row holds that key.
+        """
         result = await session.execute(
             select(Request.id).where(Request.deduplication_key == dedup_key)
         )
@@ -99,6 +118,13 @@ class RequestQueueMixin(SQLManagerBase):
 
         See :meth:`insert_request_in_session` — this is the same insert
         wrapped in its own write session and commit.
+
+        Args:
+            params: The row to insert.
+            preresolved_response: A captured response to land with it.
+
+        Returns:
+            The row's id and whether it is new.
         """
         async with self._write_session() as session:
             result = await self.insert_request_in_session(
@@ -134,8 +160,17 @@ class RequestQueueMixin(SQLManagerBase):
         insert that deduplicates drops the captured response in favour of the
         existing row, and logs a warning.
 
+        Args:
+            session: The open session to insert into.
+            params: The row to insert.
+            preresolved_response: A captured response to land with it.
+
         Returns:
             :class:`InsertResult`: the row's id and whether it is new.
+
+        Raises:
+            RuntimeError: If the INSERT was ignored but no row holds the
+                dedup key it conflicted on.
         """
         values = params.model_dump()
         values.update(
@@ -354,7 +389,11 @@ class RequestQueueMixin(SQLManagerBase):
             await session.commit()
 
     async def count_pending_requests(self) -> int:
-        """Count pending requests in the queue."""
+        """Count pending requests in the queue.
+
+        Returns:
+            How many rows are PENDING.
+        """
         async with self.session_factory() as session:
             result = await session.execute(
                 select(func.count())
@@ -377,6 +416,9 @@ class RequestQueueMixin(SQLManagerBase):
         Uses ``datetime('now', 'subsec')`` on both sides for the same reason
         as ``dequeue_next_request``: retry stamps carry milliseconds, and a
         whole-second "now" would quantize both the gate and the reported gap.
+
+        Returns:
+            Seconds to wait, or ``None`` when nothing is pending.
         """
         async with self.session_factory() as session:
             result = await session.execute(
@@ -421,7 +463,11 @@ class RequestQueueMixin(SQLManagerBase):
             await session.commit()
 
     async def count_active_requests(self) -> int:
-        """Count the rows in :meth:`RequestStatus.active` (pending + claimed)."""
+        """Count the rows in :meth:`RequestStatus.active` (pending + claimed).
+
+        Returns:
+            How many rows the run still owns.
+        """
         async with self.session_factory() as session:
             result = await session.execute(
                 select(func.count())
@@ -431,7 +477,11 @@ class RequestQueueMixin(SQLManagerBase):
             return result.scalar() or 0
 
     async def count_all_requests(self) -> int:
-        """Count all requests in the database."""
+        """Count all requests in the database.
+
+        Returns:
+            The ``requests`` row count.
+        """
         async with self.session_factory() as session:
             result = await session.execute(
                 select(func.count()).select_from(Request)
@@ -439,7 +489,11 @@ class RequestQueueMixin(SQLManagerBase):
             return result.scalar() or 0
 
     async def has_any_requests(self) -> bool:
-        """Whether the database holds any request rows at all."""
+        """Whether the database holds any request rows at all.
+
+        Returns:
+            ``True`` when at least one row exists.
+        """
         return await self.count_all_requests() > 0
 
     async def resolved_response_count(self, step: str) -> int:
@@ -447,6 +501,12 @@ class RequestQueueMixin(SQLManagerBase):
 
         The rows ``train_compression_dict`` samples from; see
         :func:`~jkent.driver.database_engine.stored_body.training_sample_clauses`.
+
+        Args:
+            step: The step to count samples for.
+
+        Returns:
+            How many rows the step could train on.
         """
         async with self.session_factory() as session:
             result = await session.execute(

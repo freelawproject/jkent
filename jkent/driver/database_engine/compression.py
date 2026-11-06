@@ -75,9 +75,13 @@ MIN_TRAIN_SAMPLE_BYTES: Final = 1024
 
 
 class CompressedContent(NamedTuple):
-    """``CompressionMixin.compress_response`` output: the compressed bytes
-    and the id of the dictionary they were compressed with (None when no
-    dictionary was available)."""
+    """``CompressionMixin.compress_response`` output.
+
+    Attributes:
+        data: The compressed bytes.
+        dict_id: The id of the dictionary they were compressed with, or
+            ``None`` when no dictionary was available.
+    """
 
     data: bytes
     dict_id: int | None
@@ -142,6 +146,12 @@ def _load_dictionary(blob: bytes) -> zstd.ZstdCompressionDict:
     The cost is memory: a precomputed dictionary measures ~525KB resident
     for a :data:`DEFAULT_DICT_SIZE` blob. That puts us at less than 15MB
     for all of our current scrape runs, and less than 8MB for most.
+
+    Args:
+        blob: The stored dictionary bytes.
+
+    Returns:
+        The dictionary, precomputed and safe to share across threads.
     """
     dict_obj = zstd.ZstdCompressionDict(blob)
     dict_obj.precompute_compress(level=DEFAULT_COMPRESSION_LEVEL)
@@ -154,8 +164,7 @@ def _decompress_samples(
     step: str,
     budget: int,
 ) -> list[bytes | bytearray | memoryview[int]]:
-    """Decompress one batch of training samples; skip failures; stop at
-    ``budget``.
+    """Decompress one batch of training samples, up to a byte budget.
 
     Runs in a worker thread — ``len(rows)`` back-to-back zstd calls would
     stall co-resident workers if run on the loop. A sample whose dictionary
@@ -169,6 +178,15 @@ def _decompress_samples(
     produces — every sample is ``bytes`` — because ``zstd.train_dictionary``
     declares an invariant ``list[ByteString]`` parameter, to which a
     ``list[bytes]`` is not assignable.
+
+    Args:
+        rows: ``(compressed, dict_id)`` pairs to decompress.
+        dictionaries: The dictionaries those rows were compressed with.
+        step: The step the samples belong to, for log messages.
+        budget: Decompressed bytes to gather before stopping.
+
+    Returns:
+        The decompressed samples, failures skipped.
     """
     samples: list[bytes | bytearray | memoryview[int]] = []
     total = 0
@@ -251,12 +269,14 @@ class _PendingUpdate(NamedTuple):
 
 
 class _ChunkResult(NamedTuple):
-    """One :func:`_recompress_chunk` pass: the rows it recompressed and
-    the rows it could not.
+    """One :func:`_recompress_chunk` pass.
 
-    ``skipped`` counts only content that failed to decompress or recompress;
-    rows lost to a concurrent writer are counted later, at the guarded
-    UPDATE."""
+    Attributes:
+        updates: The guarded UPDATEs the pass produced.
+        skipped: Rows whose content failed to decompress or recompress.
+            Rows lost to a concurrent writer are counted later, at the
+            guarded UPDATE.
+    """
 
     updates: list[_PendingUpdate]
     skipped: int
@@ -272,8 +292,17 @@ def _recompress_chunk(
 
     Runs in a worker thread — up to ``chunk_size`` back-to-back zstd calls
     would stall co-resident workers if run on the loop, and compaction runs
-    while the scrape is live. Returns the pending guarded UPDATEs plus the
-    count of rows skipped because their content failed to process.
+    while the scrape is live.
+
+    Args:
+        rows: The off-dictionary rows to move.
+        old_dictionaries: The dictionaries those rows were compressed with.
+        dictionary: The dictionary to recompress them under.
+        step: The step the rows belong to, for log messages.
+
+    Returns:
+        The pending guarded UPDATEs plus the count of rows skipped because
+        their content failed to process.
     """
     updates: list[_PendingUpdate] = []
     skipped = 0

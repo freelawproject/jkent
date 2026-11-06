@@ -291,6 +291,14 @@ class IncidentalRequestAssumptionException(ScraperAssumptionException):
         match_spec: str | None = None,
         candidate_urls: list[str] | None = None,
     ) -> None:
+        """Initialize the exception.
+
+        Args:
+            message: What the spec expected and what the page did.
+            request_url: URL of the request carrying the spec.
+            match_spec: repr of the spec that was applied, when known.
+            candidate_urls: URLs of the incidentals that matched.
+        """
         self.match_spec = match_spec
         self.candidate_urls = candidate_urls or []
         context: dict[str, Any] = {}
@@ -530,6 +538,16 @@ class PersistentHTTPResponseException(PersistentException):
         debug_response: Response | None = None,
         retry_after: float | None = None,
     ) -> None:
+        """Initialize the exception.
+
+        Args:
+            status_code: The HTTP status code received.
+            url: The URL of the request.
+            debug_response: The observed exchange, where the transport had
+                one to give.
+            retry_after: Clamped ``Retry-After`` seconds, where the server
+                sent the header.
+        """
         self.status_code = status_code
         self.url = url
         self.debug_response = debug_response
@@ -577,6 +595,16 @@ class SpeculationHTTPFailure(Exception):
         debug_response: Response | None = None,
         retry_after: float | None = None,
     ) -> None:
+        """Initialize the exception.
+
+        Args:
+            status_code: The HTTP status code received.
+            url: The URL of the speculative request.
+            debug_response: The miss's real body, where the transport
+                observed one.
+            retry_after: Clamped ``Retry-After`` seconds, where the server
+                sent the header.
+        """
         self.status_code = status_code
         self.url = url
         self.debug_response = debug_response

@@ -138,7 +138,11 @@ class SelectorObserver:
         self._tokens: list[contextvars.Token[SelectorObserver | None]] = []
 
     def __enter__(self) -> SelectorObserver:
-        """Activate this observer for any PageElement in this context."""
+        """Activate this observer for any PageElement in this context.
+
+        Returns:
+            This observer, for ``with ... as``.
+        """
         self._tokens.append(_active_observer.set(self))
         return self
 

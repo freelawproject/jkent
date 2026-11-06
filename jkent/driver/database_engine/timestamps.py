@@ -99,6 +99,12 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
         digits) so the stored text has the same width as a server-written one.
         The microsecond is floored to the millisecond, as SQLite's own clock
         reads are.
+
+        Args:
+            dialect: The SQLAlchemy dialect in use.
+
+        Returns:
+            The processor that renders a bound value.
         """
 
         def process(value: datetime | None) -> str | None:
@@ -115,6 +121,13 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
         self, value: datetime | None, dialect: Dialect
     ) -> datetime | None:
         """Normalise *value* to naive UTC for storage.
+
+        Args:
+            value: The datetime to store, or ``None``.
+            dialect: The SQLAlchemy dialect in use.
+
+        Returns:
+            The same instant in UTC, or ``None``.
 
         Raises:
             TypeError: If *value* is not a ``datetime`` (a plain ``date``
@@ -151,12 +164,20 @@ class UtcDateTime(sa.TypeDecorator[datetime]):
 
 
 def now_sql() -> sa.TextClause:
-    """The current timestamp, for a column's ``server_default``."""
+    """The current timestamp, for a column's ``server_default``.
+
+    Returns:
+        The SQL expression to use as the default.
+    """
     return sa.text(NOW_SQL)
 
 
 def now() -> ColumnElement[str]:
-    """The current timestamp, for the right-hand side of an ``UPDATE``."""
+    """The current timestamp, for the right-hand side of an ``UPDATE``.
+
+    Returns:
+        The SQL expression to assign.
+    """
     return sa.func.strftime(TIMESTAMP_FORMAT, "now")
 
 
@@ -171,6 +192,12 @@ def epoch_seconds(column: Any) -> ColumnElement[float]:
     directly. That spelling compiles to a SQL ``-`` between two TEXT values,
     which SQLite coerces to 0 instead of rejecting, so the aggregate comes back
     as ``0.0`` — a wrong answer with no error anywhere to notice it.
+
+    Args:
+        column: The timestamp column to convert.
+
+    Returns:
+        The SQL expression yielding Unix seconds.
     """
     return sa.func.unixepoch(column, "subsec")
 

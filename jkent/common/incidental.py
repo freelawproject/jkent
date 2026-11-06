@@ -28,6 +28,13 @@ def _json_deep_contains(actual: object, expected: object) -> bool:
     scalars match on equality. Extra keys/items in ``actual`` are ignored — this
     is an allowlist ("match what I name, ignore the rest"), so volatile fields
     the caller doesn't mention (tokens, nonces) never break the match.
+
+    Args:
+        actual: The decoded value observed on the wire.
+        expected: The shape the caller named.
+
+    Returns:
+        ``True`` when *actual* contains everything *expected* names.
     """
     if isinstance(expected, dict):
         if not isinstance(actual, dict):
@@ -86,6 +93,11 @@ class IncidentalMatch:
     body_contains: Mapping[str, Any] | str | None = None
 
     def __post_init__(self) -> None:
+        """Reject a spec that would match every request.
+
+        Raises:
+            ValueError: If no match field is set.
+        """
         if not any(
             (
                 self.url,
@@ -110,7 +122,18 @@ class IncidentalMatch:
         body: bytes | None,
         resource_type: str | None = None,
     ) -> bool:
-        """True if a captured incidental request satisfies every set field."""
+        """True if a captured incidental request satisfies every set field.
+
+        Args:
+            url: The captured request's URL.
+            method: Its HTTP method, where the capture recorded one.
+            headers: Its request headers.
+            body: Its request body, or ``None``.
+            resource_type: The browser's resource-type label, if any.
+
+        Returns:
+            ``True`` when every field this spec sets matches.
+        """
         if self.url is not None and not fnmatch.fnmatchcase(url, self.url):
             return False
         if (

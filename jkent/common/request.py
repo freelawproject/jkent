@@ -91,6 +91,15 @@ def _as_stream(value: Any) -> Any:
     every malformed body would be accepted as "a stream". The test is the
     one :func:`encode_body` itself applies, so exactly the bodies it can
     read are the bodies that validate.
+
+    Args:
+        value: The candidate body pydantic is validating.
+
+    Returns:
+        *value* unchanged, when it is file-like.
+
+    Raises:
+        ValueError: If *value* has no ``read``.
     """
     if hasattr(value, "read"):
         return value
@@ -187,6 +196,12 @@ def _encode_query_bytes(params: bytes) -> str:
     - any byte above ASCII, encoded as the byte it is, so a
       legacy-charset query (cp1252, Shift-JIS) goes out as sent instead
       of failing to decode.
+
+    Args:
+        params: The already-encoded query bytes.
+
+    Returns:
+        The query as ASCII text, safe to append to a URL.
     """
     out = ""
     i = 0
@@ -217,6 +232,13 @@ def _fold_params_into_url(url: str, params: QueryParams) -> str:
     Raw ``bytes`` are taken as an already-encoded query and only
     re-encoded where leaving a byte raw would change the URL's meaning
     (see :func:`_encode_query_bytes`).
+
+    Args:
+        url: The URL to append to; an existing query is kept.
+        params: The query to fold in, as pairs, a mapping, or raw bytes.
+
+    Returns:
+        The URL with the combined query.
     """
     if not params:
         return url
@@ -240,6 +262,13 @@ def encode_body(data: RequestData) -> tuple[bytes | None, bool]:
     or pair list is JSON-encoded with the flag True, a value JSON cannot
     spell by its ``str``. Falsy non-bytes data
     (``None``, ``{}``, ``[]``) is no body at all.
+
+    Args:
+        data: The request body as the caller spelled it.
+
+    Returns:
+        The bytes to store and the flag saying whether they are a
+        form/JSON encoding rather than a verbatim body.
 
     Raises:
         TypeError: for a non-seekable file-like body, which cannot be read
@@ -271,6 +300,12 @@ def serialize_url_and_body(
     Query params are folded into the URL (see :func:`_fold_params_into_url`)
     and the body is :func:`encode_body`'s. The queue's write path and
     replay's fallback-key derivation both go through this function.
+
+    Args:
+        http_request: The request parameters to flatten.
+
+    Returns:
+        The stored URL and the encoded body (``None`` for no body).
     """
     return (
         _fold_params_into_url(http_request.url, http_request.params),
@@ -296,6 +331,12 @@ def _sorted_if_dict(value: Any) -> Any:
 
     A dict's names are unique, so the order only reflects insertion;
     a pair list's order is part of the request and is left alone.
+
+    Args:
+        value: A ``params``/``data`` payload, or ``None``.
+
+    Returns:
+        The dict's items sorted by name, or *value* unchanged.
     """
     if isinstance(value, dict):
         return dict(sorted(value.items(), key=lambda item: str(item[0])))
@@ -318,6 +359,12 @@ def _generate_deduplication_key(request_params: HTTPRequestParams) -> str:
     :func:`encode_body`'s, so a value JSON has no spelling for keys by its
     ``str`` in a ``json=`` payload the way it does in ``data=`` rather
     than raising.
+
+    Args:
+        request_params: The request to key.
+
+    Returns:
+        The hex digest the queue dedups on.
     """
     url = _fold_params_into_url(
         request_params.url, _sorted_if_dict(request_params.params)
@@ -358,6 +405,12 @@ def _requote_uri(uri: str) -> str:
     (spaces, non-ASCII). Idempotent, and — unlike a blanket
     unquote/quote round-trip — never turns an encoded delimiter such as
     ``%26`` into a live one.
+
+    Args:
+        uri: The URL to normalize.
+
+    Returns:
+        The same URL with its percent-encoding in canonical form.
     """
     out: list[str] = []
     i = 0
@@ -633,6 +686,16 @@ class Request:
     def resolve_request_from(
         self, context: Response | Request
     ) -> tuple[HTTPRequestParams, str, Request]:
+        """Resolve this request's URL against a response or parent request.
+
+        Args:
+            context: The response this request was yielded from, or the
+                originating request.
+
+        Returns:
+            The request parameters with an absolute URL, the location they
+            were resolved against, and the parent request.
+        """
         if isinstance(context, Response):
             # Response from a Request - use its URL
             resolved_location = context.url
@@ -704,8 +767,13 @@ class Request:
         result substituted everywhere — the HTTP and browser transports must
         submit identical data.
 
-        Returns self when there is nothing to resolve. Otherwise returns a
-        new Request with resolved values.
+        Returns:
+            ``self`` when there is nothing to resolve; otherwise a new
+            Request carrying the resolved values.
+
+        Raises:
+            TypeError: If a resolver is not a zero-arg async callable, or
+                returns something other than a string or list of strings.
         """
         values: list[Any] = []
         for payload in (self.request.params, self.request.data):

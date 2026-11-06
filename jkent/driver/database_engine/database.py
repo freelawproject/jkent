@@ -40,6 +40,12 @@ class UnsupportedSchemaVersionError(RuntimeError):
     """
 
     def __init__(self, db_path: Path, found: int) -> None:
+        """Initialize the error.
+
+        Args:
+            db_path: The run database that was opened.
+            found: The schema version stamped in it.
+        """
         self.db_path = db_path
         self.found = found
         super().__init__(
@@ -61,6 +67,12 @@ async def _stamped_version(conn: AsyncConnection) -> int | None:
     None covers both a brand-new file and one whose ``schema_info`` table
     does not exist yet — either way there is nothing to refuse and the
     caller stamps it.
+
+    Args:
+        conn: An open connection to the run database.
+
+    Returns:
+        The stamped version, or ``None`` when the file carries no stamp.
     """
     has_table = (
         await conn.execute(
@@ -99,6 +111,10 @@ async def create_engine_and_init(
 
     Returns:
         An initialized AsyncEngine.
+
+    Raises:
+        UnsupportedSchemaVersionError: If the file is stamped at a schema
+            version this jkent cannot read.
     """
     # Checked here rather than at import so the failure names the moment a
     # database is actually opened. Cached after the first call.
@@ -211,7 +227,15 @@ async def init_database(
 async def execute_rowcount(
     session: AsyncSession, stmt: Update | Delete
 ) -> int:
-    """Execute a Core UPDATE/DELETE and return how many rows it touched."""
+    """Execute a Core UPDATE/DELETE statement.
+
+    Args:
+        session: The session to run it on.
+        stmt: The UPDATE or DELETE to execute.
+
+    Returns:
+        How many rows it touched.
+    """
     result = cast("CursorResult[Any]", await session.execute(stmt))
     return result.rowcount
 
@@ -241,6 +265,13 @@ async def write_session(
         async with write_session(self.session_factory, self.lock) as session:
             session.add(row)
             await session.commit()
+
+    Args:
+        session_factory: Builds the session to open.
+        lock: Serializes writers sharing this manager.
+
+    Yields:
+        The open session, inside a ``BEGIN IMMEDIATE`` transaction.
     """
     async with lock, session_factory() as session:
         begin_immediate: Mapping[str, bool] = {BEGIN_IMMEDIATE_OPTION: True}

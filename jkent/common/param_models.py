@@ -104,9 +104,24 @@ class SpeculativeRange(BaseModel, Speculative):
         return self
 
     def seed_range(self) -> range:
+        """The integer IDs to seed immediately.
+
+        Returns:
+            ``range(min, soft_max)`` — ``min`` inclusive, ``soft_max``
+            exclusive.
+        """
         return range(self.min, self.soft_max)
 
     def from_int(self, n: int) -> SpeculativeRange:
+        """Re-base this range on a single ID.
+
+        Args:
+            n: The ID the new range starts at.
+
+        Returns:
+            A copy with ``min`` set to *n* and ``soft_max`` raised to at
+            least ``n + 1``; every other field is carried over.
+        """
         # model_copy preserves every other field and returns the same concrete
         # type, so subclasses adding fields (e.g. juriscraper's
         # YearlySpeculativeRange/CourtRange) inherit this as-is.
@@ -115,4 +130,9 @@ class SpeculativeRange(BaseModel, Speculative):
         )
 
     def max_gap(self) -> int:
+        """Consecutive failures tolerated past the highest success.
+
+        Returns:
+            The configured ``gap``.
+        """
         return self.gap

@@ -40,6 +40,19 @@ def model_columns(
     ``select``/``RETURNING`` list or an insert split, so the model is the
     only list of columns. A field with no column raises at import time
     unless *partial*, in which case it is left out.
+
+    Args:
+        model: The row model whose fields to resolve.
+        table: The table to resolve against first.
+        *fallbacks: Further tables, tried in order, for a model spanning a
+            join.
+        partial: Leave out a field with no column instead of raising.
+
+    Returns:
+        Each resolved field name mapped to its ORM column.
+
+    Raises:
+        TypeError: If a field resolves to no column and *partial* is false.
     """
     columns: dict[str, InstrumentedAttribute[Any]] = {}
     for name in model.model_fields:
@@ -57,8 +70,11 @@ def model_columns(
 
 
 class _RequestColumns(RowModel):
-    """The ``requests`` columns an insert and a dequeue share, less the JSON
-    columns, which an insert carries as text and a dequeue decodes."""
+    """The ``requests`` columns an insert and a dequeue share.
+
+    Less the JSON columns, which an insert carries as text and a dequeue
+    decodes.
+    """
 
     request_type: RequestType
     method: HttpMethod

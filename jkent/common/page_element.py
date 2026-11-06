@@ -83,6 +83,12 @@ def _normalize_selector_key(key: str | Selector) -> str:
     rest of a form spec (``data={CSS("ctl00$name"): ...}``). The override map is
     keyed by raw ``FormField.name``, so we use the selector's ``value`` — which
     for these name-as-selector keys is the field name itself.
+
+    Args:
+        key: A ``data`` key, wrapped or plain.
+
+    Returns:
+        The raw field name the override map is keyed by.
     """
     return key.value if isinstance(key, Selector) else key
 
@@ -99,6 +105,12 @@ def _normalize_submit_selector(
     grammar to Playwright's auto-detection is the guess :class:`Selector`
     exists to remove. The ``id``/``name``/``value`` predicate extraction in
     :func:`_submit_selector_predicates` is unaffected by the engine prefix.
+
+    Args:
+        submit_selector: The caller's submit control selector, or ``None``.
+
+    Returns:
+        The engine-prefixed selector string, or ``None`` when unset.
     """
     if submit_selector is None:
         return None
@@ -109,8 +121,15 @@ def _submit_selector_predicates(selector: str) -> list[tuple[str, str]]:
     """Extract the ``(attr, value)`` equality predicates a selector implies.
 
     Only ``id``/``name``/``value`` are recognized — the attributes a
-    ``FormField`` retains. Returns an empty list for selectors with no such
-    predicate, which then fall back to the first submit control.
+    ``FormField`` retains.
+
+    Args:
+        selector: The submit control selector, engine prefix included.
+
+    Returns:
+        One ``(attr, value)`` pair per recognized predicate; empty for a
+        selector with none, which then falls back to the first submit
+        control.
     """
     predicates: list[tuple[str, str]] = []
     for m in _SUBMIT_ATTR_PREDICATE.finditer(selector):
@@ -168,6 +187,13 @@ def _merge_override(
     ``None`` reaches the wire) and the HTTP and Playwright transports submit
     identical data. Positions past the rendered defaults take the override
     verbatim; a trailing ``None`` with no default to fall back to is dropped.
+
+    Args:
+        default: The value parsed off the page, as rendered.
+        override: What the caller passed for this field name.
+
+    Returns:
+        The concrete value (or resolver) to submit for this field.
     """
     if not isinstance(override, list) or _has_no_none(override):
         return override
@@ -300,7 +326,6 @@ class Form:
             Request with the form's action as URL, method as HTTP method,
             and via set to ViaFormSubmit for Playwright replay.
         """
-
         # Merge field defaults with overrides. Repeated names (checkbox
         # groups, multi-selects) accumulate into a list — httpx encodes a
         # list value as repeated keys, like a browser does.
@@ -482,9 +507,8 @@ class PageElement:
             Filtering happens before count validation: min/max bounds
             apply to results of the requested type only, so a
             string-returning XPath without type=str counts as 0 elements.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
+            A count outside the bounds raises
+            :class:`HTMLStructuralAssumptionException` instead of returning.
 
         Example::
 
@@ -517,10 +541,8 @@ class PageElement:
 
         Returns:
             List of matching PageElements. Each element is wrapped to
-            support nested checked queries.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
+            support nested checked queries. A count outside the bounds
+            raises :class:`HTMLStructuralAssumptionException` instead.
 
         Example::
 
@@ -587,6 +609,22 @@ class PageElement:
         reports them to the active observer, and enforces the bounds.
         Filtering happens before the count, so the observer's recorded
         match count is the count the bounds were checked against.
+
+        Args:
+            selector: The selector to run, in its own grammar.
+            description: What the caller is selecting, for error messages.
+            min_count: Fewest results the caller will accept.
+            max_count: Most it will accept, or ``None`` for unlimited.
+            strings: Keep string results rather than elements.
+
+        Returns:
+            The results of the requested kind. A count outside the bounds
+            raises :class:`HTMLStructuralAssumptionException` from
+            :meth:`_validate_count` instead of returning.
+
+        Raises:
+            ScraperConfigError: If the selector does not parse — a bug in
+                the scraper, not a change in the site.
         """
         try:
             raw = selector.query(self)
@@ -647,7 +685,21 @@ class PageElement:
         *,
         is_element_query: bool = True,
     ) -> None:
-        """Raise :class:`HTMLStructuralAssumptionException` if out of bounds."""
+        """Check a match count against the caller's bounds.
+
+        Args:
+            selector: The selector that produced the count.
+            description: What the caller was selecting.
+            actual_count: How many results it matched.
+            min_count: Fewest results the caller will accept.
+            max_count: Most it will accept, or ``None`` for unlimited.
+            is_element_query: Whether the results were elements rather
+                than strings.
+
+        Raises:
+            HTMLStructuralAssumptionException: If the count is out of
+                bounds.
+        """
         if actual_count < min_count or (
             max_count is not None and actual_count > max_count
         ):
@@ -683,10 +735,9 @@ class PageElement:
             max_count: Maximum number of elements expected (None = unlimited).
 
         Returns:
-            List of matching PageElement instances.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
+            List of matching PageElement instances. A count outside the
+            bounds raises :class:`HTMLStructuralAssumptionException`
+            instead.
         """
         return self._checked(selector, description, min_count, max_count)
 
@@ -709,10 +760,8 @@ class PageElement:
             max_count: Maximum number of strings expected (None = unlimited).
 
         Returns:
-            List of matching string values.
-
-        Raises:
-            HTMLStructuralAssumptionException: If count doesn't match expectations.
+            List of matching string values. A count outside the bounds
+            raises :class:`HTMLStructuralAssumptionException` instead.
         """
         return self._checked(
             selector, description, min_count, max_count, strings=True
@@ -770,6 +819,12 @@ class PageElement:
 
         The attribute wins even when empty — value="" is how placeholder
         options ("All case types") request an empty filter.
+
+        Args:
+            option: The ``<option>`` element to read.
+
+        Returns:
+            Its ``value`` attribute, or its label text when it has none.
         """
         value = option.get_attribute("value")
         if value is not None:
@@ -788,10 +843,9 @@ class PageElement:
             description: Human-readable description of the form.
 
         Returns:
-            Form value object with action, method, and fields.
-
-        Raises:
-            HTMLStructuralAssumptionException: If no form matches the selector.
+            Form value object with action, method, and fields. A selector
+            matching anything other than exactly one element raises
+            :class:`HTMLStructuralAssumptionException` instead.
         """
         # A form selector must match exactly one element.
         form_elements = self.query(
@@ -1046,6 +1100,12 @@ class PageElement:
         no count validation and no observer record, so scrapers want
         ``query``/``checked_css`` instead. Explicit rather than left to
         ``__getattr__`` below, which would type the result as ``Any``.
+
+        Args:
+            expr: The CSS selector to run against this element.
+
+        Returns:
+            Every matching element, in document order.
         """
         return self._element.cssselect(expr)
 
@@ -1056,6 +1116,12 @@ class PageElement:
         node-set comes back as a list; a scalar XPath (``count()``,
         ``string()``, …) as a bare value. Same caveat as :meth:`cssselect`:
         raw, so scrapers want ``query_strings``/``checked_xpath``.
+
+        Args:
+            expr: The XPath expression to evaluate.
+
+        Returns:
+            A list for a node-set, or the scalar the expression computed.
         """
         return self._element.xpath(expr)
 
@@ -1064,5 +1130,11 @@ class PageElement:
 
         This lets PageElement stand in for the raw HtmlElement for any
         attribute the explicit methods above don't cover.
+
+        Args:
+            name: The attribute asked for.
+
+        Returns:
+            That attribute of the wrapped element.
         """
         return getattr(self._element, name)

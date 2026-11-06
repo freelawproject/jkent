@@ -64,6 +64,15 @@ def _refuse_unstorable(value: Any, path: str, seen: set[int]) -> None:
     held one — and a cycle stops the walk, left for ``to_json`` to
     report. Nothing is removed from *seen*: everything reached is held
     alive by the value being walked, so an id cannot be reused mid-walk.
+
+    Args:
+        value: The value to walk.
+        path: Dotted/indexed path to *value*, named in the refusal.
+        seen: Ids of containers already walked.
+
+    Raises:
+        TypeError: For the first raw-bytes or non-finite float value
+            reached.
     """
     if isinstance(value, _BYTES_TYPES):
         raise TypeError(
@@ -118,6 +127,13 @@ def _bytes_to_repr(value: Any, seen: set[int]) -> Any:
     by ``"<circular reference>"`` rather than recursed into, since this is
     the path a diagnostic column takes and it must not fail on what it is
     recording.
+
+    Args:
+        value: The value to rewrite.
+        seen: Ids of the containers on the current path.
+
+    Returns:
+        *value* with raw bytes replaced by their ``repr``.
     """
     if isinstance(value, _BYTES_TYPES):
         return repr(value)
@@ -163,9 +179,10 @@ def dump_json(
             floats as ``null``, instead of refusing them — for diagnostic
             columns only.
 
-    Raises:
-        TypeError: *value* holds raw bytes or a non-finite float somewhere
-            and ``bytes_as_repr`` is false.
+    Returns:
+        The compact JSON text. Raw bytes or a non-finite float anywhere in
+        *value* raise :class:`TypeError` instead, unless ``bytes_as_repr``
+        is set.
     """
     if bytes_as_repr:
         value = _bytes_to_repr(value, set())
@@ -189,6 +206,14 @@ def dump_json_or_none(
 
     Only ``None`` is treated as absent: a falsy-but-real value (``0``,
     ``[]``, ``False``) is still encoded.
+
+    Args:
+        value: What to encode, or ``None``.
+        name: What *value* is, as the root of the path a refusal names.
+        bytes_as_repr: As :func:`dump_json`.
+
+    Returns:
+        The JSON text, or ``None``.
     """
     if value is None:
         return None
@@ -205,6 +230,12 @@ def parse_json_column(value: Any) -> Any:
     Text is parsed; anything else passes through untouched, so the same
     field validates both from a row (JSON text) and from a re-validated
     ``model_dump`` (already decoded).
+
+    Args:
+        value: The column value, as text or already decoded.
+
+    Returns:
+        The decoded value.
     """
     return json.loads(value) if isinstance(value, str) else value
 

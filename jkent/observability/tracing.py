@@ -31,12 +31,20 @@ _TRACER_NAME = "jkent.driver"
 
 @lru_cache(maxsize=1)
 def tracer() -> Tracer:
-    """The process-wide jkent tracer (fetched once)."""
+    """The process-wide jkent tracer (fetched once).
+
+    Returns:
+        The shared tracer.
+    """
     return trace.get_tracer(_TRACER_NAME)
 
 
 def run_inst_id() -> str | None:
-    """The host-provided run id from baggage, or None if unset."""
+    """The host-provided run id from baggage, or None if unset.
+
+    Returns:
+        The run id, or ``None`` when the host set none.
+    """
     value = baggage.get_baggage("run_inst_id")
     return str(value) if value is not None else None
 
@@ -49,6 +57,13 @@ def request_span(*, scraper: str, step: str | None = None) -> Iterator[Span]:
     attributes and records an overall ``phase="total"`` duration on exit. The
     caller sets ``jkent.step`` / ``jkent.outcome`` on the yielded span as those
     become known.
+
+    Args:
+        scraper: The scraper's name, stamped on the span.
+        step: The step's name, where it is known at open time.
+
+    Yields:
+        The open span, for the caller to annotate.
     """
     labels = {"scraper": scraper}
     if step is not None:
@@ -76,6 +91,12 @@ def phase(name: Phase) -> Iterator[Span]:
     Attributes come from the ambient label context (``scraper`` / ``step``)
     plus ``phase=name``. Any auto-instrumented client call inside (httpx,
     SQLAlchemy) nests under this span.
+
+    Args:
+        name: The phase being timed.
+
+    Yields:
+        The open child span.
     """
     labels = current_labels()
     start = time.monotonic()

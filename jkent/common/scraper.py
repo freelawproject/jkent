@@ -159,8 +159,13 @@ def inherit_step_metadata(scraper: object, request: Request) -> Request:
     A string naming no ``@step`` method is left as is, for the driver to
     reject at dispatch.
 
-    Returns a new Request (the one passed in is frozen and is left alone),
-    or that same Request when there was nothing to fill in.
+    Args:
+        scraper: The scraper whose steps ``request.step`` names.
+        request: The request a step yielded.
+
+    Returns:
+        A new Request (the one passed in is frozen and is left alone), or
+        that same Request when there was nothing to fill in.
     """
     name = request.step
     updates: dict[str, Any] = {}
@@ -334,6 +339,11 @@ class BaseScraper(Generic[ScraperReturnType]):
     HTTP_CODE_TYPES: ClassVar[Mapping[int, HTTPCodeType]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Validate a scraper subclass's rate-limit declarations.
+
+        Args:
+            **kwargs: Class-creation keywords, passed up untouched.
+        """
         super().__init_subclass__(**kwargs)
         # Only when the subclass declares (or re-declares) them: a scraper
         # that inherits its parent's rates was already checked with it.
@@ -354,6 +364,10 @@ class BaseScraper(Generic[ScraperReturnType]):
         rather than ``dir(cls)`` so no descriptor runs at class definition,
         and re-checks inherited steps: a subclass may redeclare
         ``named_rate_limits`` without a lane its parent's steps use.
+
+        Raises:
+            ScraperConfigError: If a step names a lane this scraper does
+                not declare.
         """
         lanes = set(RESERVED_RATE_LIMIT_NAMES) | set(cls.named_rate_limits)
         seen: set[str] = set()
@@ -403,6 +417,9 @@ class BaseScraper(Generic[ScraperReturnType]):
 
         A code in ``HTTP_CODE_TYPES`` wins over its
         ``DEFAULT_HTTP_CODE_TYPES`` classification.
+
+        Returns:
+            Every classified status code and the type it maps to.
         """
         return {**cls.DEFAULT_HTTP_CODE_TYPES, **cls.HTTP_CODE_TYPES}
 
@@ -433,6 +450,14 @@ class BaseScraper(Generic[ScraperReturnType]):
         (a streaming response whose body hasn't been consumed) or a
         reconstruction rather than the raw wire bytes (Playwright's DOM
         snapshot); overrides must tolerate both.
+
+        Args:
+            status_code: The status the transport observed.
+            headers: The response headers, where the caller has them.
+            content: The response body, where the caller has it.
+
+        Returns:
+            How the request that got this status should be treated.
         """
         return cls.active_http_code_types().get(
             status_code, HTTPCodeType.PERSISTENT
@@ -477,6 +502,17 @@ class BaseScraper(Generic[ScraperReturnType]):
         skips private/dunder names, and turns any error raised while probing
         a candidate into a ScraperConfigError that names the attribute. Only
         attributes whose ``get_metadata`` returns non-None are yielded.
+
+        Args:
+            target: The scraper class or instance to walk.
+            get_metadata: Reads the decorator's metadata off a candidate,
+                returning ``None`` for an undecorated one.
+
+        Yields:
+            ``(name, method, metadata)`` per decorated attribute.
+
+        Raises:
+            ScraperConfigError: If probing a candidate attribute raises.
         """
         owner = target if isinstance(target, type) else type(target)
         for name in dir(target):
@@ -768,6 +804,11 @@ class ParsedData(Generic[T]):
     data: T
 
     def unwrap(self) -> T:
+        """The wrapped payload.
+
+        Returns:
+            The data this yield carries.
+        """
         return self.data
 
 

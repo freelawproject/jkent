@@ -19,6 +19,13 @@ def merge_headers(
     ``default_headers`` under a request's headers with this, and
     :class:`~jkent.common.request.Request` layers ``permanent`` headers —
     parent under child, then under the request's own — with it too.
+
+    Args:
+        defaults: The lower layer, overridden name-for-name by *explicit*.
+        explicit: The upper layer, or ``None`` for no overrides.
+
+    Returns:
+        One entry per header name, spelled as its winning side spelled it.
     """
     merged: dict[str, tuple[str, str]] = {}
     for side in (defaults, explicit or {}):

@@ -91,6 +91,12 @@ class ResponseStorageMixin(SQLManagerBase):
         Serves both the worker's pre-resolved path (rebuilding a
         ``Response`` without touching the transport) and tab route
         interception (replaying a parent's page to a child tab).
+
+        Args:
+            request_id: The ``requests`` row to read.
+
+        Returns:
+            The stored response, or ``None`` when none is stored.
         """
         async with self.session_factory() as session:
             result = await session.execute(

@@ -99,10 +99,6 @@ filterwarnings = [
 include = ["jkent*"]
 
 [tool.ruff]
-# Load the generated docstring baseline. WITHOUT THIS LINE that file is
-# inert and ~220 pre-existing D/DOC findings come back: ruff only reads
-# .ruff-baseline.toml because `extend` names it here.
-extend = ".ruff-baseline.toml"
 line-length = 79
 lint.extend-safe-fixes = [
   # non-pep585-annotation
@@ -158,13 +154,12 @@ lint.ignore = [
   "UP031",
 ]
 
-# Policy ignores: deliberate and permanent, unlike the generated docstring
-# baseline in .ruff-baseline.toml that `extend` loads above.
+# Policy ignores: deliberate and permanent. There is no generated baseline
+# behind these -- the D/DOC backlog one held was burned down and the file
+# deleted, so every jkent module is held to the rules in full.
 #
-# This MUST stay `extend-per-file-ignores`. The plain `per-file-ignores`
-# key REPLACES the extended file's table instead of adding to it, which
-# silently voids all 41 baseline entries -- ruff reports no error, the
-# backlog just reappears.
+# Stays `extend-per-file-ignores` so that a `[tool.ruff] extend = ...` added
+# later adds to this table instead of being silently replaced by it.
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/conftest.py" = [
   # module-import-not-at-top: JKENT_ENFORCE_CONTRACTS must be set before

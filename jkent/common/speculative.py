@@ -77,10 +77,16 @@ class Speculative(ABC):
     should_advance: bool
 
     @abstractmethod
-    def seed_range(self) -> range: ...
+    def seed_range(self) -> range:
+        """The integer IDs to seed immediately; see the class docstring."""
+        ...
 
     @abstractmethod
-    def from_int(self, n: int) -> Self: ...
+    def from_int(self, n: int) -> Self:
+        """A copy of this template re-based on ID *n*."""
+        ...
 
     @abstractmethod
-    def max_gap(self) -> int: ...
+    def max_gap(self) -> int:
+        """Consecutive failures tolerated past the highest success."""
+        ...

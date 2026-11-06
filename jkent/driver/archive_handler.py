@@ -35,9 +35,13 @@ from jkent.data_types import ArchiveDecision, ArchiveWriteResult
 class Digest(Protocol):
     """typechecking for ``hashlib._Hash`` usage."""
 
-    def update(self, data: bytes, /) -> None: ...
+    def update(self, data: bytes, /) -> None:
+        """Feed *data* into the digest."""
+        ...
 
-    def hexdigest(self) -> str: ...
+    def hexdigest(self) -> str:
+        """The digest so far, as a hex string."""
+        ...
 
 
 logger = logging.getLogger(__name__)
@@ -605,12 +609,11 @@ class LocalAsyncStreamingArchiveHandler(AsyncStreamingArchiveHandler):
 
         Returns:
             The stored path, the byte count, and the SHA-256 hex digest.
-
-        Raises:
-            TransientException: The bytes failed their integrity check.
-            FileExistsError: Too many copies of a content-addressed
-                payload already exist; see
-                :func:`_publish_content_addressed`.
+            Bytes that fail their integrity check raise
+            :class:`TransientException` instead, and a content-addressed
+            payload with too many copies already on disk raises
+            ``FileExistsError`` (see
+            :func:`_publish_content_addressed`).
         """
         digests = plan_digests(headers)
         target_dir = (

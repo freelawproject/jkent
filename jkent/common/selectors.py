@@ -129,6 +129,13 @@ class Selector(ABC):
         deserializers and the driver call sites that hold a stored
         ``(value, grammar)`` pair rather than a Selector.
 
+        Args:
+            value: The selector text.
+            grammar: ``"css"`` or ``"xpath"``.
+
+        Returns:
+            The selector of that grammar.
+
         Raises:
             ValueError: ``grammar`` is neither ``"css"`` nor ``"xpath"``.
         """
@@ -160,6 +167,9 @@ class Selector(ABC):
         Always engine-prefixed rather than left to Playwright's
         auto-detection: :meth:`nth` wraps XPath as ``(...)[n]``, a form
         Playwright does *not* recognize as XPath.
+
+        Returns:
+            ``<engine>=<value>``, ready for ``query_selector``.
         """
         return f"{self.playwright_engine}={self.value}"
 
@@ -172,6 +182,9 @@ class Selector(ABC):
         not reject it. The driver reads this to decide whether a failed
         structural assumption can be retried behind an autowait, and falls
         back to re-raising when it cannot.
+
+        Returns:
+            ``True`` unless a grammar says otherwise.
         """
         return True
 
@@ -185,6 +198,11 @@ class Selector(ABC):
         """
 
     def __str__(self) -> str:
+        """The selector text, unprefixed.
+
+        Returns:
+            The selector's ``value``.
+        """
         return self.value
 
     @classmethod
@@ -198,6 +216,13 @@ class Selector(ABC):
         Declared on the base so a field annotated ``Selector`` accepts any
         registered grammar and rebuilds the right subclass — the discriminator
         is the stored ``grammar``, not the shape of the value.
+
+        Args:
+            source_type: The annotated type pydantic is building for.
+            handler: Pydantic's schema handler for nested types.
+
+        Returns:
+            The core schema for this selector class.
         """
 
         def from_parts(data: dict[str, Any]) -> Selector:
@@ -281,6 +306,9 @@ class CSS(Selector):
             True
             >>> CSS("td:contains('Docket')").can_playwright_wait()
             False
+
+        Returns:
+            ``False`` when the selector uses ``:contains()``.
         """
         structural = _CSS_STRING_LITERAL.sub("''", self.value)
         return _CSS_CONTAINS.search(structural) is None
@@ -321,6 +349,13 @@ def _at_depth_zero(expression: str, char: str) -> list[int]:
     """Indices of *char* in *expression* outside all brackets and parens.
 
     *expression* must already have its string literals excised.
+
+    Args:
+        expression: The selector text to scan.
+        char: The single character to locate.
+
+    Returns:
+        Every index at nesting depth zero, ascending.
     """
     positions: list[int] = []
     depth = 0
@@ -335,7 +370,14 @@ def _at_depth_zero(expression: str, char: str) -> list[int]:
 
 
 def _split_union(expression: str) -> list[str]:
-    """*expression*'s top-level ``|`` branches (literals already excised)."""
+    """*expression*'s top-level ``|`` branches (literals already excised).
+
+    Args:
+        expression: The XPath to split.
+
+    Returns:
+        One entry per branch; a union-free expression gives one entry.
+    """
     bounds = [-1, *_at_depth_zero(expression, "|"), len(expression)]
     return [
         expression[start + 1 : stop] for start, stop in zip(bounds, bounds[1:])
@@ -348,6 +390,12 @@ def _selects_elements(branch: str) -> bool:
     The last step is what follows the branch's last top-level ``/``, with
     its predicates dropped (``//div/text()[1]`` still selects text). A
     parenthesized step (``(//a/@href)[1]``) is judged by what it wraps.
+
+    Args:
+        branch: One union branch, literals already excised.
+
+    Returns:
+        ``True`` when its last step selects elements.
     """
     branch = branch.strip()
     slashes = _at_depth_zero(branch, "/")
@@ -380,6 +428,12 @@ def _evaluates_to_node_set(expression: str) -> bool:
     only XPath 1.0 — what the browser evaluates — compiles. Predicates never
     run against the empty probe, so a namespace prefix inside one is not
     detected (see :meth:`XPath.can_playwright_wait`).
+
+    Args:
+        expression: The XPath to compile and probe.
+
+    Returns:
+        ``True`` when it compiles and evaluates to a node-set.
     """
     try:
         result = etree.XPath(expression, regexp=False)(
@@ -440,6 +494,10 @@ class XPath(Selector):
             True
             >>> XPath("count(//a)").can_playwright_wait()
             False
+
+        Returns:
+            ``True`` when a wait on this expression can resolve to
+            elements in the browser.
         """
         # XPath's own whitespace only: str.strip() would also drop characters
         # (U+0085, U+00A0) the browser's XPath parser rejects.

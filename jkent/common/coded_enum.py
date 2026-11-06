@@ -65,12 +65,29 @@ class CodedEnum(str, enum.Enum):  # noqa: UP042
         # ``__new__``. Declaring the real ``(code, label)`` signature here would
         # make every such lookup an error, so checkers see the lookup form and
         # the member-construction signature stays runtime-only.
-        def __new__(cls, value: object) -> Self: ...
+        def __new__(cls, value: object) -> Self:
+            """Look a member up by its label, as ``EnumMeta`` does."""
+            ...
 
     else:
 
         def __new__(cls, code, label):
-            """Build a member whose ``str`` payload is *label*, coded *code*."""
+            """Build a member whose ``str`` payload is *label*, coded *code*.
+
+            Args:
+                code: The integer this member is stored as. Positive, and
+                    unique within the enum.
+                label: The member's string value.
+
+            Returns:
+                The newly constructed member, registered in the class's
+                code index.
+
+            Raises:
+                TypeError: If *code* is not an ``int`` (``bool`` included).
+                ValueError: If *code* is below 1, or already claimed by
+                    another member of this enum.
+            """
             if not isinstance(code, int) or isinstance(code, bool):
                 raise TypeError(
                     f"{cls.__name__}: code must be an int, got {code!r}"
@@ -118,7 +135,11 @@ class CodedEnum(str, enum.Enum):  # noqa: UP042
 
     @classmethod
     def codes(cls) -> list[int]:
-        """Every code this enum defines, ascending."""
+        """Every code this enum defines, ascending.
+
+        Returns:
+            The codes of this enum's members; empty for a memberless enum.
+        """
         # ``__dict__`` rather than attribute access so a memberless enum — the
         # base class itself — reports nothing rather than raising.
         return sorted(cls.__dict__.get("_code_index", {}))

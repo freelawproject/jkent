@@ -24,6 +24,12 @@ def stored_body_clauses(step: str) -> tuple[sa.ColumnElement[bool], ...]:
     status code but store their file on disk, so they are excluded.
     Recompression and ``SQLManager.count_off_dictionary`` select from
     this set.
+
+    Args:
+        step: The step whose rows to select.
+
+    Returns:
+        The clauses, to be ANDed into a query.
     """
     return (
         Request.step == step,
@@ -40,6 +46,12 @@ def training_sample_clauses(step: str) -> tuple[sa.ColumnElement[bool], ...]:
     which does not belong in a step's training set.
     ``SQLManager.train_compression_dict`` samples from this set and
     ``SQLManager.resolved_response_count`` counts it.
+
+    Args:
+        step: The step whose rows to select.
+
+    Returns:
+        The clauses, to be ANDed into a query.
     """
     return (
         *stored_body_clauses(step),

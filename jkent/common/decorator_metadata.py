@@ -61,6 +61,7 @@ class StepMetadata:
         rate_limit: str | None = None,
         timeout: TimeoutType = None,
     ):
+        """Record one ``@step``'s metadata; see the class attributes."""
         self.priority = priority
         self.encoding = encoding
         self.await_list = await_list or []
@@ -88,6 +89,12 @@ class EntryMetadata:
     speculative_param: str | None = None
 
     def __post_init__(self) -> None:
+        """Build the validation model eagerly, to fail at decoration time.
+
+        Raises:
+            TypeError: If a parameter annotation is one pydantic cannot
+                build a schema for.
+        """
         # Build the per-entry validation model now so a parameter annotation
         # pydantic cannot generate a schema for fails at decoration time,
         # not later when a run is first seeded.
@@ -131,15 +138,15 @@ class EntryMetadata:
         coerced to ``date``, primitives are coerced, and missing or
         unexpected keys are rejected.
 
+        A parameter that is missing, unexpected, or fails validation or
+        coercion surfaces as the ``pydantic.ValidationError`` the model
+        raises; this method adds no error handling of its own.
+
         Args:
             kwargs_dict: Raw parameter dict from JSON deserialization.
 
         Returns:
             Dict of validated/coerced parameter values ready for function call.
-
-        Raises:
-            pydantic.ValidationError: If any parameter is missing, unexpected,
-                or fails validation/coercion.
         """
         model = self._validator.model_validate(kwargs_dict)
         return {name: getattr(model, name) for name in self.param_types}

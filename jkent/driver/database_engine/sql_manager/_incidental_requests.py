@@ -48,7 +48,11 @@ _STORAGE_ROW_COLUMNS: Final = tuple(
 
 
 def incidental_record_select() -> Select[tuple[Any, ...]]:
-    """The select() an :class:`IncidentalRequestRecord` is validated from."""
+    """The select() an :class:`IncidentalRequestRecord` is validated from.
+
+    Returns:
+        The capture columns, outer-joined to their storage row.
+    """
     return select(*_RECORD_COLUMNS).outerjoin(
         IncidentalRequestStorage,
         IncidentalRequest.storage_id == IncidentalRequestStorage.id,
@@ -136,7 +140,20 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
         parent_request_id: int,
         record: IncidentalCapture,
     ) -> int:
-        """Dedup-and-insert one incidental inside an existing session (no commit)."""
+        """Dedup-and-insert one incidental inside a session (no commit).
+
+        Args:
+            session: The open session to insert into.
+            parent_request_id: The navigation that captured it.
+            record: The capture to store.
+
+        Returns:
+            The new ``incidental_requests`` row id.
+
+        Raises:
+            ValueError: If the capture carries a body but no
+                ``content_md5`` to address it by.
+        """
         storage_id: int | None = None
 
         # Content addressing: the digest is the storage row's whole identity,
@@ -179,6 +196,12 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
         """Get all incidental requests for a parent request.
 
         Joins with storage table to include content/response fields.
+
+        Args:
+            parent_request_id: The navigation whose captures to read.
+
+        Returns:
+            The captures, oldest first.
         """
         async with self.session_factory() as session:
             result = await session.execute(
@@ -196,7 +219,14 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
     async def get_incidental_request_by_id(
         self, incidental_id: int
     ) -> IncidentalRequestRecord | None:
-        """Get a single incidental request by ID with storage data."""
+        """Get a single incidental request by ID with storage data.
+
+        Args:
+            incidental_id: The capture row to read.
+
+        Returns:
+            The capture, or ``None`` when no such row exists.
+        """
         async with self.session_factory() as session:
             result = await session.execute(
                 incidental_record_select().where(
@@ -219,6 +249,12 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
         :class:`IncidentalRequestRecord`: the body is bytes, the record's
         ``model_dump(mode="json")`` is a display shape, and only
         ``incidental=``'s ``body_contains`` matching ever wants it.
+
+        Args:
+            incidental_id: The capture row to read.
+
+        Returns:
+            The request body, or ``None`` when the capture carries none.
         """
         async with self.session_factory() as session:
             result = await session.execute(
@@ -236,6 +272,12 @@ class IncidentalRequestStorageMixin(SQLManagerBase):
         A row model, not the ORM object: the session closes as this
         returns, so an ORM instance would cross the boundary detached and
         raise on any attribute it had not already loaded.
+
+        Args:
+            storage_id: The storage row to read.
+
+        Returns:
+            The row, or ``None`` when no such row exists.
         """
         async with self.session_factory() as session:
             result = await session.execute(

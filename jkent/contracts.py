@@ -43,20 +43,39 @@ class ContractDecorator(Protocol):
     satisfy the protocol structurally.
     """
 
-    def __call__(self, fn: F, /) -> F: ...
+    def __call__(self, fn: F, /) -> F:
+        """Decorate *fn*, returning something of *fn*'s own type."""
+        ...
 
 
 def require(
     condition: Callable[..., object], description: str | None = None
 ) -> ContractDecorator:
-    """``icontract.require`` when contracts are on; identity otherwise."""
+    """``icontract.require`` when contracts are on; identity otherwise.
+
+    Args:
+        condition: The precondition, evaluated against the call's
+            arguments.
+        description: Message for the violation, if any.
+
+    Returns:
+        The decorator to apply.
+    """
     return _gate("require", condition, description)
 
 
 def ensure(
     condition: Callable[..., object], description: str | None = None
 ) -> ContractDecorator:
-    """``icontract.ensure`` when contracts are on; identity otherwise."""
+    """``icontract.ensure`` when contracts are on; identity otherwise.
+
+    Args:
+        condition: The postcondition, evaluated against the result.
+        description: Message for the violation, if any.
+
+    Returns:
+        The decorator to apply.
+    """
     return _gate("ensure", condition, description)
 
 
@@ -65,7 +84,16 @@ def _gate(
     condition: Callable[..., object],
     description: str | None,
 ) -> ContractDecorator:
-    """The named icontract decorator, or the identity when contracts are off."""
+    """The named icontract decorator, or the identity when contracts are off.
+
+    Args:
+        kind: Which icontract decorator to build.
+        condition: The contract's condition.
+        description: Message for the violation, if any.
+
+    Returns:
+        The decorator to apply.
+    """
     if not ENFORCE_CONTRACTS:
         return lambda fn: fn
     # Dev-only dependency, imported only when contracts are enabled.

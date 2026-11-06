@@ -39,7 +39,12 @@ class _ViaBase(PydanticBaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     def to_json(self) -> str:
-        """This via as the ``via_json`` wire format (see :func:`via_from_json`)."""
+        """This via as the ``via_json`` wire format.
+
+        Returns:
+            The JSON a ``via_json`` column stores; see
+            :func:`via_from_json` for the inverse and the shape.
+        """
         return self.model_dump_json()
 
 
@@ -118,9 +123,13 @@ def via_from_json(raw: str) -> ViaLink | ViaFormSubmit:
 
     The reader is strict about that shape: a flat
     ``selector``/``selector_type`` pair is rejected rather than parsed by
-    guessing the grammar from the selector's prefix.
+    guessing the grammar from the selector's prefix. JSON matching neither
+    shape surfaces as the ``ValueError`` pydantic raises.
 
-    Raises:
-        ValueError: The JSON does not match either via shape.
+    Args:
+        raw: The stored ``via_json`` text.
+
+    Returns:
+        The via the discriminator selected.
     """
     return _VIA_ADAPTER.validate_json(raw)
