@@ -1,0 +1,14 @@
+# The docker/ image build (context: the repo root) copies only these; the rest
+# of the tree is bind-mounted at run time, not baked in.
+*
+!pyproject.toml
+!uv.lock
+!docker/entrypoint.sh
+
+# The statutes worker image copies these out of this repo as a *named*
+# build context. BuildKit applies no ignore file to a named context;
+# podman/buildah applies the context's own, so without these two the
+# COPY finds nothing and the build fails there. This repo's own image
+# COPYs explicitly, so a wider allowlist costs it nothing.
+!README.md
+!jkent

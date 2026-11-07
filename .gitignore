@@ -24,3 +24,7 @@ wheels/
 .hypothesis
 .claude/settings.json
 .playwright-mcp
+docker/runs
+
+# mkdocs build output
+site/

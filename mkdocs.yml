@@ -1,0 +1,134 @@
+site_name: jkent
+site_description: A scraper-driver framework for structured web scraping.
+repo_url: https://github.com/freelawproject/jkent
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/weather-sunny, name: Light mode}
+
+# Portability note: this project may migrate docs to a wiki. Keep the
+# extension list minimal and avoid anything that rewrites link syntax or
+# pulls content in from outside the page -- no snippets, no mkdocstrings,
+# no mkdocs-only cross-reference syntax. Pages must stay readable as plain
+# markdown with relative .md links.
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+strict: true
+
+nav:
+  - "Home": index.md
+  - For scraper writers:
+      - writing/index.md
+      - Tutorials:
+          - writing/tutorials/index.md
+          - "Your first scraper": writing/tutorials/01-your-first-scraper.md
+          - "Following links across pages": writing/tutorials/02-following-links.md
+          - "Submitting a form": writing/tutorials/03-forms-and-navigation.md
+          - "A complete scraper": writing/tutorials/04-a-complete-scraper.md
+      - Cookbook:
+          - writing/cookbook/index.md
+          - "Paginate a result list": writing/cookbook/paginate.md
+          - "Submit a form": writing/cookbook/submit-a-form.md
+          - "Extract values with selectors": writing/cookbook/extract-with-selectors.md
+          - "Parse a JSON endpoint": writing/cookbook/parse-json-endpoints.md
+          - "Work with date ranges": writing/cookbook/work-with-dates.md
+          - "Download files and archives": writing/cookbook/download-files.md
+          - "Match incidental requests": writing/cookbook/incidental-requests.md
+          - "Signal a broken assumption": writing/cookbook/raise-assumption-errors.md
+          - "Set rate limits": writing/cookbook/set-rate-limits.md
+          - "Declare driver requirements": writing/cookbook/declare-requirements.md
+          - "Issue speculative requests": writing/cookbook/speculative-requests.md
+          - "Wait for a browser page": writing/cookbook/wait-for-the-page.md
+          - "Add a custom step injection": writing/cookbook/custom-injections.md
+      - Reference:
+          - writing/reference/index.md
+          - "`@entry` and `@step`": writing/reference/decorators.md
+          - "`BaseScraper` and yields": writing/reference/scraper.md
+          - "`Request` and `HTTPRequestParams`": writing/reference/request.md
+          - "`Response`": writing/reference/response.md
+          - "Selectors": writing/reference/selectors.md
+          - "`PageElement`, `Form`, `Link`": writing/reference/page-elements.md
+          - "`Via`": writing/reference/via.md
+          - "Incidental requests": writing/reference/incidental.md
+          - "Rate limits": writing/reference/rate-limits.md
+          - "`DriverRequirement`": writing/reference/driver-requirements.md
+          - "Exceptions": writing/reference/exceptions.md
+          - "Parameter models": writing/reference/parameters.md
+          - "Wait conditions": writing/reference/wait-conditions.md
+          - "`JKentParser`": writing/reference/parser.md
+      - Architecture:
+          - writing/architecture/index.md
+          - "The scraper/driver split": writing/architecture/scraper-driver-split.md
+          - "The step model": writing/architecture/the-step-model.md
+          - "Request identity and deduplication": writing/architecture/deduplication.md
+          - "Why assumptions are exceptions": writing/architecture/assumption-exceptions.md
+          - "Named selectors and observation": writing/architecture/selector-contracts.md
+          - "Declarative navigation": writing/architecture/via-and-form-transport.md
+          - "Speculation, from the author's side": writing/architecture/speculation.md
+          - "Contracts and invariants": writing/architecture/contracts.md
+  - For jkent operators:
+      - operating/index.md
+      - Basic walkthrough:
+          - operating/walkthrough/index.md
+          - "Run a scrape": operating/walkthrough/01-run-a-scrape.md
+          - "Watch a run in progress": operating/walkthrough/02-watch-a-run.md
+          - "Inspect the results": operating/walkthrough/03-inspect-the-results.md
+          - "Resume an interrupted run": operating/walkthrough/04-resume-a-run.md
+      - Making adjustments:
+          - operating/adjustments/index.md
+          - "Choose a transport": operating/adjustments/choose-a-transport.md
+          - "Tune concurrency": operating/adjustments/tune-concurrency.md
+          - "Configure rate limits": operating/adjustments/configure-rate-limits.md
+          - "Get past an interstitial": operating/adjustments/handle-interstitials.md
+          - "Run in Docker": operating/adjustments/run-in-docker.md
+          - "Enable metrics and tracing": operating/adjustments/enable-observability.md
+          - "Manage run database size": operating/adjustments/manage-db-size.md
+          - "Recover a damaged run": operating/adjustments/recover-a-run.md
+          - "Debug a failed run": operating/adjustments/debug-a-failure.md
+      - Reference:
+          - operating/reference/index.md
+          - "`RunBootstrapper` and `ScrapeRun`": operating/reference/bootstrapper.md
+          - "Scripts and entry points": operating/reference/cli.md
+          - "Configuration": operating/reference/configuration.md
+          - "Run database schema": operating/reference/run-database.md
+          - "`sql_manager`": operating/reference/sql-manager.md
+          - "Metrics": operating/reference/metrics.md
+          - "Traces": operating/reference/tracing.md
+          - "Driver error taxonomy": operating/reference/errors.md
+      - Architecture:
+          - operating/architecture/index.md
+          - "Lifecycle of a run": operating/architecture/run-lifecycle.md
+          - "The worker pool": operating/architecture/worker-pool.md
+          - "Transports": operating/architecture/transports.md
+          - "The browser engine": operating/architecture/browser-engine.md
+          - "Persistence and staged writes": operating/architecture/persistence.md
+          - "The request queue": operating/architecture/request-queue.md
+          - "Response storage and disk use": operating/architecture/storage-and-space.md
+          - "Compression": operating/architecture/compression.md
+          - "Compaction": operating/architecture/compaction.md
+          - "Rate limiting and lanes": operating/architecture/rate-limiting.md
+          - "The circuit breaker": operating/architecture/circuit-breaker.md
+          - "Speculation, driver side": operating/architecture/speculation.md
+          - "Resumability": operating/architecture/resumability.md

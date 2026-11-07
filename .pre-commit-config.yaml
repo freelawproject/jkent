@@ -13,6 +13,8 @@ repos:
      - id: check-merge-conflict
      - id: check-toml
      - id: check-yaml
+       # mkdocs.yml uses !!python/name tags (pymdownx superfences).
+       args: [--unsafe]
      - id: debug-statements
      - id: detect-private-key
      - id: fix-byte-order-marker
