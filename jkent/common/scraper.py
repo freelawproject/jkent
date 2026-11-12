@@ -575,6 +575,28 @@ class BaseScraper(Generic[ScraperReturnType]):
         return [e for e in cls.list_entries() if e.speculative]
 
     @classmethod
+    def find_speculative_param(cls, func_name: str) -> str:
+        """Return the speculative param name for the given entry function.
+
+        Args:
+            func_name: Name of the speculative entry function to look up.
+
+        Returns:
+            The name of that entry's speculative parameter.
+
+        Raises:
+            AssertionError: If no speculative entry is registered under
+                ``func_name``.
+        """
+        for entry_info in cls.list_speculative_entries():
+            if entry_info.func_name == func_name:
+                assert entry_info.speculative_param is not None
+                return entry_info.speculative_param
+        raise AssertionError(
+            f"No speculative entry registered for {func_name!r}"
+        )
+
+    @classmethod
     def list_entries(cls) -> list[EntryMetadata]:
         """List all entry point methods defined on this scraper.
 

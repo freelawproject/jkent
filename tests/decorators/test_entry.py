@@ -197,6 +197,43 @@ class TestEntryMetadata:
                 def bad(self, a: RecordId, b: AnotherSpecParam) -> Request:  # type: ignore[empty-body]
                     ...
 
+    def test_speculative_entry_with_sibling_params_rejected(self):
+        """The driver calls a probe with the Speculative param alone.
+
+        A sibling would be validated at seed time and then dropped — the
+        probe call would raise TypeError for a missing argument — so the
+        shape is refused where it is written.
+        """
+        with pytest.raises(TypeError, match="besides its Speculative one"):
+
+            class BadScraper(BaseScraper[FakeData]):
+                @entry(FakeData)
+                def bad(self, rid: RecordId, court: str) -> Request:  # type: ignore[empty-body]
+                    ...
+
+    def test_speculative_entry_returning_a_generator_rejected(self):
+        """A speculative entry returns one Request; only others yield."""
+        with pytest.raises(TypeError, match="returns a single Request"):
+
+            class BadScraper(BaseScraper[FakeData]):
+                @entry(FakeData)
+                def bad(self, rid: RecordId) -> Generator[Request, None, None]:
+                    raise NotImplementedError
+
+    def test_unannotated_speculative_generator_rejected(self):
+        """The function object is checked, not just the annotation."""
+        with pytest.raises(TypeError, match="'bad' yields"):
+
+            class BadScraper(BaseScraper[FakeData]):
+                @entry(FakeData)
+                def bad(self, rid: RecordId):
+                    yield Request(
+                        request=HTTPRequestParams(
+                            method=HttpMethod.GET, url="/x"
+                        ),
+                        step="parse",
+                    )
+
 
 # ── get_entry_metadata helper ──────────────────────────────────────
 
