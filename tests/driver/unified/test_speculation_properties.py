@@ -1,6 +1,6 @@
 """Generative laws for the shared speculation engine.
 
-Subject: :mod:`jkent.driver._speculation_support` — ``compute_seed_plan``
+Subject: :mod:`jkent.driver._speculation_support` — ``SpeculationState.seed_plan``
 (the resume-aware seed plan) and the ``AsyncSpeculationSupport`` mixin's
 ``seed`` / ``_extend_speculation`` / ``track_outcome``.
 
@@ -46,7 +46,6 @@ from jkent.driver._speculation_support import (
     AsyncSpeculationSupport,
     SpeculationState,
     build_speculative_request,
-    compute_seed_plan,
 )
 
 pytestmark = pytest.mark.generative
@@ -119,7 +118,7 @@ def _state(
     )
 
 
-# --- compute_seed_plan --------------------------------------------------------
+# --- SpeculationState.seed_plan ----------------------------------------------
 
 
 _ceilings = st.none() | st.integers(min_value=-1, max_value=30)
@@ -133,7 +132,7 @@ def test_seed_plan_shape(
     start when unseeded); the new ceiling never regresses and equals the
     last id planned; stopped iff no window."""
     spec_state = _state(template, current_ceiling)
-    ids, new_ceiling, stopped = compute_seed_plan(spec_state)
+    ids, new_ceiling, stopped = spec_state.seed_plan()
 
     assert all(a < b for a, b in zip(ids, ids[1:], strict=False)), ids
     floor = template.start if current_ceiling is None else current_ceiling + 1
@@ -168,9 +167,7 @@ def test_reseed_chain_never_replans_an_id(
     seen: set[int] = set()
     ceiling: int | None = current_ceiling
     for _ in range(rounds):
-        ids, new_ceiling, _stopped = compute_seed_plan(
-            _state(template, ceiling)
-        )
+        ids, new_ceiling, _stopped = _state(template, ceiling).seed_plan()
         clash = seen & set(ids)
         assert not clash, (
             f"re-seed from ceiling {ceiling} replanned {sorted(clash)}"
@@ -179,7 +176,7 @@ def test_reseed_chain_never_replans_an_id(
         if ids:
             assert new_ceiling == max(ids)
         else:
-            replan = compute_seed_plan(_state(template, new_ceiling))
+            replan = _state(template, new_ceiling).seed_plan()
             assert replan[:2] == ([], new_ceiling)
         seen.update(ids)
         ceiling = new_ceiling
@@ -202,11 +199,11 @@ def test_replan_without_new_outcomes_plans_nothing(
     """
     spec_state = _state(template, current_ceiling)
     spec_state.highest_successful_id = highest
-    _ids, new_ceiling, _stopped = compute_seed_plan(spec_state)
+    _ids, new_ceiling, _stopped = spec_state.seed_plan()
 
     resumed = _state(template, new_ceiling)
     resumed.highest_successful_id = highest
-    ids, ceiling, _stopped = compute_seed_plan(resumed)
+    ids, ceiling, _stopped = resumed.seed_plan()
     assert ids == []
     assert ceiling == new_ceiling
 
@@ -217,7 +214,7 @@ def test_window_follows_highest_success_on_resume() -> None:
     template = _Probe(start=0, stop=2, gap=3)
     spec_state = _state(template, current_ceiling=4)
     spec_state.highest_successful_id = 4
-    ids, ceiling, stopped = compute_seed_plan(spec_state)
+    ids, ceiling, stopped = spec_state.seed_plan()
     assert ids == [5, 6, 7]
     assert ceiling == 7
     assert stopped is False
@@ -236,13 +233,11 @@ def test_resume_after_seeding_only_id_zero_plans_nothing_new(
     template: _Probe,
 ) -> None:
     """A resumed state whose ceiling is 0 does not re-plan ID 0."""
-    ids, ceiling, _stopped = compute_seed_plan(_state(template))
+    ids, ceiling, _stopped = _state(template).seed_plan()
     assert ids == [0]
     assert ceiling == 0
 
-    resumed_ids, _ceiling, _stopped = compute_seed_plan(
-        _state(template, ceiling)
-    )
+    resumed_ids, _ceiling, _stopped = _state(template, ceiling).seed_plan()
     assert 0 not in resumed_ids
 
 
@@ -313,7 +308,7 @@ async def _drive(template: _Probe, script: list[tuple[int, bool]]) -> None:
     gap = template.gap
 
     await support.seed()
-    plan_ids, plan_ceiling, plan_stopped = compute_seed_plan(_state(template))
+    plan_ids, plan_ceiling, plan_stopped = _state(template).seed_plan()
     assert support.enqueued == plan_ids
     assert (spec_state.current_ceiling, spec_state.stopped) == (
         plan_ceiling,

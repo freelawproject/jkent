@@ -97,30 +97,52 @@ class SpeculationState:
             or speculative_id > self.highest_successful_id
         )
 
+    def seed_plan(self) -> tuple[list[int], int, bool]:
+        """Return (ids_to_seed, new_ceiling, stopped) for this state.
 
-def find_speculative_param(
-    scraper: BaseScraper[Any], base_func_name: str
-) -> str:
-    """Return the speculative param name for the given entry function.
+        The advance window is the ``max_gap`` IDs past the frontier: the end of
+        the seed range, or the highest success if that is further. Resume-aware:
+        when ``current_ceiling`` is None (a state never seeded) this reduces to
+        plain seeding; otherwise (a persistent resume) it skips IDs at or below
+        the ceiling, which are already queued or answered. The window is not
+        re-anchored at the ceiling, so reopening a run with no new outcome plans
+        nothing.
 
-    Args:
-        scraper: The scraper owning the speculative entries.
-        base_func_name: Name of the entry function to look up.
+        Returns:
+            The IDs to seed, the new ceiling, and whether the advance window
+            is closed (``stopped``) — a template that does not advance is
+            stopped from the start; its seed range is still fetched.
+        """
+        template = self.template
+        seed_ids = template.seed_range()
+        gap = template.max_gap()
 
-    Returns:
-        The name of that entry's speculative parameter.
+        resume_floor = (
+            seed_ids.start
+            if self.current_ceiling is None
+            else self.current_ceiling + 1
+        )
+        seed_ids_to_run = [n for n in seed_ids if n >= resume_floor]
 
-    Raises:
-        AssertionError: If no speculative entry is registered under
-            ``base_func_name``.
-    """
-    for entry_info in scraper.list_speculative_entries():
-        if entry_info.func_name == base_func_name:
-            assert entry_info.speculative_param is not None
-            return entry_info.speculative_param
-    raise AssertionError(
-        f"No speculative entry registered for {base_func_name!r}"
-    )
+        window_start = max(seed_ids.start, seed_ids.stop)
+        if self.highest_successful_id is not None:
+            window_start = max(window_start, self.highest_successful_id + 1)
+        window = (
+            range(max(window_start, resume_floor), window_start + gap)
+            if template.should_advance and gap > 0
+            else None
+        )
+
+        if window is not None:
+            ids = seed_ids_to_run + list(window)
+            new_ceiling = max(window_start + gap, resume_floor) - 1
+            stopped = False
+        else:
+            ids = seed_ids_to_run
+            new_ceiling = max(window_start, resume_floor) - 1
+            stopped = True
+
+        return ids, new_ceiling, stopped
 
 
 def discover_speculate_functions(
@@ -228,8 +250,8 @@ def build_speculative_request(
             "it must be persisted before probes are built"
         )
     func = getattr(scraper, spec_state.base_func_name)
-    speculative_param = find_speculative_param(
-        scraper, spec_state.base_func_name
+    speculative_param = scraper.find_speculative_param(
+        spec_state.base_func_name
     )
     concrete = spec_state.template.from_int(n)
     request = inherit_step_metadata(
@@ -238,65 +260,28 @@ def build_speculative_request(
     return request.speculative(tracking_id, n)
 
 
-def compute_seed_plan(
-    spec_state: SpeculationState,
-) -> tuple[list[int], int, bool]:
-    """Return (ids_to_seed, new_ceiling, stopped) for one state.
-
-    The advance window is the ``max_gap`` IDs past the frontier: the end of
-    the seed range, or the highest success if that is further. Resume-aware:
-    when ``current_ceiling`` is None (a state never seeded) this reduces to
-    plain seeding; otherwise (a persistent resume) it skips IDs at or below
-    the ceiling, which are already queued or answered. The window is not
-    re-anchored at the ceiling, so reopening a run with no new outcome plans
-    nothing.
-
-    Args:
-        spec_state: The template's current state.
-
-    Returns:
-        The IDs to seed, the new ceiling, and whether the advance window
-        is closed (``stopped``) — a template that does not advance is
-        stopped from the start; its seed range is still fetched.
-    """
-    template = spec_state.template
-    seed_ids = template.seed_range()
-    gap = template.max_gap()
-
-    resume_floor = (
-        seed_ids.start
-        if spec_state.current_ceiling is None
-        else spec_state.current_ceiling + 1
-    )
-    seed_ids_to_run = [n for n in seed_ids if n >= resume_floor]
-
-    window_start = max(seed_ids.start, seed_ids.stop)
-    if spec_state.highest_successful_id is not None:
-        window_start = max(window_start, spec_state.highest_successful_id + 1)
-    window = (
-        range(max(window_start, resume_floor), window_start + gap)
-        if template.should_advance and gap > 0
-        else None
-    )
-
-    if window is not None:
-        ids = seed_ids_to_run + list(window)
-        new_ceiling = max(window_start + gap, resume_floor) - 1
-        stopped = False
-    else:
-        ids = seed_ids_to_run
-        new_ceiling = max(window_start, resume_floor) - 1
-        stopped = True
-
-    return ids, new_ceiling, stopped
-
-
 class AsyncSpeculationSupport(abc.ABC):
     """Async mixin: seed/extend/track over two hooks.
 
     ``_enqueue_speculative`` dispatches a probe; ``_persist`` saves a state
     and sets its ``tracking_id``. Outcome tracking is serialised under
     ``_speculation_lock``, and the state is persisted inside that lock.
+
+    Attributes:
+        scraper: The scraper whose speculative entries build the probes.
+        _speculation_state: One :class:`SpeculationState` per speculative
+            template, keyed by its :attr:`SpeculationState.func_name`,
+            ``{entry_name}:{param_index}``: the speculative entry's method
+            name and the template's position among that entry's
+            invocations in ``seed_params``. So ``fetch_case:0`` and
+            ``fetch_case:1`` are two templates for the same entry, each with
+            its own frontier, ceiling, and stop. The key is the state's
+            durable identity: it is the ``speculation_tracking`` upsert key,
+            a resumed run merges stored progress into this dict by it, and
+            hosts read stored rows by it to map a template back to its seed
+            (e.g. a persisted cursor). Populated by the consumer, from
+            :func:`discover_speculate_functions` and the resume path.
+        _speculation_lock: Serialises planning and outcome tracking.
     """
 
     scraper: BaseScraper[Any]
@@ -315,6 +300,12 @@ class AsyncSpeculationSupport(abc.ABC):
         self, tracking_id: int
     ) -> SpeculationState | None:
         """Find a state by its tracking row.
+
+        A linear scan rather than a second index: there is one state per
+        speculative invocation in ``seed_params`` (a handful, a few dozen
+        at most), and ``tracking_id`` is assigned by ``_persist`` or the
+        consumer's resume path, outside this class, so an index here would
+        have to be kept in step with code it cannot see.
 
         Args:
             tracking_id: The tracking row's primary key.
@@ -342,7 +333,7 @@ class AsyncSpeculationSupport(abc.ABC):
                 # the state is persisted (and its tracking_id set) before
                 # any probe.
                 await self._persist(spec_state)
-                ids, new_ceiling, stopped = compute_seed_plan(spec_state)
+                ids, new_ceiling, stopped = spec_state.seed_plan()
                 for n in ids:
                     request = build_speculative_request(
                         self.scraper, spec_state, n
