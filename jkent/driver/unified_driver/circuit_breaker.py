@@ -23,10 +23,8 @@ failed probe multiplies it by ``recovery_backoff`` up to
 probe was admitted (a straggler from before the trip) restarts the current
 window without escalating it. A close resets the window to the base.
 
-The policy is deliberately mutable: hosts may adjust thresholds mid-run
-(``run.circuit_breaker.policy.recovery_timeout = 60``). Every assignment is
-validated, and takes effect at the next transition — deadlines already set
-are not recomputed.
+The policy is fixed for the breaker's lifetime: it is frozen, and validated
+once at construction.
 """
 
 from __future__ import annotations
@@ -35,22 +33,19 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import (
-    TYPE_CHECKING,
-    Annotated,
-    Final,
-    Literal,
-    Protocol,
-    runtime_checkable,
-)
+from abc import ABC, abstractmethod
+from typing import Annotated, Final, Literal
 
 from annotated_types import Ge
-from pydantic import BaseModel, ConfigDict, PositiveFloat, PositiveInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    PositiveFloat,
+    PositiveInt,
+    model_validator,
+)
 
 from jkent import observability as obs
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -61,28 +56,30 @@ OPEN: Final[CircuitState] = "open"
 HALF_OPEN: Final[CircuitState] = "half_open"
 
 
-@runtime_checkable
-class Breaker(Protocol):
+class Breaker(ABC):
     """What a worker asks of a circuit breaker: gate first, then report.
 
     :class:`CircuitBreaker` is the real one; :class:`NoopBreaker` is the
     stand-in for a worker constructed without a run behind it.
     """
 
+    @abstractmethod
     async def gate(self) -> None:
         """Block while the circuit is open."""
         ...
 
+    @abstractmethod
     def record_failure(self) -> None:
         """One more transient failure."""
         ...
 
+    @abstractmethod
     def record_success(self) -> None:
         """The server answered; close the circuit."""
         ...
 
 
-class NoopBreaker:
+class NoopBreaker(Breaker):
     """The breaker for a worker with no run behind it: never blocks."""
 
     async def gate(self) -> None:
@@ -99,12 +96,12 @@ class NoopBreaker:
 
 
 class CircuitBreakerPolicy(BaseModel):
-    """Tunable knobs for :class:`CircuitBreaker`, validated on every assignment.
+    """Tunable knobs for :class:`CircuitBreaker`; frozen once built.
 
     A zero threshold or recovery timeout would trip on success or busy-spin
-    the gate, and a backoff under 1.0 would probe ever harder at a server
-    that keeps failing; each raises ``ValidationError``, whether set at
-    construction or mid-run.
+    the gate, a backoff under 1.0 would probe ever harder at a server that
+    keeps failing, and a base window above the ceiling would leave the
+    escalation cap meaningless; each raises ``ValidationError``.
 
     Attributes:
         failure_threshold: Consecutive pool-wide transient failures that trip
@@ -117,20 +114,28 @@ class CircuitBreakerPolicy(BaseModel):
         recovery_backoff: Multiplier applied to the cool-down each time a
             probe fails. ``1.0`` disables escalation, restoring a fixed
             window.
-        max_recovery_timeout: Ceiling on the escalated cool-down. Treated as no
-            lower than ``recovery_timeout``, so a policy whose base already
-            exceeds the ceiling simply never escalates.
+        max_recovery_timeout: Ceiling on the escalated cool-down. Must be no
+            lower than ``recovery_timeout``; equal disables escalation.
     """
 
-    model_config = ConfigDict(validate_assignment=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     failure_threshold: PositiveInt = 8
     recovery_timeout: PositiveFloat = 30.0
     recovery_backoff: Annotated[float, Ge(1.0)] = 2.0
     max_recovery_timeout: PositiveFloat = 300.0
 
+    @model_validator(mode="after")
+    def _base_within_ceiling(self) -> CircuitBreakerPolicy:
+        if self.recovery_timeout > self.max_recovery_timeout:
+            raise ValueError(
+                f"recovery_timeout ({self.recovery_timeout}) must be <= "
+                f"max_recovery_timeout ({self.max_recovery_timeout})"
+            )
+        return self
 
-class CircuitBreaker:
+
+class CircuitBreaker(Breaker):
     """Blocks the worker pool while the server is failing transiently.
 
     States: *closed* (normal; counting consecutive transient failures),
@@ -148,7 +153,6 @@ class CircuitBreaker:
         policy: CircuitBreakerPolicy | None = None,
         *,
         stop_event: asyncio.Event | None = None,
-        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Build a closed breaker.
 
@@ -156,22 +160,24 @@ class CircuitBreaker:
             policy: The tuning knobs; ``None`` uses the defaults.
             stop_event: The run's shutdown signal, so a graceful stop wakes
                 blocked workers instead of parking them out the cool-down.
-            clock: Monotonic clock, a seam for tests.
         """
-        self.policy = policy if policy is not None else CircuitBreakerPolicy()
+        self._policy = policy if policy is not None else CircuitBreakerPolicy()
         self._stop_event = stop_event
-        self._clock = clock
         self._state: CircuitState = CLOSED
         self._failure_count = 0
         self._deadline = 0.0
-        # The cool-down currently in force. Re-seeded from the policy on every
-        # trip from closed (so mid-run policy edits are picked up) and
-        # multiplied by each failed probe; reset by a close.
-        self._recovery_window = self.policy.recovery_timeout
+        # The cool-down currently in force: the base while closed, multiplied
+        # by each failed probe, and reset to the base by a close.
+        self._recovery_window = self._policy.recovery_timeout
         # Set (and replaced with a fresh, unset event) when the circuit
         # closes, so waiters from one open period never see a stale set
         # event during the next one.
         self._wake = asyncio.Event()
+
+    @property
+    def policy(self) -> CircuitBreakerPolicy:
+        """The tuning knobs, fixed for the breaker's lifetime."""
+        return self._policy
 
     @property
     def state(self) -> CircuitState:
@@ -193,7 +199,7 @@ class CircuitBreaker:
 
     @property
     def next_probe_at(self) -> float | None:
-        """When ``gate`` next admits a probe, on the breaker's clock.
+        """When ``gate`` next admits a probe, on ``time.monotonic``.
 
         None while closed. Open, it is the end of the cool-down; half-open,
         when a further probe is admitted if the admitted one has not
@@ -204,18 +210,12 @@ class CircuitBreaker:
     def _escalate(self) -> float:
         """Grow the cool-down one step, capped, and return it.
 
-        The ceiling is taken as the larger of the two policy values so a base
-        window set above ``max_recovery_timeout`` is honoured rather than
-        silently shortened.
-
         Returns:
             The new cool-down, in seconds.
         """
-        ceiling = max(
-            self.policy.recovery_timeout, self.policy.max_recovery_timeout
-        )
         self._recovery_window = min(
-            self._recovery_window * self.policy.recovery_backoff, ceiling
+            self._recovery_window * self._policy.recovery_backoff,
+            self._policy.max_recovery_timeout,
         )
         return self._recovery_window
 
@@ -232,7 +232,7 @@ class CircuitBreaker:
                 return
             if self._stop_event is not None and self._stop_event.is_set():
                 return
-            now = self._clock()
+            now = time.monotonic()
             remaining = self._deadline - now
             if remaining <= 0:
                 self._state = HALF_OPEN
@@ -247,14 +247,12 @@ class CircuitBreaker:
 
     def record_failure(self) -> None:
         """Count a transient failure; trip or re-open as warranted."""
-        now = self._clock()
+        now = time.monotonic()
         if self._state is CLOSED:
             self._failure_count += 1
-            if self._failure_count >= self.policy.failure_threshold:
+            if self._failure_count >= self._policy.failure_threshold:
                 self._state = OPEN
-                # A fresh trip starts at the base window, re-read from the
-                # policy so a mid-run edit takes effect here.
-                self._recovery_window = self.policy.recovery_timeout
+                # The window is already the base: closed never escalates.
                 self._deadline = now + self._recovery_window
                 logger.warning(
                     "Circuit opened after %d consecutive transient failures; "
@@ -291,7 +289,7 @@ class CircuitBreaker:
         self._state = CLOSED
         # The escalation was evidence-driven; the evidence is gone, so the next
         # unrelated hiccup starts from the short base window again.
-        self._recovery_window = self.policy.recovery_timeout
+        self._recovery_window = self._policy.recovery_timeout
         logger.info("Circuit closed: server answered, resuming requests")
         wake, self._wake = self._wake, asyncio.Event()
         wake.set()

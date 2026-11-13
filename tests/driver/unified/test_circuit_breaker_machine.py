@@ -1,8 +1,8 @@
 """Generative rig for ``CircuitBreaker`` (jkent.driver.unified_driver.circuit_breaker).
 
 A Hypothesis ``RuleBasedStateMachine`` drives random ``gate`` /
-``record_failure`` / ``record_success`` / ``advance_clock`` /
-``mutate_policy`` sequences against a real breaker on a fake clock, and
+``record_failure`` / ``record_success`` / ``advance_clock`` sequences
+against a real breaker, under a policy drawn per run, on a frozen clock, and
 keeps a model of ``(state, consecutive failures, recovery window,
 deadline)`` derived from the module's documented contract. After every
 step the breaker's observable state must match the model, and these laws
@@ -13,19 +13,12 @@ must hold:
   closed; a *close* (success while open / half-open) resets the window to
   ``policy.recovery_timeout`` — a success while already closed is not a
   transition and leaves the dormant window alone;
-- a trip re-seeds the window from ``policy.recovery_timeout`` at that
-  moment, so a mid-run policy edit is picked up at the next trip;
+- a trip starts at the base window, ``policy.recovery_timeout``;
 - the recovery window lies within ``[recovery_timeout,
-  max(recovery_timeout, max_recovery_timeout)]`` and is non-decreasing
-  while non-closed. Both are stated relative to the policy in force at
-  the last transition: the docstring promises mutations take effect *at
-  the next transition*, so a lowered ceiling may shrink the window on the
-  next failed probe, and a raised base is not applied until the next trip
-  or close. The rig re-baselines these two laws on ``mutate_policy``;
+  max_recovery_timeout]`` and is non-decreasing while non-closed;
 - at most one probe is admitted per recovery window: within one open
   period (trip .. close), consecutive probes are separated by at least the
-  window in force at the earlier probe (re-baselined on ``mutate_policy``
-  for the same reason);
+  window in force at the earlier probe;
 - failures count only while closed — the count is frozen while open or
   half-open, and reset by any success.
 
@@ -33,14 +26,19 @@ must hold:
 the loop is yielded a few times, and done-ness says admitted vs blocked
 (a blocked task is cancelled and drained). One event loop per machine
 run; rules are sync and await via ``run_until_complete`` because
-Hypothesis does not compose with pytest-asyncio.
+Hypothesis does not compose with pytest-asyncio. ``time.monotonic`` is
+frozen by freezegun per machine run; ``real_asyncio`` leaves the loop on
+real time. Frozen time has microsecond resolution, so ``advance_to_deadline``
+lands on the deadline only to within a microsecond.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
+from freezegun import freeze_time
 from hypothesis import strategies as st
 from hypothesis.stateful import (
     RuleBasedStateMachine,
@@ -60,7 +58,6 @@ from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreakerPolicy,
     CircuitState,
 )
-from tests.driver.unified.test_circuit_breaker import Clock
 
 pytestmark = pytest.mark.generative
 
@@ -73,13 +70,22 @@ _timeouts = st.floats(
 _backoffs = st.floats(
     min_value=1.0, max_value=4.0, allow_nan=False, allow_infinity=False
 )
-_policies = st.builds(
-    CircuitBreakerPolicy,
-    failure_threshold=_thresholds,
-    recovery_timeout=_timeouts,
-    recovery_backoff=_backoffs,
-    max_recovery_timeout=_timeouts,
-)
+# (recovery_timeout, max_recovery_timeout): the policy requires base <= ceiling.
+_windows = st.tuples(_timeouts, _timeouts).map(sorted)
+
+
+def _policy(
+    threshold: int, backoff: float, windows: list[float]
+) -> CircuitBreakerPolicy:
+    return CircuitBreakerPolicy(
+        failure_threshold=threshold,
+        recovery_backoff=backoff,
+        recovery_timeout=windows[0],
+        max_recovery_timeout=windows[1],
+    )
+
+
+_policies = st.builds(_policy, _thresholds, _backoffs, _windows)
 
 
 async def _yield_loop(times: int = 5) -> None:
@@ -91,16 +97,13 @@ class BreakerModel:
     """The documented contract, kept independently of the breaker."""
 
     def __init__(self, policy: CircuitBreakerPolicy) -> None:
+        self.policy = policy
         self.state: CircuitState = CLOSED
         self.failures = 0
         self.window = policy.recovery_timeout
         self.deadline = 0.0
 
-    @staticmethod
-    def _ceiling(policy: CircuitBreakerPolicy) -> float:
-        return max(policy.recovery_timeout, policy.max_recovery_timeout)
-
-    def gate(self, now: float, policy: CircuitBreakerPolicy) -> bool:
+    def gate(self, now: float) -> bool:
         """Return True when the caller is admitted (closed, or the probe)."""
         if self.state is CLOSED:
             return True
@@ -110,7 +113,8 @@ class BreakerModel:
             return True
         return False
 
-    def record_failure(self, now: float, policy: CircuitBreakerPolicy) -> None:
+    def record_failure(self, now: float) -> None:
+        policy = self.policy
         if self.state is CLOSED:
             self.failures += 1
             if self.failures >= policy.failure_threshold:
@@ -121,55 +125,46 @@ class BreakerModel:
         if self.state is HALF_OPEN:
             self.state = OPEN
             self.window = min(
-                self.window * policy.recovery_backoff, self._ceiling(policy)
+                self.window * policy.recovery_backoff,
+                policy.max_recovery_timeout,
             )
         self.deadline = now + self.window
 
-    def record_success(self, policy: CircuitBreakerPolicy) -> None:
+    def record_success(self) -> None:
         self.failures = 0
         if self.state is CLOSED:
             return
         self.state = CLOSED
-        self.window = policy.recovery_timeout
+        self.window = self.policy.recovery_timeout
 
 
 class CircuitBreakerMachine(RuleBasedStateMachine):
     """Walks breaker sequences, checking the laws after each step.
 
-    The starting policy is drawn per run by :meth:`start` (an
-    ``initialize`` rule, so it always precedes the others); later edits
-    come through :meth:`mutate_policy`.
+    The policy is drawn per run by :meth:`start` (an ``initialize`` rule,
+    so it always precedes the others) and fixed for the run.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.loop = asyncio.new_event_loop()
-        self.clock = Clock()
+        self.freezer = freeze_time("2026-01-01", real_asyncio=True)
+        self.clock = self.freezer.start()
         self.stop_event = asyncio.Event()
         # ``start`` replaces these with the drawn policy; built here so the
         # attributes are initialized for the checkers and never None.
         default = CircuitBreakerPolicy()
-        self.breaker = CircuitBreaker(
-            default, stop_event=self.stop_event, clock=self.clock
-        )
+        self.breaker = CircuitBreaker(default, stop_event=self.stop_event)
         self.model = BreakerModel(default)
-        self.window_lo = 0.0
-        self.window_hi = 0.0
         self.window_floor: float | None = None
         self.last_probe: tuple[float, float] | None = None
 
     @initialize(policy=_policies)
     def start(self, policy: CircuitBreakerPolicy) -> None:
-        self.breaker = CircuitBreaker(
-            policy, stop_event=self.stop_event, clock=self.clock
-        )
+        self.breaker = CircuitBreaker(policy, stop_event=self.stop_event)
         self.model = BreakerModel(policy)
-        # Bounds the window law is checked against: the policy in force at
-        # the last window-setting transition (re-baselined on mutation).
-        self.window_lo = policy.recovery_timeout
-        self.window_hi = BreakerModel._ceiling(policy)
         # Monotonicity while non-closed, and probe spacing, are tracked per
-        # open period and re-baselined on mutation.
+        # open period.
         self.window_floor = None
         self.last_probe = None
 
@@ -181,9 +176,9 @@ class CircuitBreakerMachine(RuleBasedStateMachine):
 
     @rule()
     def gate(self) -> None:
-        now = self.clock.now
+        now = time.monotonic()
         was_closed = self.model.state is CLOSED
-        expected = self.model.gate(now, self.policy)
+        expected = self.model.gate(now)
 
         task = self.loop.create_task(self.breaker.gate())
         self.loop.run_until_complete(_yield_loop())
@@ -202,110 +197,60 @@ class CircuitBreakerMachine(RuleBasedStateMachine):
             f"(model state {self.model.state}, deadline {self.model.deadline})"
         )
         if admitted and not was_closed:
-            # A probe: at most one per recovery window. The spacing a probe
-            # guarantees is its window, or the policy ceiling if an edit
-            # has already lowered that below the (not recomputed) window —
-            # a failed verdict re-derives the deadline under the new cap.
+            # A probe: at most one per recovery window.
             if self.last_probe is not None:
                 probe_at, probe_window = self.last_probe
                 assert now >= probe_at + probe_window, (
                     f"second probe admitted at t={now}, inside the window "
                     f"of {probe_window}s opened by the probe at t={probe_at}"
                 )
-            self.last_probe = (
-                now,
-                min(
-                    self.breaker.recovery_window,
-                    BreakerModel._ceiling(self.policy),
-                ),
-            )
+            self.last_probe = (now, self.breaker.recovery_window)
 
     @rule()
     def record_failure(self) -> None:
-        now = self.clock.now
+        now = time.monotonic()
         was_closed = self.model.state is CLOSED
-        base_now = self.policy.recovery_timeout
-        ceiling_now = BreakerModel._ceiling(self.policy)
-        self.model.record_failure(now, self.policy)
+        self.model.record_failure(now)
         self.breaker.record_failure()
 
         if was_closed and self.breaker.state is not CLOSED:
-            # A trip re-seeds the window from the policy at this moment.
-            assert self.breaker.recovery_window == base_now, (
-                f"trip seeded the window at {self.breaker.recovery_window}, "
-                f"not the policy's recovery_timeout {base_now}"
+            base = self.policy.recovery_timeout
+            assert self.breaker.recovery_window == base, (
+                f"trip started the window at {self.breaker.recovery_window}, "
+                f"not the policy's recovery_timeout {base}"
             )
-            self.window_lo = base_now
-            self.window_hi = ceiling_now
             self.window_floor = self.breaker.recovery_window
             self.last_probe = None
-        elif not was_closed:
-            # An escalation is capped by the ceiling in force now.
-            self.window_hi = max(self.window_hi, ceiling_now)
 
     @rule()
     def record_success(self) -> None:
         was_closed = self.model.state is CLOSED
-        base_now = self.policy.recovery_timeout
-        self.model.record_success(self.policy)
+        self.model.record_success()
         self.breaker.record_success()
 
         assert self.breaker.state is CLOSED
         assert self.breaker.failure_count == 0
         if not was_closed:
-            assert self.breaker.recovery_window == base_now, (
+            base = self.policy.recovery_timeout
+            assert self.breaker.recovery_window == base, (
                 f"close left the window at {self.breaker.recovery_window}, "
-                f"not the policy's recovery_timeout {base_now}"
+                f"not the policy's recovery_timeout {base}"
             )
-            self.window_lo = base_now
-            self.window_hi = BreakerModel._ceiling(self.policy)
         self.window_floor = None
         self.last_probe = None
 
     @rule(fraction=st.floats(min_value=0.0, max_value=1.0))
     def advance_clock(self, fraction: float) -> None:
         """Advance by a share of the policy's largest window."""
-        self.clock.advance(fraction * BreakerModel._ceiling(self.policy))
+        self.clock.tick(fraction * self.policy.max_recovery_timeout)
 
     @precondition(lambda self: self.model.state is not CLOSED)
     @rule()
     def advance_to_deadline(self) -> None:
-        """Land exactly on the deadline — the boundary the gate tests."""
-        remaining = self.model.deadline - self.clock.now
+        """Land on the deadline — the boundary the gate tests."""
+        remaining = self.model.deadline - time.monotonic()
         if remaining > 0:
-            self.clock.advance(remaining)
-
-    @rule(
-        failure_threshold=_thresholds,
-        recovery_timeout=_timeouts,
-        recovery_backoff=_backoffs,
-        max_recovery_timeout=_timeouts,
-    )
-    def mutate_policy(
-        self,
-        failure_threshold: int,
-        recovery_timeout: float,
-        recovery_backoff: float,
-        max_recovery_timeout: float,
-    ) -> None:
-        """Edit the live policy; effects land at the next transition."""
-        self.policy.failure_threshold = failure_threshold
-        self.policy.recovery_timeout = recovery_timeout
-        self.policy.recovery_backoff = recovery_backoff
-        self.policy.max_recovery_timeout = max_recovery_timeout
-        # The window in force was computed under the old policy and is not
-        # recomputed; the range/monotone/spacing laws restart from here. A
-        # lowered ceiling caps the *next* escalation, which may shrink the
-        # window to the new ceiling — so the lower bound and the monotone
-        # floor drop to it now.
-        ceiling = BreakerModel._ceiling(self.policy)
-        window = self.breaker.recovery_window
-        self.window_lo = min(self.window_lo, window, ceiling)
-        self.window_hi = max(self.window_hi, window, ceiling)
-        self.window_floor = (
-            None if self.model.state is CLOSED else min(window, ceiling)
-        )
-        self.last_probe = None
+            self.clock.tick(remaining)
 
     # --- invariants ---------------------------------------------------------
 
@@ -339,9 +284,9 @@ class CircuitBreakerMachine(RuleBasedStateMachine):
     @invariant()
     def window_is_bounded(self) -> None:
         window = self.breaker.recovery_window
-        assert self.window_lo <= window <= self.window_hi, (
-            f"recovery window {window} outside "
-            f"[{self.window_lo}, {self.window_hi}]"
+        lo, hi = self.policy.recovery_timeout, self.policy.max_recovery_timeout
+        assert lo <= window <= hi, (
+            f"recovery window {window} outside [{lo}, {hi}]"
         )
 
     @invariant()
@@ -353,14 +298,7 @@ class CircuitBreakerMachine(RuleBasedStateMachine):
             f"recovery window shrank from {self.window_floor} to {window} "
             "while the circuit was not closed"
         )
-        # Ratchet, but never above the ceiling the next escalation is capped
-        # by — a policy edit may have lowered it below the current window.
-        capped = min(window, BreakerModel._ceiling(self.policy))
-        self.window_floor = (
-            capped
-            if self.window_floor is None
-            else max(self.window_floor, capped)
-        )
+        self.window_floor = window
 
     @invariant()
     def failures_frozen_while_not_closed(self) -> None:
@@ -376,6 +314,7 @@ class CircuitBreakerMachine(RuleBasedStateMachine):
             self.loop.run_until_complete(_yield_loop())
         finally:
             self.loop.close()
+            self.freezer.stop()
 
 
 def test_circuit_breaker_machine() -> None:

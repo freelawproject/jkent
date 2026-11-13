@@ -47,21 +47,7 @@ class Worker(Protocol):
 
 
 class WorkerPool:
-    """A pinned pool of worker tasks over one stop event.
-
-    Args:
-        size: Workers to spawn in total.
-        ramp_interval: Seconds between spawns after the first; 0 spawns the
-            whole pool inline.
-        stop_event: The run's shutdown signal; a ramp in progress stops
-            adding workers once it is set.
-        make_worker: Builds worker ``n``; called once per spawn.
-        on_change: Told the live worker count after every spawn and every
-            retirement (the ``worker.active`` gauge).
-        sleep: The ramp's stop-aware wait between spawns: sleeps the given
-            seconds unless the event is set first, and returns whether it
-            is. A seam for tests to drive the ramp without real time.
-    """
+    """A pinned pool of worker tasks over one stop event."""
 
     def __init__(
         self,
@@ -75,7 +61,21 @@ class WorkerPool:
             [asyncio.Event, float], Awaitable[bool]
         ] = sleep_unless_stopped,
     ) -> None:
-        """Build the pool; see the class docstring for the arguments."""
+        """Build an empty pool; :meth:`start` spawns the workers.
+
+        Args:
+            size: Workers to spawn in total.
+            ramp_interval: Seconds between spawns after the first; 0 spawns the
+                whole pool inline.
+            stop_event: The run's shutdown signal; a ramp in progress stops
+                adding workers once it is set.
+            make_worker: Builds worker ``n``; called once per spawn.
+            on_change: Told the live worker count after every spawn and every
+                retirement (the ``worker.active`` gauge).
+            sleep: The ramp's stop-aware wait between spawns: sleeps the given
+                seconds unless the event is set first, and returns whether it
+                is. A seam for tests to drive the ramp without real time.
+        """
         self.size = size
         self.ramp_interval = ramp_interval
         self._stop_event = stop_event

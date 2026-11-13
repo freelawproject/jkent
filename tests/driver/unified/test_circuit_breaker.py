@@ -9,9 +9,9 @@ Contract under test:
 - Recovery is deadline-based: after ``recovery_timeout`` exactly one caller
   is admitted as the probe per window, so a probe whose verdict never
   arrives cannot wedge the gate.
-- The policy is mutable; changes apply at the next transition.
+- The policy is validated at construction and frozen after.
 
-Time is injected (a fake monotonic clock), so no test sleeps for real; the
+``time.monotonic`` is frozen by freezegun, so no test sleeps for real; the
 blocked/unblocked distinction is asserted by yielding to the loop and
 checking task completion, following the repo's no-wall-clock convention.
 """
@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
+from freezegun import freeze_time
+from freezegun.api import FrozenDateTimeFactory
 from pydantic import ValidationError
 
 from jkent import observability as obs
@@ -30,18 +33,23 @@ from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreakerPolicy,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
-class Clock:
-    """A manually-advanced stand-in for ``time.monotonic``."""
 
-    def __init__(self) -> None:
-        self.now = 0.0
+@pytest.fixture(autouse=True)
+def clock() -> Iterator[FrozenDateTimeFactory]:
+    """Freeze ``time.monotonic`` for every test; ``clock.tick(s)`` advances it.
 
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
+    ``real_asyncio`` keeps the event loop on real time, so yields and
+    ``wait_for`` timeouts behave normally while the breaker's clock stands
+    still.
+    """
+    with freeze_time("2026-01-01", real_asyncio=True) as frozen:
+        # freeze_time's return type spans its ticking variants; tick=False
+        # (the default) always gives the frozen one.
+        assert isinstance(frozen, FrozenDateTimeFactory)
+        yield frozen
 
 
 def make_breaker(
@@ -51,15 +59,14 @@ def make_breaker(
     recovery_backoff: float = 1.0,
     max_recovery_timeout: float = 300.0,
     stop_event: asyncio.Event | None = None,
-) -> tuple[CircuitBreaker, Clock]:
-    """Build a breaker on a fake clock.
+) -> CircuitBreaker:
+    """Build a breaker with its own policy.
 
     ``recovery_backoff`` defaults to 1.0 — escalation off — so the tests of the
     fixed-window contract state their own spacing rather than inheriting the
     shipped curve. The escalation tests opt in explicitly.
     """
-    clock = Clock()
-    breaker = CircuitBreaker(
+    return CircuitBreaker(
         CircuitBreakerPolicy(
             failure_threshold=failure_threshold,
             recovery_timeout=recovery_timeout,
@@ -67,9 +74,7 @@ def make_breaker(
             max_recovery_timeout=max_recovery_timeout,
         ),
         stop_event=stop_event,
-        clock=clock,
     )
-    return breaker, clock
 
 
 def trip(breaker: CircuitBreaker, count: int = 3) -> None:
@@ -83,13 +88,13 @@ async def yield_loop(times: int = 5) -> None:
 
 
 async def test_starts_closed_and_gate_passes() -> None:
-    breaker, _ = make_breaker()
+    breaker = make_breaker()
     assert breaker.state == "closed"
     await asyncio.wait_for(breaker.gate(), timeout=1)
 
 
 async def test_trips_after_threshold_consecutive_failures() -> None:
-    breaker, _ = make_breaker(failure_threshold=3)
+    breaker = make_breaker(failure_threshold=3)
     breaker.record_failure()
     breaker.record_failure()
     assert breaker.state == "closed"
@@ -98,7 +103,7 @@ async def test_trips_after_threshold_consecutive_failures() -> None:
 
 
 async def test_success_resets_the_consecutive_count() -> None:
-    breaker, _ = make_breaker(failure_threshold=3)
+    breaker = make_breaker(failure_threshold=3)
     breaker.record_failure()
     breaker.record_failure()
     breaker.record_success()
@@ -108,7 +113,7 @@ async def test_success_resets_the_consecutive_count() -> None:
 
 
 async def test_open_gate_blocks_and_success_wakes_all_waiters() -> None:
-    breaker, _ = make_breaker()
+    breaker = make_breaker()
     trip(breaker)
     waiters = [asyncio.create_task(breaker.gate()) for _ in range(3)]
     await yield_loop()
@@ -120,10 +125,12 @@ async def test_open_gate_blocks_and_success_wakes_all_waiters() -> None:
     assert all(t.done() for t in waiters)
 
 
-async def test_deadline_admits_exactly_one_probe_per_window() -> None:
-    breaker, clock = make_breaker(recovery_timeout=300.0)
+async def test_deadline_admits_exactly_one_probe_per_window(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(recovery_timeout=300.0)
     trip(breaker)
-    clock.advance(300.0)
+    clock.tick(300.0)
 
     await asyncio.wait_for(breaker.gate(), timeout=1)  # the probe
     assert breaker.state == "half_open"
@@ -135,10 +142,10 @@ async def test_deadline_admits_exactly_one_probe_per_window() -> None:
     second.cancel()
 
 
-async def test_probe_failure_reopens() -> None:
-    breaker, clock = make_breaker(recovery_timeout=300.0)
+async def test_probe_failure_reopens(clock: FrozenDateTimeFactory) -> None:
+    breaker = make_breaker(recovery_timeout=300.0)
     trip(breaker)
-    clock.advance(300.0)
+    clock.tick(300.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)
 
     breaker.record_failure()
@@ -155,16 +162,17 @@ class _Counter:
 
 async def test_a_failed_probe_counts_as_a_reopen_not_a_trip(
     monkeypatch: pytest.MonkeyPatch,
+    clock: FrozenDateTimeFactory,
 ) -> None:
     """``circuit.opens`` keeps meaning "trips from closed"."""
     counters = SimpleNamespace(
         circuit_opens=_Counter(), circuit_reopens=_Counter()
     )
     monkeypatch.setattr(obs, "instruments", lambda: counters)
-    breaker, clock = make_breaker(recovery_timeout=300.0)
+    breaker = make_breaker(recovery_timeout=300.0)
     trip(breaker)
     for _ in range(2):
-        clock.advance(300.0)
+        clock.tick(300.0)
         await asyncio.wait_for(breaker.gate(), timeout=1)
         breaker.record_failure()
     assert (counters.circuit_opens.total, counters.circuit_reopens.total) == (
@@ -173,13 +181,15 @@ async def test_a_failed_probe_counts_as_a_reopen_not_a_trip(
     )
 
 
-async def test_probe_success_closes_and_wakes_waiters() -> None:
-    breaker, clock = make_breaker(recovery_timeout=300.0)
+async def test_probe_success_closes_and_wakes_waiters(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(recovery_timeout=300.0)
     trip(breaker)
     waiter = asyncio.create_task(breaker.gate())
     await yield_loop()
 
-    clock.advance(300.0)
+    clock.tick(300.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)  # probe admitted
     breaker.record_success()
     await yield_loop()
@@ -187,37 +197,43 @@ async def test_probe_success_closes_and_wakes_waiters() -> None:
     assert waiter.done()
 
 
-async def test_stuck_probe_does_not_wedge_the_gate() -> None:
-    breaker, clock = make_breaker(recovery_timeout=300.0)
+async def test_stuck_probe_does_not_wedge_the_gate(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(recovery_timeout=300.0)
     trip(breaker)
-    clock.advance(300.0)
+    clock.tick(300.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)  # probe, no verdict
 
-    clock.advance(300.0)  # a full window with no record_* call
+    clock.tick(300.0)  # a full window with no record_* call
     await asyncio.wait_for(breaker.gate(), timeout=1)  # next probe admitted
     assert breaker.state == "half_open"
 
 
-async def test_straggler_failure_during_open_pushes_the_deadline() -> None:
-    breaker, clock = make_breaker(recovery_timeout=300.0)
+async def test_straggler_failure_during_open_pushes_the_deadline(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(recovery_timeout=300.0)
     trip(breaker)
-    clock.advance(200.0)
+    clock.tick(200.0)
     breaker.record_failure()  # in-flight straggler fails at t=200
 
-    clock.advance(150.0)  # t=350: past the original deadline, not the new one
+    clock.tick(150.0)  # t=350: past the original deadline, not the new one
     waiter = asyncio.create_task(breaker.gate())
     await yield_loop()
     assert not waiter.done()
     waiter.cancel()
 
 
-async def test_stragglers_at_trip_time_do_not_escalate() -> None:
+async def test_stragglers_at_trip_time_do_not_escalate(
+    clock: FrozenDateTimeFactory,
+) -> None:
     """In-flight failures landing after the trip are not failed probes.
 
     With the shipped defaults (8 workers, backoff 2.0) escalating on them
     pushed the first probe of every outage out to the ceiling.
     """
-    breaker, clock = make_breaker(
+    breaker = make_breaker(
         failure_threshold=8,
         recovery_timeout=30.0,
         recovery_backoff=2.0,
@@ -225,18 +241,18 @@ async def test_stragglers_at_trip_time_do_not_escalate() -> None:
     )
     trip(breaker, 8)
     for _ in range(7):
-        clock.advance(0.1)
+        clock.tick(0.1)
         breaker.record_failure()
     assert breaker.recovery_window == 30.0
 
-    clock.advance(30.0)
+    clock.tick(30.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)
     assert breaker.state == "half_open"
 
 
 async def test_stop_event_wakes_a_blocked_gate() -> None:
     stop_event = asyncio.Event()
-    breaker, _ = make_breaker(stop_event=stop_event)
+    breaker = make_breaker(stop_event=stop_event)
     trip(breaker)
     waiter = asyncio.create_task(breaker.gate())
     await yield_loop()
@@ -247,7 +263,7 @@ async def test_stop_event_wakes_a_blocked_gate() -> None:
 
 
 async def test_wake_event_is_not_stale_across_open_periods() -> None:
-    breaker, _ = make_breaker()
+    breaker = make_breaker()
     trip(breaker)
     breaker.record_success()  # first open period ends
 
@@ -259,28 +275,32 @@ async def test_wake_event_is_not_stale_across_open_periods() -> None:
 
 
 async def test_first_trip_uses_the_base_window() -> None:
-    breaker, _ = make_breaker(recovery_timeout=30.0, recovery_backoff=2.0)
+    breaker = make_breaker(recovery_timeout=30.0, recovery_backoff=2.0)
     trip(breaker)
     assert breaker.recovery_window == 30.0
 
 
-async def test_failed_probe_escalates_the_window() -> None:
-    breaker, clock = make_breaker(
+async def test_failed_probe_escalates_the_window(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(
         recovery_timeout=30.0, recovery_backoff=2.0, max_recovery_timeout=300.0
     )
     trip(breaker)
 
     for expected in (60.0, 120.0, 240.0, 300.0, 300.0):
-        clock.advance(breaker.recovery_window)
+        clock.tick(breaker.recovery_window)
         await asyncio.wait_for(breaker.gate(), timeout=1)  # probe admitted
         breaker.record_failure()  # ...and it fails
         assert breaker.recovery_window == expected  # capped at the ceiling
 
 
-async def test_close_resets_the_escalated_window() -> None:
-    breaker, clock = make_breaker(recovery_timeout=30.0, recovery_backoff=2.0)
+async def test_close_resets_the_escalated_window(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(recovery_timeout=30.0, recovery_backoff=2.0)
     trip(breaker)
-    clock.advance(30.0)
+    clock.tick(30.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)
     breaker.record_failure()
     assert breaker.recovery_window == 60.0
@@ -291,49 +311,30 @@ async def test_close_resets_the_escalated_window() -> None:
     assert breaker.recovery_window == 30.0
 
 
-async def test_backoff_of_one_keeps_a_fixed_window() -> None:
-    breaker, clock = make_breaker(recovery_timeout=300.0, recovery_backoff=1.0)
+async def test_backoff_of_one_keeps_a_fixed_window(
+    clock: FrozenDateTimeFactory,
+) -> None:
+    breaker = make_breaker(recovery_timeout=300.0, recovery_backoff=1.0)
     trip(breaker)
-    clock.advance(300.0)
+    clock.tick(300.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)
     breaker.record_failure()
     assert breaker.recovery_window == 300.0
 
 
-async def test_base_window_above_the_ceiling_is_honoured() -> None:
-    # A base longer than max_recovery_timeout must not be shortened by the cap.
-    breaker, clock = make_breaker(
-        recovery_timeout=600.0,
-        recovery_backoff=2.0,
-        max_recovery_timeout=300.0,
-    )
-    trip(breaker)
-    assert breaker.recovery_window == 600.0
-    clock.advance(600.0)
-    await asyncio.wait_for(breaker.gate(), timeout=1)
-    breaker.record_failure()
-    assert breaker.recovery_window == 600.0
-
-
-async def test_stuck_probe_does_not_escalate() -> None:
+async def test_stuck_probe_does_not_escalate(
+    clock: FrozenDateTimeFactory,
+) -> None:
     # Escalation is failure-driven: a probe that returns no verdict is not
     # evidence the server is worse, so the spacing must hold steady.
-    breaker, clock = make_breaker(recovery_timeout=30.0, recovery_backoff=2.0)
+    breaker = make_breaker(recovery_timeout=30.0, recovery_backoff=2.0)
     trip(breaker)
-    clock.advance(30.0)
+    clock.tick(30.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)
     assert breaker.recovery_window == 30.0
-    clock.advance(30.0)
+    clock.tick(30.0)
     await asyncio.wait_for(breaker.gate(), timeout=1)
     assert breaker.recovery_window == 30.0
-
-
-async def test_policy_mutation_applies_at_the_next_transition() -> None:
-    breaker, _ = make_breaker(failure_threshold=5)
-    breaker.record_failure()
-    breaker.policy.failure_threshold = 2
-    breaker.record_failure()
-    assert breaker.state == "open"
 
 
 @pytest.mark.parametrize(
@@ -345,11 +346,19 @@ async def test_policy_mutation_applies_at_the_next_transition() -> None:
         ("max_recovery_timeout", -1.0),
     ],
 )
-def test_policy_rejects_a_bad_value_at_construction_and_mid_run(
-    field: str, bad: float
-) -> None:
+def test_policy_rejects_a_bad_value(field: str, bad: float) -> None:
     with pytest.raises(ValidationError):
         CircuitBreakerPolicy.model_validate({field: bad})
+
+
+def test_policy_rejects_a_base_window_above_the_ceiling() -> None:
+    with pytest.raises(ValidationError):
+        CircuitBreakerPolicy(
+            recovery_timeout=600.0, max_recovery_timeout=300.0
+        )
+
+
+def test_policy_is_frozen() -> None:
     policy = CircuitBreakerPolicy()
     with pytest.raises(ValidationError):
-        setattr(policy, field, bad)
+        policy.recovery_timeout = 60.0  # type: ignore[misc]
