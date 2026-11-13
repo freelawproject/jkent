@@ -61,6 +61,7 @@ from jkent.data_types import (
 )
 from jkent.driver.archive_handler import LocalAsyncStreamingArchiveHandler
 from jkent.driver.database_engine.enums import SpeculationOutcome
+from jkent.driver.unified_driver.circuit_breaker import Breaker
 from jkent.driver.unified_driver.compaction import Compactors
 from jkent.driver.unified_driver.persistence import RowOnlyErrorSink
 from jkent.driver.unified_driver.rate_limiter import (
@@ -940,7 +941,7 @@ class FailingTransport:
 
 
 @dataclass
-class SpyCircuitBreaker:
+class SpyCircuitBreaker(Breaker):
     """Records the worker's breaker calls into a shared event log."""
 
     log: list[str] = field(default_factory=list)

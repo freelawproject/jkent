@@ -91,9 +91,8 @@ class RunConfig:
             that opens at the scraper's declared ``rate_limits`` and slows
             on server pushback. The scraper's other lanes are unaffected;
             ignored when ``rate_limited`` is off.
-        circuit_breaker_policy: Thresholds for the run's shared breaker.
-            Mutable on purpose — hosts adjust it mid-run through
-            ``run.circuit_breaker.policy``.
+        circuit_breaker_policy: Thresholds for the run's shared breaker;
+            frozen, so fixed for the run.
         max_persistent_errors: Stop the run (gracefully, resumably) once
             this many never-retried failures have been filed. ``None`` is
             unlimited; the count still runs.
