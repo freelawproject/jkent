@@ -391,12 +391,7 @@ class ScrapeRun:
 
     @property
     def circuit_breaker(self) -> CircuitBreaker:
-        """The run's shared circuit breaker (available after ``open()``).
-
-        Hosts reconfigure it mid-run by mutating its policy, e.g.
-        ``run.circuit_breaker.policy.recovery_timeout = 60``; changes apply
-        at the next state transition.
-        """
+        """The run's shared circuit breaker (available after ``open()``)."""
         assert self._circuit_breaker is not None, (
             "circuit_breaker accessed before open()"
         )
