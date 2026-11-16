@@ -35,7 +35,11 @@ from jkent.common.exceptions import (
 )
 from jkent.common.incidental import IncidentalMatch, Multiple, Singular
 from jkent.common.page_element import Form, FormField, Link, PageElement
-from jkent.common.param_models import DateRange, SpeculativeRange
+from jkent.common.param_models import (
+    DateRange,
+    PersistedSpeculativeRange,
+    SpeculativeRange,
+)
 from jkent.common.parser import JKentParser
 from jkent.common.rate_limits import (
     DEFAULT_RATE_LIMIT,
@@ -73,7 +77,7 @@ from jkent.common.scraper import (
     T,
 )
 from jkent.common.selectors import CSS, Selector, XPath
-from jkent.common.speculative import Speculative
+from jkent.common.speculative import PersistedSpeculative, Speculative
 from jkent.common.via import (
     FieldResolver,
     FieldValue,
@@ -135,6 +139,8 @@ __all__ = [
     "ScrapedData",
     "ScraperAssumptionException",
     "ScraperConfigError",
+    "PersistedSpeculative",
+    "PersistedSpeculativeRange",
     "ScraperReturnType",
     "ScraperStatus",
     "ScraperYield",

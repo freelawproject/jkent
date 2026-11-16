@@ -19,8 +19,9 @@ from jkent.driver.database_engine.timestamps import now
 class SpeculationStateInsert(RowModel):
     """One ``speculation_tracking`` upsert.
 
-    Consumed by :meth:`SpeculationMixin.save_speculation_state`. Fields are ``speculation_tracking`` column names, so ``model_dump()`` is
-    the upsert payload; ``func_name`` is the conflict key. The row's ``id``
+    Consumed by :meth:`SpeculationMixin.save_speculation_state`. Fields are
+    ``speculation_tracking`` column names, so ``model_dump()`` is the upsert
+    payload; ``func_name`` is the conflict key. The row's ``id``
     is not among them — the conflict key decides which row is written, and
     the id comes back out of the upsert.
     """
@@ -39,9 +40,6 @@ class SpeculationStateInsert(RowModel):
     param_index: int
     #: JSON serialization of the Speculative template.
     template_json: str | None
-    #: JSON of the raw seed value the template came from (e.g. a host's
-    #: "[cursor_key]" reference).
-    seed_value_json: str | None
 
 
 class SpeculationStateRecord(SpeculationStateInsert):

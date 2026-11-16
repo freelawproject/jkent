@@ -382,16 +382,15 @@ class TestInitialSeed:
         )
         # Speculative entries don't yield requests
         assert len(requests) == 0
-        # Instead they store (template, raw_seed_value) pairs
+        # Instead they store the validated templates
         assert hasattr(scraper, "_speculation_templates")
         assert "fetch_by_id" in scraper._speculation_templates
         templates = scraper._speculation_templates["fetch_by_id"]
         assert len(templates) == 1
-        template, seed_value = templates[0]
+        template = templates[0]
         assert isinstance(template, RecordId)
         assert template.record_id == 99
         assert template.gap == 10
-        assert seed_value == {"record_id": 99, "gap": 10}
 
     def test_multiple_speculative_templates_same_entry(self):
         """Multiple invocations of the same speculative entry store multiple templates."""
@@ -407,10 +406,10 @@ class TestInitialSeed:
         assert len(requests) == 0
         templates = scraper._speculation_templates["fetch_by_id"]
         assert len(templates) == 2
-        assert isinstance(templates[0][0], RecordId)
-        assert isinstance(templates[1][0], RecordId)
-        assert templates[0][0].record_id == 50
-        assert templates[1][0].record_id == 100
+        assert isinstance(templates[0], RecordId)
+        assert isinstance(templates[1], RecordId)
+        assert templates[0].record_id == 50
+        assert templates[1].record_id == 100
 
     def test_basemodel_param_dispatch(self):
         scraper = SimpleScraper()

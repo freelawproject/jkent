@@ -259,10 +259,8 @@ CREATE TABLE speculation_tracking (
 	param_index INTEGER DEFAULT 0 NOT NULL,
 	template_json VARCHAR,
 	updated_at DATETIME DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
-	seed_value_json VARCHAR,
 	PRIMARY KEY (id),
 	CONSTRAINT ck_speculation_tracking_template_json_valid CHECK (json_valid(template_json)),
-	CONSTRAINT ck_speculation_tracking_seed_value_json_valid CHECK (json_valid(seed_value_json)),
 	UNIQUE (func_name)
 );
 

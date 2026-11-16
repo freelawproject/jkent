@@ -26,14 +26,16 @@ from pydantic import BaseModel
 from sqlalchemy import text as sqlalchemy_text
 
 from jkent.common.decorators import entry, step
-from jkent.common.speculative import Speculative
+from jkent.common.speculative import Speculative, persisted_cursor_store
 from jkent.data_types import (
     BaseScraper,
     HttpMethod,
     HTTPRequestParams,
     ParsedData,
+    PersistedSpeculativeRange,
     Request,
     Response,
+    ScraperConfigError,
 )
 from jkent.driver.database_engine.database import init_database
 from jkent.driver.database_engine.enums import (
@@ -104,6 +106,31 @@ _GAP: Final = 2
 _SEED: SeedParams = [{"fetch_spec": {"sid": {"n": 1, "gap": _GAP}}}]
 
 
+class _CursorScraper(BaseScraper[dict[str, Any]]):
+    """Like :class:`_SpecScraper`, seeded from a persisted cursor."""
+
+    base = "http://127.0.0.1"
+
+    @entry(dict)
+    def fetch_cursor(self, rid: PersistedSpeculativeRange) -> Request:
+        return Request(
+            request=HTTPRequestParams(
+                method=HttpMethod.GET, url=f"{self.base}/spec/{rid.min}"
+            ),
+            step="parse_spec",
+        )
+
+    @step
+    def parse_spec(
+        self, response: Response
+    ) -> Generator[ParsedData[dict[str, Any]], None, None]:
+        n = int(response.url.rsplit("/", 1)[-1])
+        yield ParsedData(data={"n": n})
+
+
+_CURSOR_SEED: SeedParams = [{"fetch_cursor": {"rid": "[k]"}}]
+
+
 def _make_scraper(server_url: str) -> _SpecScraper:
     scraper = _SpecScraper()
     scraper.base = server_url
@@ -127,7 +154,6 @@ def _saved_state(
         "stopped": False,
         "param_index": 0,
         "template_json": None,
-        "seed_value_json": None,
     }
     return SpeculationStateInsert.model_validate(fields | overrides)
 
@@ -556,31 +582,76 @@ async def test_resume_rehydrates_tracking_id(tmp_path: Path) -> None:
     assert distinct == [first_id]
 
 
-async def test_seed_value_round_trips_through_state(tmp_path: Path) -> None:
-    """The raw seed value persists with the state and survives a reload.
+async def test_persist_key_survives_resume(tmp_path: Path) -> None:
+    """A ``[key]``-seeded template keeps its key through a resume.
 
-    Hosts map state rows back to their cursor store via this value, so both the
-    dict-seeded and string-seeded shapes must round-trip verbatim.
+    A resumed run has no seed params to resolve, so the key must come back
+    with the stored template for the resumed run's cursors to be handed back.
     """
-    manager, scraper, db = await _build_manager(tmp_path / "u.db", _SEED)
-    state = manager._speculation_state["fetch_spec:0"]
-    assert state.seed_value == {"n": 1, "gap": 2}
+    db_path = tmp_path / "u.db"
+    engine, factory = await init_database(db_path)
+    db = SQLManager(engine, factory)
+    with persisted_cursor_store({"k": {"min": 5, "soft_max": 5, "gap": 2}}):
+        scraper = _CursorScraper()
+        list(scraper.initial_seed(_CURSOR_SEED))
+    manager = SpeculationManager(
+        scraper, RequestQueue(db), db, seed_params=_CURSOR_SEED
+    )
+    manager.discover()
+    await manager.load()
+    await manager.seed()
 
-    await manager.persist_all()
-    saved = await db.load_all_speculation_states()
-    assert saved["fetch_spec:0"].seed_value_json == '{"n":1,"gap":2}'
-
-    # A fresh manager with no discovered templates (resume) reconstructs the
-    # state from the DB, seed_value included.
-    fresh_scraper = _SpecScraper()
-    queue = RequestQueue(db)
-    fresh = SpeculationManager(fresh_scraper, queue, db, seed_params=_SEED)
+    # No store active: the resume validates the stored template, not "[k]".
+    fresh = SpeculationManager(_CursorScraper(), RequestQueue(db), db)
     fresh.discover()
     await fresh.load()
-    assert fresh._speculation_state["fetch_spec:0"].seed_value == {
-        "n": 1,
-        "gap": 2,
-    }
+    template = fresh._speculation_state["fetch_cursor:0"].template
+    assert isinstance(template, PersistedSpeculativeRange)
+    assert template.persist_key == "k"
+    assert fresh.persisted_cursors()["k"].stored_value()["min"] == 5
+
+
+async def test_persisted_cursors_advance_past_highest_success(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "u.db"
+    engine, factory = await init_database(db_path)
+    db = SQLManager(engine, factory)
+    seed: SeedParams = [
+        *_CURSOR_SEED,
+        {"fetch_cursor": {"rid": {"min": 1, "gap": 2}}},
+    ]
+    with persisted_cursor_store({"k": {"min": 5, "soft_max": 5, "gap": 2}}):
+        scraper = _CursorScraper()
+        list(scraper.initial_seed(seed))
+    manager = SpeculationManager(
+        scraper, RequestQueue(db), db, seed_params=seed
+    )
+    manager.discover()
+    manager._speculation_state["fetch_cursor:0"].highest_successful_id = 9
+
+    # The literal seed has no key, so only "k" comes back.
+    cursors = manager.persisted_cursors()
+    assert list(cursors) == ["k"]
+    cursor = cursors["k"]
+    assert isinstance(cursor, PersistedSpeculativeRange)
+    assert (cursor.min, cursor.soft_max, cursor.persist_key) == (10, 10, "k")
+
+
+async def test_two_templates_from_one_key_are_rejected(
+    tmp_path: Path,
+) -> None:
+    engine, factory = await init_database(tmp_path / "u.db")
+    db = SQLManager(engine, factory)
+    seed: SeedParams = [*_CURSOR_SEED, *_CURSOR_SEED]
+    with persisted_cursor_store({"k": {"min": 5, "soft_max": 5, "gap": 2}}):
+        scraper = _CursorScraper()
+        list(scraper.initial_seed(seed))
+    manager = SpeculationManager(
+        scraper, RequestQueue(db), db, seed_params=seed
+    )
+    with pytest.raises(ScraperConfigError, match=r"\[k\]"):
+        manager.discover()
 
 
 async def _resume_with_saved(
@@ -700,3 +771,33 @@ async def test_end_to_end_speculation(server_url: str, tmp_path: Path) -> None:
     probed = sorted(int(u.rsplit("/", 1)[-1]) for u in counts["probe_urls"])
     assert probed[:5] == [1, 2, 3, 4, 5]
     assert max(probed) <= highest + 2 * _GAP
+
+
+async def test_end_to_end_persisted_cursor(
+    server_url: str, tmp_path: Path
+) -> None:
+    """A ``[key]``-seeded run hands back the cursor past its last hit."""
+    scraper = _CursorScraper()
+    scraper.base = server_url
+    with persisted_cursor_store({"k": {"min": 1, "soft_max": 1, "gap": 2}}):
+        run = ScrapeRun(
+            scraper,
+            tmp_path / "run.db",
+            config=RunConfig(
+                num_workers=2, seed_params=_CURSOR_SEED, rate_limited=False
+            ),
+        )
+        await run.open()
+    try:
+        await run.run()
+        cursors = run.persisted_cursors()
+    finally:
+        await run.aclose()
+
+    # /spec/1..3 succeed, so the next run starts at 4.
+    assert cursors["k"].stored_value() == {
+        "min": 4,
+        "soft_max": 4,
+        "should_advance": True,
+        "gap": 2,
+    }

@@ -71,6 +71,7 @@ if TYPE_CHECKING:
         async_sessionmaker,
     )
 
+    from jkent.common.speculative import PersistedSpeculative
     from jkent.data_types import BaseScraper
     from jkent.driver.archive_handler import AsyncStreamingArchiveHandler
     from jkent.driver.unified_driver.speculation import SpeculationManager
@@ -417,6 +418,27 @@ class ScrapeRun:
         """
         assert self._engine is not None, "sync_engine accessed before open()"
         return self._engine.sync_engine
+
+    def persisted_cursors(self) -> dict[str, PersistedSpeculative]:
+        """Where each persisted speculative cursor should start next run.
+
+        Read-only and in-memory: nothing is written, here or to any store.
+        The host decides whether the run went well enough to store these,
+        and does so itself; see
+        :class:`~jkent.common.speculative.PersistedSpeculative`. Call it
+        after :meth:`run` returns and before the run closes.
+
+        Returns:
+            Each ``[key]``-seeded template advanced past its highest
+            success, keyed by the cursor key; empty when nothing was
+            seeded from a key.
+        """
+        assert self._collaborators is not None, (
+            "persisted_cursors accessed outside open()"
+        )
+        if self._speculation is None:
+            return {}
+        return self._speculation.persisted_cursors()
 
     @property
     def active_worker_count(self) -> int:

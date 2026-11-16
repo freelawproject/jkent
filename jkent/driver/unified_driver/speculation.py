@@ -11,12 +11,11 @@ dispatch and persistence.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from jkent.common.serialization import dump_json_or_none
+from jkent.common.exceptions import ScraperConfigError
+from jkent.common.speculative import PersistedSpeculative
 from jkent.driver._speculation_support import (
     AsyncSpeculationSupport,
     SpeculationState,
@@ -56,12 +55,10 @@ class SpeculationManager(AsyncSpeculationSupport):
             db: The run database holding persisted speculation state.
             seed_params: The run's seed parameters, or ``None``.
         """
-        self.scraper = scraper
+        super().__init__(scraper)
         self.seed_params = seed_params
         self._queue = queue
         self._db = db
-        self._speculation_state: dict[str, SpeculationState] = {}
-        self._speculation_lock = asyncio.Lock()
 
     # --- Hook implementations -------------------------------------------
 
@@ -69,12 +66,15 @@ class SpeculationManager(AsyncSpeculationSupport):
         """Insert a speculative probe into the queue, never deduplicated."""
         await self._queue.insert_root_request(request, deduplicate=False)
 
-    async def _persist(self, spec_state: SpeculationState) -> None:
-        """Upsert *spec_state* and cache the tracking row id on it.
+    async def _persist(self, spec_state: SpeculationState) -> int:
+        """Upsert *spec_state* and return its tracking row id.
 
         Also creates the tracking row before a state's first probe: the
         upsert writes the state as it stands (fresh counters on a first run,
-        the loaded ones on a resume) and records the id probes point at.
+        the loaded ones on a resume).
+
+        Returns:
+            The tracking row id, which probes built from the state carry.
         """
         # Speculation templates are pydantic models (Speculative subclasses
         # such as SpeculativeRange), so they always serialize. Persist the
@@ -85,7 +85,7 @@ class SpeculationManager(AsyncSpeculationSupport):
             "BaseModel", spec_state.template
         ).model_dump_json()
 
-        spec_state.tracking_id = await self._db.save_speculation_state(
+        return await self._db.save_speculation_state(
             SpeculationStateInsert(
                 func_name=spec_state.func_name,
                 highest_successful_id=spec_state.highest_successful_id,
@@ -94,7 +94,6 @@ class SpeculationManager(AsyncSpeculationSupport):
                 stopped=spec_state.stopped,
                 param_index=spec_state.param_index,
                 template_json=template_json,
-                seed_value_json=dump_json_or_none(spec_state.seed_value),
             )
         )
 
@@ -104,6 +103,11 @@ class SpeculationManager(AsyncSpeculationSupport):
         """Populate ``_speculation_state`` from discovered templates.
 
         Drops templates whose entry wasn't selected by ``seed_params``.
+
+        Raises:
+            ScraperConfigError: Two templates were seeded from the same
+                persisted cursor key, so there is no one cursor to hand
+                back for it.
         """
         self._speculation_state = discover_speculate_functions(self.scraper)
         if self.seed_params is not None and self._speculation_state:
@@ -115,6 +119,21 @@ class SpeculationManager(AsyncSpeculationSupport):
             ]
             for key in to_remove:
                 del self._speculation_state[key]
+        seen: dict[str, str] = {}
+        for state_key, spec_state in self._speculation_state.items():
+            template = spec_state.template
+            if not isinstance(template, PersistedSpeculative):
+                continue
+            persist_key = template.persist_key
+            if persist_key is None:
+                continue
+            if persist_key in seen:
+                raise ScraperConfigError(
+                    f"speculative templates {seen[persist_key]!r} and "
+                    f"{state_key!r} were both seeded from [{persist_key}]; "
+                    "each persisted cursor may seed one template"
+                )
+            seen[persist_key] = state_key
 
     @property
     def has_state(self) -> bool:
@@ -135,7 +154,7 @@ class SpeculationManager(AsyncSpeculationSupport):
         for func_name, saved in saved_states.items():
             if func_name in self._speculation_state:
                 spec_state = self._speculation_state[func_name]
-                spec_state.tracking_id = saved.id
+                self._bind(spec_state, saved.id)
                 spec_state.highest_successful_id = saved.highest_successful_id
                 spec_state.consecutive_failures = saved.consecutive_failures
                 spec_state.current_ceiling = saved.current_ceiling
@@ -168,9 +187,8 @@ class SpeculationManager(AsyncSpeculationSupport):
                         template = param_type.model_validate_json(
                             saved.template_json
                         )
-                        self._speculation_state[func_name] = SpeculationState(
+                        spec_state = SpeculationState(
                             func_name=func_name,
-                            tracking_id=saved.id,
                             template=template,
                             param_index=saved.param_index,
                             base_func_name=base_name,
@@ -178,11 +196,6 @@ class SpeculationManager(AsyncSpeculationSupport):
                             consecutive_failures=saved.consecutive_failures,
                             current_ceiling=saved.current_ceiling,
                             stopped=saved.stopped,
-                            seed_value=(
-                                json.loads(saved.seed_value_json)
-                                if saved.seed_value_json
-                                else None
-                            ),
                         )
                     except ValueError:
                         # pydantic's ValidationError and json's decode error
@@ -192,8 +205,32 @@ class SpeculationManager(AsyncSpeculationSupport):
                             func_name,
                             exc_info=True,
                         )
+                    else:
+                        self._speculation_state[func_name] = spec_state
+                        self._bind(spec_state, saved.id)
+
+    def persisted_cursors(self) -> dict[str, PersistedSpeculative]:
+        """Each persisted template's cursor for the next run, by key.
+
+        Read-only: computed from the in-memory states, writing nothing.
+
+        Returns:
+            ``{persist_key: template.resume_after(highest_successful_id)}``
+            for every template seeded from a ``[key]`` reference.
+        """
+        cursors: dict[str, PersistedSpeculative] = {}
+        for spec_state in self._speculation_state.values():
+            template = spec_state.template
+            if (
+                isinstance(template, PersistedSpeculative)
+                and template.persist_key is not None
+            ):
+                cursors[template.persist_key] = template.resume_after(
+                    spec_state.highest_successful_id
+                )
+        return cursors
 
     async def persist_all(self) -> None:
         """Persist every speculation state (the final flush at close)."""
         for spec_state in self._speculation_state.values():
-            await self._persist(spec_state)
+            await self._save(spec_state)

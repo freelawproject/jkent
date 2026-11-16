@@ -19,10 +19,17 @@ Example::
 from __future__ import annotations
 
 from datetime import date
+from typing import Any, Self
 
 from pydantic import BaseModel, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
-from jkent.common.speculative import Speculative
+from jkent.common.speculative import (
+    PersistedSpeculative,
+    Speculative,
+    persisted_key_ref,
+    resolve_persisted_cursor,
+)
 
 
 class DateRange(BaseModel):
@@ -112,7 +119,7 @@ class SpeculativeRange(BaseModel, Speculative):
         """
         return range(self.min, self.soft_max)
 
-    def from_int(self, n: int) -> SpeculativeRange:
+    def from_int(self, n: int) -> Self:
         """Re-base this range on a single ID.
 
         Args:
@@ -136,3 +143,66 @@ class SpeculativeRange(BaseModel, Speculative):
             The configured ``gap``.
         """
         return self.gap
+
+
+class PersistedSpeculativeRange(SpeculativeRange, PersistedSpeculative):
+    """A :class:`SpeculativeRange` that can be seeded from a stored cursor.
+
+    Any ordinary input validates exactly like ``SpeculativeRange``. A
+    ``"[key]"`` string instead resolves against the active
+    :func:`~jkent.common.speculative.persisted_cursor_store`, and the
+    template remembers ``key`` as :attr:`persist_key`. Subclasses parse out
+    to their own type, so a subclass adding fields (a court, a year) needs
+    those fields in the stored value.
+
+    After the run, :meth:`resume_after` gives the cursor the next run should
+    start from, and :meth:`stored_value` what to write for it: ``min`` and ``soft_max`` both at the ID past the highest
+    success, so the next run seeds nothing and opens its advance window
+    there. A run with no successes leaves ``min`` where it was.
+
+    Example::
+
+        # store: {"cal-dockets": {"min": 1200, "soft_max": 1200, "gap": 20}}
+        # seed_params: [{"fetch_docket": {"rid": "[cal-dockets]"}}]
+        # highest success 1247 -> resume_after(1247).min == 1248
+
+    Attributes:
+        persist_key: The cursor key this range was seeded from, or None for
+            a literal seed. Not part of the entry's parameter schema, and
+            not part of the value written back to the store.
+    """
+
+    persist_key: SkipJsonSchema[str | None] = None
+
+    @model_validator(mode="before")
+    def _resolve_persisted(cls, data: Any) -> Any:
+        key = persisted_key_ref(data)
+        if key is None:
+            return data
+        return {**resolve_persisted_cursor(key), "persist_key": key}
+
+    def resume_after(self, highest_successful_id: int | None) -> Self:
+        """The cursor the next run should start from.
+
+        Args:
+            highest_successful_id: This run's highest success, or None.
+
+        Returns:
+            A copy with ``min`` and ``soft_max`` at
+            ``max(min, highest_successful_id + 1)``; every other field,
+            ``persist_key`` included, is carried over.
+        """
+        start = (
+            self.min
+            if highest_successful_id is None
+            else max(self.min, highest_successful_id + 1)
+        )
+        return self.model_copy(update={"min": start, "soft_max": start})
+
+    def stored_value(self) -> dict[str, Any]:
+        """The value to store under ``persist_key``.
+
+        Returns:
+            Every field but ``persist_key``, JSON-compatible.
+        """
+        return self.model_dump(mode="json", exclude={"persist_key"})

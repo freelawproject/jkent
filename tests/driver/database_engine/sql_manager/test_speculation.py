@@ -22,7 +22,6 @@ def _state(func_name: str, **overrides: object) -> SpeculationStateInsert:
         "stopped": False,
         "param_index": 0,
         "template_json": None,
-        "seed_value_json": None,
     }
     return SpeculationStateInsert.model_validate(fields | overrides)
 
@@ -43,7 +42,6 @@ async def test_upsert_keeps_the_row_id_and_rewrites_every_field(
         stopped=True,
         param_index=0,
         template_json='{"t": 1}',
-        seed_value_json='"[cursor]"',
     )
     second = await sql_manager.save_speculation_state(progressed)
 

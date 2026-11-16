@@ -216,6 +216,40 @@ The speculation engine tracks which IDs it has tried through the template's
 ceiling, and a dedup constraint silently dropping a probe would corrupt that
 count.
 
+## Carrying a cursor between runs
+
+A scheduled scrape wants to start where the last one stopped. For that, use
+`PersistedSpeculativeRange`, or subclass it to add fields, and seed it with a
+`"[key]"` string instead of a literal:
+
+```python
+class CourtRange(PersistedSpeculativeRange):
+    court_id: str
+
+@entry(Docket)
+def fetch_docket(self, rid: CourtRange) -> Request: ...
+
+# seed_params: [{"fetch_docket": {"rid": "[cal-dockets]"}}]
+```
+
+At seeding, `"[cal-dockets]"` resolves against whatever store the host made
+active with `persisted_cursor_store(...)`, and the template remembers the key
+as `persist_key`. `from_int` copies it to every probe, and the stored template
+keeps it across a resume.
+
+jkent never writes to the store. When the run is done, the host calls
+`run.persisted_cursors()`. That returns each keyed template's `resume_after`
+of its highest success, with `min` and `soft_max` set just past the last hit.
+The host then decides whether the run went well enough to store each one's
+`stored_value()`. A run that crashed, drained, or failed its own checks just
+doesn't write, and the next run starts from the same place. Two templates
+seeded from one key are rejected at seeding, because there would be no single
+cursor to write back.
+
+For a different cursor shape, implement `PersistedSpeculative` yourself: give
+the model a `persist_key` field and the `resume_after` and `stored_value`
+methods.
+
 ## What the driver guarantees back
 
 So you know which invariants not to re-implement:
