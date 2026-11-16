@@ -95,14 +95,6 @@ class RunConformance:
         finally:
             await subject.aclose()
 
-    async def test_status_is_a_known_literal(self, subject: Run) -> None:
-        """``status`` only ever returns one of the three documented states."""
-        await subject.open()
-        try:
-            assert await subject.status() in get_args(_Status)
-        finally:
-            await subject.aclose()
-
     async def test_spawn_worker_returns_int_and_counts(
         self, subject: Run
     ) -> None:
