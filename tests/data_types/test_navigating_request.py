@@ -31,57 +31,10 @@ from tests.scraper.example.bug_court import (
 
 
 class TestRequest:
-    """Tests for the Request data type."""
+    """``Request``'s URL resolution and serializability.
 
-    def test_navigating_request_stores_url(self):
-        """Request shall store the URL to fetch."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/cases/BCC-2024-001",
-            ),
-            step="parse_detail",
-        )
-
-        assert request.request.url == "/cases/BCC-2024-001"
-
-    def test_navigating_request_stores_step(self):
-        """Request shall store the step method name."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/cases",
-            ),
-            step="parse_list",
-        )
-
-        assert request.step == "parse_list"
-
-    def test_navigating_request_defaults_to_get(self):
-        """Request shall default to GET method."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.GET,
-                url="/cases",
-            ),
-            step="parse_list",
-        )
-
-        assert request.request.method == HttpMethod.GET
-
-    def test_navigating_request_supports_post(self):
-        """Request shall support POST method."""
-        request = Request(
-            request=HTTPRequestParams(
-                method=HttpMethod.POST,
-                url="/search",
-                data={"query": "beetle"},
-            ),
-            step="parse_results",
-        )
-
-        assert request.request.method == HttpMethod.POST
-        assert request.request.data == {"query": "beetle"}
+    Field storage is pydantic's job, not this suite's.
+    """
 
     def test_resolve_url_with_absolute_url(self):
         """Request shall return absolute URLs unchanged."""

@@ -53,6 +53,8 @@ from jkent.data_types import (
     Multiple,
     PageElement,
     ParsedData,
+    PersistedSpeculative,
+    PersistedSpeculativeRange,
     PersistentException,
     PersistentHTTPResponseException,
     Request,
@@ -131,6 +133,8 @@ __all__ = [
     # Data and parameters
     "DateRange",
     "DeferredValidation",
+    "PersistedSpeculative",
+    "PersistedSpeculativeRange",
     "ScrapedData",
     "Speculative",
     "SpeculativeRange",

@@ -59,15 +59,11 @@ class SpeculationState:
             template does not advance at all. It retires queued *window*
             probes only — seed-range IDs were asked for explicitly and are
             always fetched (see :meth:`AsyncSpeculationSupport.has_stopped`).
-        seed_value: The raw (pre-validation) seed value the template was
-            built from — e.g. a host's "[cursor_key]" reference string.
-            Persisted with the state so hosts can map state rows back to
-            their seed without re-deriving the index assignment.
         tracking_id: Row id of this state's ``speculation_tracking`` entry,
             which every probe built from the template points at. Set by
-            ``_persist`` before the first probe is enqueued (and by
-            the resume path when loading persisted state), so it is None
-            only for a state that has never been persisted.
+            :meth:`AsyncSpeculationSupport._bind`, when the state is first
+            saved (before its first probe is enqueued) or loaded on resume,
+            so it is None only for a state that has never been persisted.
     """
 
     func_name: str
@@ -78,7 +74,6 @@ class SpeculationState:
     consecutive_failures: int = 0
     current_ceiling: int | None = None
     stopped: bool = False
-    seed_value: Any = None
     tracking_id: int | None = None
 
     def is_past_highest_success(self, speculative_id: int) -> bool:
@@ -151,9 +146,8 @@ def discover_speculate_functions(
     """Build initial SpeculationState for every discovered template.
 
     Looks up templates from ``scraper._speculation_templates`` (populated
-    by ``initial_seed()`` as ``(template, raw_seed_value)`` pairs). Each
-    template at index *i* becomes a ``SpeculationState`` keyed by
-    ``{func_name}:{i}``.
+    by ``initial_seed()``). Each template at index *i* becomes a
+    ``SpeculationState`` keyed by ``{func_name}:{i}``.
 
     ``initial_seed()`` is a generator, so on a fresh run the templates
     exist only once the entry requests it yields have been drained: call
@@ -172,14 +166,13 @@ def discover_speculate_functions(
 
     for entry_info in scraper.list_speculative_entries():
         func_templates = templates.get(entry_info.func_name, [])
-        for i, (template, seed_value) in enumerate(func_templates):
+        for i, template in enumerate(func_templates):
             key = f"{entry_info.func_name}:{i}"
             state[key] = SpeculationState(
                 func_name=key,
                 template=template,
                 param_index=i,
                 base_func_name=entry_info.func_name,
-                seed_value=seed_value,
             )
     return state
 
@@ -264,7 +257,7 @@ class AsyncSpeculationSupport(abc.ABC):
     """Async mixin: seed/extend/track over two hooks.
 
     ``_enqueue_speculative`` dispatches a probe; ``_persist`` saves a state
-    and sets its ``tracking_id``. Outcome tracking is serialised under
+    and returns its tracking row id. Outcome tracking is serialised under
     ``_speculation_lock``, and the state is persisted inside that lock.
 
     Attributes:
@@ -277,46 +270,47 @@ class AsyncSpeculationSupport(abc.ABC):
             ``fetch_case:1`` are two templates for the same entry, each with
             its own frontier, ceiling, and stop. The key is the state's
             durable identity: it is the ``speculation_tracking`` upsert key,
-            a resumed run merges stored progress into this dict by it, and
-            hosts read stored rows by it to map a template back to its seed
-            (e.g. a persisted cursor). Populated by the consumer, from
+            and a resumed run merges stored progress into this dict by it.
+            Populated by the consumer, from
             :func:`discover_speculate_functions` and the resume path.
+        _by_tracking_id: The same states, keyed by tracking row id: how a
+            dequeued probe finds its template. Kept by :meth:`_bind`, the
+            one place a ``tracking_id`` is set.
         _speculation_lock: Serialises planning and outcome tracking.
     """
 
-    scraper: BaseScraper[Any]
-    _speculation_state: dict[str, SpeculationState]
-    _speculation_lock: asyncio.Lock
+    def __init__(self, scraper: BaseScraper[Any]) -> None:
+        """Start with no states; the consumer populates them.
+
+        Args:
+            scraper: The scraper whose speculative entries build the probes.
+        """
+        self.scraper = scraper
+        self._speculation_state: dict[str, SpeculationState] = {}
+        self._by_tracking_id: dict[int, SpeculationState] = {}
+        self._speculation_lock = asyncio.Lock()
 
     @abc.abstractmethod
     async def _enqueue_speculative(self, request: Request) -> None:
         """Dispatch one speculative probe."""
 
     @abc.abstractmethod
-    async def _persist(self, spec_state: SpeculationState) -> None:
-        """Save *spec_state* and set its ``tracking_id``."""
+    async def _persist(self, spec_state: SpeculationState) -> int:
+        """Save *spec_state* and return its tracking row id."""
 
-    def _state_by_tracking_id(
-        self, tracking_id: int
-    ) -> SpeculationState | None:
-        """Find a state by its tracking row.
-
-        A linear scan rather than a second index: there is one state per
-        speculative invocation in ``seed_params`` (a handful, a few dozen
-        at most), and ``tracking_id`` is assigned by ``_persist`` or the
-        consumer's resume path, outside this class, so an index here would
-        have to be kept in step with code it cannot see.
+    def _bind(self, spec_state: SpeculationState, tracking_id: int) -> None:
+        """Record that *spec_state* owns tracking row *tracking_id*.
 
         Args:
-            tracking_id: The tracking row's primary key.
-
-        Returns:
-            The state that owns the row, or ``None`` if untracked.
+            spec_state: The state, stored or loaded.
+            tracking_id: Its ``speculation_tracking`` row id.
         """
-        for spec_state in self._speculation_state.values():
-            if spec_state.tracking_id == tracking_id:
-                return spec_state
-        return None
+        spec_state.tracking_id = tracking_id
+        self._by_tracking_id[tracking_id] = spec_state
+
+    async def _save(self, spec_state: SpeculationState) -> None:
+        """Persist *spec_state* and bind it to the row it was saved as."""
+        self._bind(spec_state, await self._persist(spec_state))
 
     async def seed(self) -> None:
         """Seed the queue with the initial speculative probe window.
@@ -332,7 +326,7 @@ class AsyncSpeculationSupport(abc.ABC):
                 # A probe row carries a foreign key to the tracking row, so
                 # the state is persisted (and its tracking_id set) before
                 # any probe.
-                await self._persist(spec_state)
+                await self._save(spec_state)
                 ids, new_ceiling, stopped = spec_state.seed_plan()
                 for n in ids:
                     request = build_speculative_request(
@@ -344,7 +338,7 @@ class AsyncSpeculationSupport(abc.ABC):
                 # Record the ceiling now, so a resume before any outcome
                 # arrives plans past it instead of probing the same IDs
                 # again.
-                await self._persist(spec_state)
+                await self._save(spec_state)
 
     async def _extend_speculation(self, spec_state: SpeculationState) -> None:
         if spec_state.stopped:
@@ -386,9 +380,7 @@ class AsyncSpeculationSupport(abc.ABC):
                 request.request.url,
             )
             return None
-        spec_state = self._state_by_tracking_id(
-            request.speculation_tracking_id
-        )
+        spec_state = self._by_tracking_id.get(request.speculation_tracking_id)
         if spec_state is None:
             logger.warning(
                 "No speculation state owns tracking row %d (probe %s); "
@@ -425,7 +417,7 @@ class AsyncSpeculationSupport(abc.ABC):
         tracking_id = request.speculation_tracking_id
         if tracking_id is None:
             return False
-        spec_state = self._state_by_tracking_id(tracking_id)
+        spec_state = self._by_tracking_id.get(tracking_id)
         if spec_state is None or not spec_state.stopped:
             return False
         speculative_id = request.speculative_index
@@ -500,5 +492,5 @@ class AsyncSpeculationSupport(abc.ABC):
                         spec_state.stopped = True
                         outcome = SpeculationOutcome.STOPPED
 
-            await self._persist(spec_state)
+            await self._save(spec_state)
         return outcome

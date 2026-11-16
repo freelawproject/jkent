@@ -964,11 +964,7 @@ class SpeculationTracking(Base):
 
     __tablename__ = "speculation_tracking"
     # func_name is UNIQUE (below); its automatic index serves the lookups.
-    __table_args__ = (
-        *json_checks(
-            "speculation_tracking", "template_json", "seed_value_json"
-        ),
-    )
+    __table_args__ = (*json_checks("speculation_tracking", "template_json"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, doc="Surrogate key.")
     func_name: Mapped[str] = mapped_column(
@@ -1029,15 +1025,6 @@ class SpeculationTracking(Base):
             "apply it to an ON CONFLICT DO UPDATE SET clause — the upsert in "
             "``_speculation.py`` therefore sets it explicitly."
         ),
-    )
-    # The raw (pre-validation) seed value this template came from, as JSON —
-    # e.g. the "[cursor_key]" reference string a host seeded with, so the host
-    # can map state rows back to its cursor store without re-deriving jkent's
-    # index assignment.
-    seed_value_json: Mapped[str | None] = mapped_column(
-        doc=(
-            "Raw (pre-validation) seed value this template came from, as JSON."
-        )
     )
 
 

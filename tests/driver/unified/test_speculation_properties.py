@@ -265,9 +265,8 @@ class _MemorySpeculation(AsyncSpeculationSupport):
     """The mixin over recording hooks: probes to a list, persists to a log."""
 
     def __init__(self, spec_state: SpeculationState) -> None:
-        self.scraper = _ProbeScraper()
+        super().__init__(_ProbeScraper())
         self._speculation_state = {spec_state.func_name: spec_state}
-        self._speculation_lock = asyncio.Lock()
         self.enqueued: list[int] = []
         self.persisted: list[_Snapshot] = []
 
@@ -276,9 +275,9 @@ class _MemorySpeculation(AsyncSpeculationSupport):
         assert request.speculative_index is not None
         self.enqueued.append(request.speculative_index)
 
-    async def _persist(self, spec_state: SpeculationState) -> None:
-        spec_state.tracking_id = 1
+    async def _persist(self, spec_state: SpeculationState) -> int:
         self.persisted.append(_Snapshot.of(spec_state))
+        return 1
 
 
 def _response(req: Request, status: int) -> Response:
@@ -628,7 +627,7 @@ def test_late_hit_below_the_watermark_does_not_reset_the_count() -> None:
         spec_state.highest_successful_id = 10
         spec_state.current_ceiling = 13
         support = _MemorySpeculation(spec_state)
-        await support._persist(spec_state)
+        await support._save(spec_state)
         for n in (11, 12):
             req = build_speculative_request(support.scraper, spec_state, n)
             await support.track_outcome(req, _response(req, 404))

@@ -641,9 +641,8 @@ class BaseScraper(Generic[ScraperReturnType]):
 
         For speculative entries (parameter subclassing the Speculative ABC),
         the validated model instance is stored in ``_speculation_templates``
-        (paired with the raw seed value it was validated from) for the driver
-        to consume during speculation seeding. No requests are yielded for
-        speculative entries here.
+        for the driver to consume during speculation seeding. No requests are
+        yielded for speculative entries here.
 
         Args:
             params: List of single-key dicts mapping entry function name to kwargs.
@@ -678,20 +677,16 @@ class BaseScraper(Generic[ScraperReturnType]):
 
                 if meta.speculative:
                     # Store the validated Speculative model instance as a
-                    # template for the driver, alongside the raw seed value
-                    # it was validated from (persisted with the speculation
-                    # state so hosts can map state rows back to their seed).
+                    # template for the driver.
                     if not hasattr(self, "_speculation_templates"):
                         self._speculation_templates: dict[
-                            str, list[tuple[Speculative, Any]]
+                            str, list[Speculative]
                         ] = {}
                     if func_name not in self._speculation_templates:
                         self._speculation_templates[func_name] = []
                     assert meta.speculative_param is not None
-                    template = validated_kwargs[meta.speculative_param]
-                    raw_seed_value = kwargs_dict.get(meta.speculative_param)
                     self._speculation_templates[func_name].append(
-                        (template, raw_seed_value)
+                        validated_kwargs[meta.speculative_param]
                     )
                 else:
                     for request in method(**validated_kwargs):
