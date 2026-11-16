@@ -8,15 +8,15 @@ The browser-gated test stands up a local aiohttp server: a parent HTML page
 with a download link, plus an endpoint serving a binary body with
 ``Content-Disposition: attachment`` so the browser downloads it. The
 ``require_browser`` gate skips it cleanly with no browser. The
-browser-free tests prove streaming + temp-file deletion + protocol conformance
-by constructing the stream over a real temp file directly.
+browser-free tests prove temp-file deletion by constructing the stream over a
+real temp file directly; ``FileArchiveStream`` itself is covered in
+``test_transport_common``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import tempfile
-import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -44,7 +44,6 @@ from jkent.driver.unified_driver.transport import (
     FileArchiveStream,
     QueuedRequest,
 )
-from jkent.driver.unified_driver.transport import common as transport_module
 from jkent.driver.unified_driver.transport.playwright_transport import (
     PlaywrightTransport,
 )
@@ -70,57 +69,6 @@ if TYPE_CHECKING:
 
 async def _drain(stream: ArchiveStream) -> bytes:
     return b"".join([chunk async for chunk in stream])
-
-
-async def test_archive_stream_satisfies_protocol() -> None:
-    """``FileArchiveStream`` is a structural ``ArchiveStream``."""
-    stream = FileArchiveStream(
-        status_code=200, headers={}, url="http://x/y", file_path="/dev/null"
-    )
-    assert isinstance(stream, ArchiveStream)
-
-
-async def test_archive_stream_streams_the_staged_file() -> None:
-    """Iterating the stream yields the staged file's bytes (chunked)."""
-    body = b"%PDF-1.7\n" + (b"binary-payload" * 10000)
-    with tempfile.NamedTemporaryFile(delete=False) as fh:
-        fh.write(body)
-        path = fh.name
-    try:
-        stream = FileArchiveStream(
-            status_code=200,
-            headers={},
-            url="http://x/y.pdf",
-            file_path=path,
-            chunk_size=4096,
-        )
-        assert await _drain(stream) == body
-    finally:
-        if Path(path).exists():
-            Path(path).unlink()
-
-
-async def test_archive_stream_opens_its_file_off_the_event_loop(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Like the reads, the ``open()`` runs in a worker thread."""
-    path = tmp_path / "body.pdf"
-    path.write_bytes(b"%PDF-1.7\n")
-    loop_thread = threading.current_thread()
-    opened_on: list[threading.Thread] = []
-
-    def spy_open(*args: Any, **kwargs: Any) -> Any:
-        opened_on.append(threading.current_thread())
-        # Spies on the builtin the transport calls; Path.open would not
-        # be the same callable.
-        return open(*args, **kwargs)  # noqa: PTH123
-
-    monkeypatch.setattr(transport_module, "open", spy_open, raising=False)
-    stream = FileArchiveStream(
-        status_code=200, headers={}, url="http://x/y.pdf", file_path=str(path)
-    )
-    assert await _drain(stream) == b"%PDF-1.7\n"
-    assert opened_on and opened_on[0] is not loop_thread
 
 
 async def test_finish_archiving_deletes_temp_file_idempotently() -> None:
