@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 class Response:
     """HTTP response from fetching a page.
 
-    Modeled after httpx.Response to provide a familiar interface.
+    Modeled after httpx2.Response to provide a familiar interface.
     The driver creates Response objects and passes them to scraper
     step methods.
 

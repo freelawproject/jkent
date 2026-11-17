@@ -4,7 +4,7 @@ The driver core owns orchestration — the queue, the worker pool, storage,
 rate limiting, retries. A ``Transport`` owns the other half: turning a
 request into a response, the per-worker resource that work runs on, and
 recovery when that resource dies. jkent ships two implementations — HTTP
-(httpx) and browser (Playwright/Camoufox) — and hosts add their own: a
+(httpx2) and browser (Playwright/Camoufox) — and hosts add their own: a
 replay transport serving responses from previous-run DBs plugs into this
 same interface, with no jkent changes.
 
