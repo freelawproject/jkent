@@ -314,7 +314,7 @@ class TransportConformance(Generic[_TransportT]):
     ) -> None:
         """A second iteration raises rather than replaying the body.
 
-        The transports back a body with a live source (an httpx stream, a
+        The transports back a body with a live source (an httpx2 stream, a
         staged file), so a replay would be a lie or a re-read of something
         that may have moved. A caller that lost the body re-resolves.
         """

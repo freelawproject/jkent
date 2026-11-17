@@ -129,7 +129,14 @@ class TestArchive:
             == "http://bugcourt.example.com/cases/BCC-2024-001"
         )
 
-    def test_resolve_from_preserves_all_http_request_params_fields(self):
+    @pytest.mark.parametrize(
+        "body",
+        [{"data": {"form": "value"}}, {"json": {"k": "v"}}],
+        ids=["data", "json"],
+    )
+    def test_resolve_from_preserves_all_http_request_params_fields(
+        self, body: dict[str, Any]
+    ):
         """resolve_from shall carry every HTTPRequestParams field through.
 
         Regression test: prior to the fix in resolve_request_from, only
@@ -144,8 +151,7 @@ class TestArchive:
             method=HttpMethod.POST,
             url="/opinions/BCC-2024-001.pdf",
             params={"q": "search"},
-            data={"form": "value"},
-            json={"k": "v"},
+            **body,
             headers={"Accept": "application/pdf"},
             cookies={"session": "abc"},
             timeout=360.0,

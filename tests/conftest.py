@@ -21,6 +21,16 @@ import os
 # whole test run enforces contracts; production leaves them off.
 os.environ.setdefault("JKENT_ENFORCE_CONTRACTS", "1")
 
+# The HTTPX transport honours the environment's proxy settings by default,
+# which would send every test's request to a local server through the
+# developer's proxy. ``NO_PROXY=*`` also stops urllib falling back on the
+# OS proxy settings. A test of the environment proxy sets its own.
+for _name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+    os.environ.pop(_name, None)
+    os.environ.pop(_name.lower(), None)
+os.environ["NO_PROXY"] = "*"
+os.environ.pop("no_proxy", None)
+
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path

@@ -16,7 +16,10 @@ from typing import Any
 
 import pytest
 
-from jkent.common.request import SkipDeduplicationCheck, serialize_url_and_body
+from jkent.common.request import (
+    SkipDeduplicationCheck,
+    serialize_url_and_body,
+)
 from jkent.data_types import (
     HttpMethod,
     HTTPRequestParams,
@@ -179,6 +182,27 @@ class TestKeyResolution:
             resolved.effective_deduplication_key
             == direct.effective_deduplication_key
         )
+
+
+@pytest.mark.parametrize(
+    ("params", "query"),
+    [
+        ({"a": None, "b": ["x", "y"], "c": True}, "a=None&b=x&b=y&c=True"),
+        ([("b", "x"), ("c", 1), ("b", "y")], "b=x&c=1&b=y"),
+        ({"ids": range(3)}, "ids=0&ids=1&ids=2"),
+    ],
+    ids=["mapping", "pairs", "range"],
+)
+def test_get_params_fold_as_urlencode_doseq(params: Any, query: str) -> None:
+    """``params`` fold into the URL as ``urlencode(..., doseq=True)`` spells
+    them: any sequence is one field per element, pairs keep their order and
+    repeats, and ``None`` is its ``str``."""
+    url, _ = serialize_url_and_body(
+        HTTPRequestParams(
+            method=HttpMethod.GET, url="https://example.com/s", params=params
+        )
+    )
+    assert url == f"https://example.com/s?{query}"
 
 
 class TestBytesParams:

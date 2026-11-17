@@ -327,8 +327,8 @@ class Form:
             and via set to ViaFormSubmit for Playwright replay.
         """
         # Merge field defaults with overrides. Repeated names (checkbox
-        # groups, multi-selects) accumulate into a list — httpx encodes a
-        # list value as repeated keys, like a browser does.
+        # groups, multi-selects) accumulate into a list — the HTTPX2 transport
+        # encodes a list value as repeated keys, like a browser does.
         # The engine-prefixed string form: what the transport resolves and
         # what the via stores.
         submit_string = _normalize_submit_selector(submit_selector)

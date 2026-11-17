@@ -183,7 +183,7 @@ class ArchiveStream(abc.ABC):
 
     The body is **single-consumption**: :meth:`__aiter__` may be driven
     once, and a second iteration raises ``RuntimeError``. Transports back
-    it with a live source (an httpx stream, a staged file) rather than a
+    it with a live source (an httpx2 stream, a staged file) rather than a
     buffer, so a replay would either be a lie or a second read of
     something that may have moved; a caller that lost the body re-resolves
     the archive.
@@ -440,7 +440,7 @@ class Transport(abc.ABC, Generic[HandleT]):
         gone) and leaves the saved jar alone; an empty jar is not None but
         its serialization (``"[]"``), so a logout overwrites the saved
         session. Defaults to None for transports with no jar of
-        their own to carry across runs — HTTP (httpx holds cookies on the
+        their own to carry across runs — HTTP (httpx2 holds cookies on the
         client, for the run's lifetime) and replay.
 
         Returns:
@@ -593,7 +593,7 @@ class StatelessTransport(Transport[NoopHandle]):
     """A transport with no per-worker resource: every handle is a no-op.
 
     Owns the handle cache such transports would otherwise each repeat —
-    HTTP (httpx pools internally) and replay (reads from a source DB). A
+    HTTP (httpx2 pools internally) and replay (reads from a source DB). A
     worker's handle is stable from ``acquire`` until ``release``.
     """
 

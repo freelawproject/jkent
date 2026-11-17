@@ -614,6 +614,20 @@ class TestIntegrityVerification:
 
         assert path.read_bytes() == b"decoded and much longer"
 
+    async def test_etag_ignored_when_encoded(self, tmp_path: Path) -> None:
+        """A strong ETag on an encoded body is the encoded bytes' MD5 (an S3
+        object stored gzipped); the handler sees decoded ones."""
+        handler = LocalAsyncStreamingArchiveHandler(tmp_path)
+        etag = hashlib.md5(b"gzip bytes", usedforsecurity=False).hexdigest()
+        headers = {"ETag": f'"{etag}"', "Content-Encoding": "gzip"}
+
+        path = await self._save_with(
+            handler, headers=headers, chunks=_aiter([b"decoded"])
+        )
+
+        assert path.read_bytes() == b"decoded"
+        assert "md5" not in plan_digests(headers)
+
     @pytest.mark.parametrize(
         ("etag_for", "stored"),
         [(b"payload", True), (b"other bytes", False)],
