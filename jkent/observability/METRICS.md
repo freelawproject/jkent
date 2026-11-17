@@ -137,15 +137,17 @@ I don't think we're really using any sort of tracing yet, but these are lightwei
 and simple to add, and may be helpful if we see very odd behavior in prod and can turn
 on sampling.
 
-One trace tree per request (sampled by the host). httpx / SQLAlchemy /
-botocore auto-instrumentation spans nest under the relevant phase span once the
-host enables those instrumentors.
+One trace tree per request (sampled by the host). SQLAlchemy / botocore
+auto-instrumentation spans nest under the relevant phase span once the host
+enables those instrumentors. httpx2 has no OpenTelemetry instrumentor (the
+`opentelemetry-instrumentation-httpx` package patches `httpx`, not `httpx2`),
+so the fetch shows up only as `jkent.transport.resolve`.
 
 | Span | Parent | Attributes / notes |
 |---|---|---|
 | `jkent.request` | root | `jkent.scraper`, `jkent.step`, `jkent.run_inst_id`, `jkent.outcome` |
 | `jkent.rate_limiter.gate` | `jkent.request` | rate-limiter token wait |
-| `jkent.transport.resolve` | `jkent.request` | the fetch; httpx client spans nest here |
+| `jkent.transport.resolve` | `jkent.request` | the fetch |
 | `jkent.step` | `jkent.request` | response store + scraper step; SQLAlchemy spans nest here |
 
 ---

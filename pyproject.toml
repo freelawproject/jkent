@@ -19,7 +19,7 @@ dependencies = [
     "lxml>=5.2",
     # used via lxml's .cssselect()
     "cssselect",
-    "pyrate-limiter>=3.9.0",
+    "pyrate-limiter>=4.0.0",
     "typing-extensions>=4.15.0",
 ]
 authors = [{ name = "Free Law Project" }]
@@ -41,7 +41,7 @@ operational = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.22.1",
     "alembic>=1.13",
-    "httpx[socks,http2,brotli]>=0.28.1",
+    "httpx2[socks,http2,brotli]>=2.16.2",
     # Pinned: jkent monkey-patches h11._headers.normalize_and_validate
     # (gated on the H11_HEADER_FIXES driver requirement) and relies on
     # h11's internal API. Bumps must re-verify the patch.

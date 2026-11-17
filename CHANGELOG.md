@@ -7,7 +7,7 @@ Initial PyPI release.
 - Scraper SDK: `BaseScraper`, `@entry` / `@step` decorators, typed
   request/response data types, speculation primitives, HTML parsing and
   selector-observation helpers.
-- Unified driver: resumable SQLite-backed runs, httpx / Playwright /
+- Unified driver: resumable SQLite-backed runs, httpx2 / Playwright /
   Camoufox transports, archive downloads, rate limiting, interstitial
   handling, replay.
 - `RunBootstrapper`: requirement-driven component selection and run wiring.

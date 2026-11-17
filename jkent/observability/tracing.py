@@ -89,7 +89,7 @@ def phase(name: Phase) -> Iterator[Span]:
     """Time one request phase: a child span plus a ``request.duration`` record.
 
     Attributes come from the ambient label context (``scraper`` / ``step``)
-    plus ``phase=name``. Any auto-instrumented client call inside (httpx,
+    plus ``phase=name``. Any auto-instrumented client call inside (e.g.
     SQLAlchemy) nests under this span.
 
     Args:

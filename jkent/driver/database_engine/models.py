@@ -514,7 +514,7 @@ class Request(CompressedPayloadColumns, Base):
     # The HTTPRequestParams that round-trip through the queue beyond
     # url/body/headers/cookies/verify_json: timeout / json.
     # (Scrapers that set e.g. timeout on archive downloads rely on these being
-    # persisted, rather than falling back to the httpx client-level default.)
+    # persisted, rather than falling back to the httpx2 client-level default.)
     timeout_json: Mapped[str | None] = mapped_column(
         doc=(
             "JSON ``HTTPRequestParams.timeout`` — a number, or a "

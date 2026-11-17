@@ -39,6 +39,9 @@ from jkent.driver.unified_driver.transport import (
     WorkerHandle,
     parse_retry_after,
 )
+from jkent.driver.unified_driver.transport.httpx_transport import (
+    HttpxTransport,
+)
 
 __all__ = [
     "AdaptiveRateLimiter",
@@ -50,6 +53,7 @@ __all__ = [
     "DEFAULT_ADAPTIVE_LADDER",
     "MAX_RETRY_AFTER_S",
     "FileArchiveStream",
+    "HttpxTransport",
     "NoopHandle",
     "NoopRateLimiter",
     "QueuedRequest",

@@ -69,6 +69,26 @@ class ScraperStatus(Enum):
     RETIRED = "retired"
 
 
+class ProxySetting(Enum):
+    """A proxy choice that is not a proxy URL.
+
+    Where a proxy is chosen — the run's config, a scraper's ``proxy`` — the
+    choice is a proxy URL, one of these, or ``None`` for no opinion, which
+    defers to the next place down: the run's config, then the scraper, then
+    the environment.
+
+    Values:
+        ENVIRONMENT: The environment's proxy settings (``HTTP_PROXY``,
+            ``HTTPS_PROXY``, ``ALL_PROXY``, ``NO_PROXY``), falling back to
+            the OS proxy settings on macOS and Windows; with none set, a
+            direct connection.
+        DIRECT: A direct connection, whatever the environment says.
+    """
+
+    ENVIRONMENT = "environment"
+    DIRECT = "direct"
+
+
 class DriverRequirement(Enum):
     """Capabilities a scraper requires from its driver.
 
@@ -89,7 +109,7 @@ class DriverRequirement(Enum):
         RCAP_HANDLER: Requires reCAPTCHA interstitial handling (auto-selects Camoufox).
         CFCAP_HANDLER: Requires Cloudflare interstitial handling (auto-selects Camoufox).
         H11_HEADER_FIXES: Loosen h11 response-header validation.
-        FOLLOW_REDIRECTS: Have httpx follow 3xx redirects automatically.
+        FOLLOW_REDIRECTS: Have httpx2 follow 3xx redirects automatically.
         STRICTLY_SERIAL: One worker; on transient retry, idle until the
             same request is ready instead of picking up other work
             (auto-selects a browser).
@@ -214,7 +234,7 @@ class BaseScraper(Generic[ScraperReturnType]):
             should be paced separately from the default (``Request(rate_limit=
             name)`` / ``@step(rate_limit=name)``). See
             :mod:`jkent.common.rate_limits`.
-        default_headers: Baseline HTTP headers for every httpx request.
+        default_headers: Baseline HTTP headers for every httpx2 request.
     """
 
     # === METADATA FOR AUTODOC ===
@@ -249,11 +269,16 @@ class BaseScraper(Generic[ScraperReturnType]):
     # live run used is refused. Validated in __init_subclass__.
     named_rate_limits: ClassVar[Mapping[str, Pace]] = {}
 
-    # Baseline HTTP headers the httpx transport sends with every request.
+    # Baseline HTTP headers the httpx2 transport sends with every request.
     # A per-request header with the same name (matched case-insensitively,
     # including permanent headers merged into the request) overrides the
     # default. The Playwright/Camoufox transports ignore these — the
-    # browser supplies its own headers.
+    # browser supplies its own headers. An escape hatch, rarely needed: a
+    # default here applies to every request, so e.g. a Content-Type default
+    # also relabels form bodies. A Cookie default is folded into each
+    # request's own cookies, over the session's — unless the request sets
+    # its own Cookie header, which replaces the default whole, like any
+    # other header. A request's cookies= still merges by name over either.
     default_headers: ClassVar[Mapping[str, str]] = {}
 
     # Driver requirements — capabilities the scraper needs from its driver.
@@ -269,6 +294,11 @@ class BaseScraper(Generic[ScraperReturnType]):
     #         ctx.set_ciphers("AES256-SHA256")
     #         return ctx
     ssl_context: ClassVar[ssl.SSLContext | None] = None
+
+    # The proxy this scraper's HTTP requests go through: a proxy URL, a
+    # ProxySetting, or None to leave it to the environment. A proxy set in
+    # the run's config wins over this.
+    proxy: ClassVar[str | ProxySetting | None] = None
 
     # ------------------------------------------------------------------
     # HTTP status classification
