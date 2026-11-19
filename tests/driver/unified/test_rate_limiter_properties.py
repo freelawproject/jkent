@@ -1,43 +1,45 @@
-"""Generative laws for ``AdaptiveRateLimiter`` (jkent.driver.unified_driver.rate_limiter).
+"""Generative laws for the pacing limiters (jkent.driver.unified_driver.rate_limiter).
 
-A Hypothesis script — a ladder, an optional ``start_interval``, and a list
-of ``(status_code, retry_after, clock_advance)`` steps — is replayed
-against the real limiter on an injected fake clock, and a hand-written
-model of the docstring's rules (the *oracle*) is stepped alongside it.
-After every step the two must agree, and these laws must hold:
+**Capped pace.** A Hypothesis script of arrivals — each a gap before the
+next request shows up, and how late its wake lands — is played against a
+real ``CappedPaceLimiter`` on a virtual clock. The laws:
 
-- ``current_interval`` is a member of the ladder, never above
-  ``ladder[-1]``, and monotonically non-decreasing — descent is for the
-  life of the run; one ``record_response`` moves at most one rung;
-- a step-down happens at most once per cooldown window: after a step-down
-  at time ``t`` to interval ``i``, no further step-down while the clock is
-  below ``t + max(i, BUMP_COOLDOWN_FLOOR_S)``;
-- ``_resume_at`` only ever extends (never decreases), and is ``None`` or
-  at least the clock reading at the moment it was set; a step-down sets it
-  to at least one new interval out;
-- a status that is not 429 and carries no ``Retry-After`` never changes
-  the rung;
-- ``start_interval`` picks the first rung at least that slow — the initial
-  ``current_interval`` is ``>= start_interval``, or it is ``ladder[-1]``.
+- no two starts are ever closer than the interval, however late a wake
+  lands (a blocked event loop pushes the next slot back, never forward);
+- with punctual wakes, a request starts at ``max(arrival, previous start +
+  interval)`` exactly: nothing is added to a wait, and time the lane did
+  not use buys no earlier start later.
 
-The ``gate`` property drives the pause on a virtual clock: the limiter's
-``asyncio.sleep`` is swapped for one that parks until the fake clock is
-advanced past the requested target, so nothing waits on the wall clock.
-The law: a gate that finds a pause set does not resolve while the clock
-is below ``_resume_at`` (extensions included), and resolves once the
-clock is past it.
+**Reactive pace.** Requests with generated response times are fetched
+through a real ``ReactivePaceLimiter`` by several concurrent callers. The
+laws: no two are ever in flight together, and each starts no sooner than
+the rest after the one before it finished.
+
+**The probe.** A script of ``(status, retry_after, sent how long ago,
+clock advance, gate?)`` steps is replayed against a real
+``AdaptiveRateLimiter``, and a hand-written model of the docstring's rules
+(the *oracle*) is stepped alongside it. After every step the two must
+agree, and these laws must hold:
+
+- ``current_interval`` is a member of the ladder, and never faster than
+  the declared pace;
+- one ``record_response`` moves at most one rung, and only slower; a
+  status that is not 429 and carries no usable ``Retry-After`` moves
+  nothing; pushback on a request sent before the last step-down moves no
+  rung;
+- the pause only ever extends;
+- one started request recovers at most one rung, and only after
+  ``recover_after`` without counted pushback, time spent paused excluded.
 
 The last test is a deterministic regression guard: a NaN ``retry_after``
-must not reach ``_resume_at``, where ``gate`` could never clear it — every
-gate on that lane would either raise (3.13's ``asyncio.sleep`` rejects NaN)
-or spin forever (older Pythons). ``record_response`` drops non-finite
-values.
+must not become a pause, which no clock reading would ever clear.
 """
 
 from __future__ import annotations
 
 import asyncio
 import math
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from hypothesis import given
@@ -45,10 +47,14 @@ from hypothesis import strategies as st
 
 from jkent.data_types import HttpMethod, HTTPRequestParams, Request
 from jkent.driver.unified_driver.rate_limiter import (
-    BUMP_COOLDOWN_FLOOR_S,
     DEFAULT_ADAPTIVE_LADDER,
     AdaptiveRateLimiter,
+    CappedPaceLimiter,
+    ReactivePaceLimiter,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 pytestmark = pytest.mark.generative
 
@@ -68,275 +74,265 @@ def _request() -> Request:
 
 
 class VirtualClock:
-    """A hand-advanced monotonic clock that can also stand in for sleep.
+    """A monotonic clock and a matching sleep, in virtual seconds.
 
-    ``__call__`` is the clock the limiter reads. ``sleep`` is the limiter's
-    injected pause wait in the gate property: it parks the caller
-    until :meth:`advance` carries the clock to (or past) the target, so a
-    300s Retry-After costs no wall time.
+    Sleepers park until the clock reaches their target. :meth:`run` drives
+    coroutines to completion, jumping the clock to the next sleeper's
+    target (plus ``lag``, a late wake) whenever every task is parked.
     """
 
     def __init__(self) -> None:
         self.now = 0.0
+        self.lag = 0.0
         self._sleepers: list[tuple[float, asyncio.Future[None]]] = []
 
     def __call__(self) -> float:
         return self.now
 
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-        due = [(t, f) for t, f in self._sleepers if t <= self.now]
-        self._sleepers = [(t, f) for t, f in self._sleepers if t > self.now]
-        for _, future in due:
-            if not future.done():
-                future.set_result(None)
-
     async def sleep(self, delay: float) -> None:
-        target = self.now + delay
-        if target <= self.now:
-            await asyncio.sleep(0)
-            return
         future: asyncio.Future[None] = (
             asyncio.get_running_loop().create_future()
         )
-        self._sleepers.append((target, future))
+        self._sleepers.append((self.now + delay, future))
         await future
 
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+        due = [f for t, f in self._sleepers if t <= self.now]
+        self._sleepers = [(t, f) for t, f in self._sleepers if t > self.now]
+        for future in due:
+            if not future.done():
+                future.set_result(None)
 
-# --- Strategies ---------------------------------------------------------------
+    async def run(self, *coros: Coroutine[Any, Any, Any]) -> None:
+        tasks = [asyncio.ensure_future(coro) for coro in coros]
+        while True:
+            for _ in range(20):
+                await asyncio.sleep(0)
+            if all(task.done() for task in tasks):
+                for task in tasks:
+                    task.result()
+                return
+            targets = [t for t, f in self._sleepers if not f.done()]
+            assert targets, "tasks are parked on something other than time"
+            self.advance(max(min(targets) - self.now, 0.0) + self.lag)
 
-# Rate() asserts a non-zero millisecond interval, so rungs are >= 1ms.
-_rung = st.floats(
+
+_seconds = st.floats(
     min_value=0.001, max_value=120.0, allow_nan=False, allow_infinity=False
 )
-_ladders = st.one_of(
-    st.just(DEFAULT_ADAPTIVE_LADDER),
-    st.lists(_rung, min_size=1, max_size=8, unique=True).map(
-        lambda xs: tuple(sorted(xs))
+_waits = st.floats(
+    min_value=0.0, max_value=300.0, allow_nan=False, allow_infinity=False
+)
+
+
+# --- Capped pace ---------------------------------------------------------------
+
+
+@given(
+    interval=_seconds,
+    arrivals=st.lists(st.tuples(_waits, _waits), min_size=1, max_size=25),
+)
+async def test_capped_starts_are_never_closer_than_the_interval(
+    interval: float, arrivals: list[tuple[float, float]]
+) -> None:
+    clock = VirtualClock()
+    limiter = CappedPaceLimiter(interval, clock=clock, sleep=clock.sleep)
+    starts: list[float] = []
+    for gap, lag in arrivals:
+        clock.advance(gap)
+        clock.lag = lag
+        await clock.run(limiter.gate(_request()))
+        starts.append(clock.now)
+    # ``a + interval``, as the limiter reckons the slot: subtracting two
+    # clock readings can come out an ulp short of the interval between them.
+    assert all(b >= a + interval for a, b in zip(starts, starts[1:])), starts
+
+
+@given(
+    interval=_seconds,
+    gaps=st.lists(_waits, min_size=1, max_size=25),
+)
+async def test_capped_pace_adds_nothing_and_banks_nothing(
+    interval: float, gaps: list[float]
+) -> None:
+    clock = VirtualClock()
+    limiter = CappedPaceLimiter(interval, clock=clock, sleep=clock.sleep)
+    previous = -math.inf
+    for gap in gaps:
+        clock.advance(gap)
+        arrival = clock.now
+        await clock.run(limiter.gate(_request()))
+        expected = max(arrival, previous + interval)
+        # The wait is computed as a difference of clock readings, so the
+        # start can land an ulp or two past the slot, never before it.
+        assert expected <= clock.now <= expected + 1e-6
+        previous = clock.now
+
+
+# --- Reactive pace -------------------------------------------------------------
+
+
+@given(
+    rest=st.floats(
+        min_value=0.0, max_value=30.0, allow_nan=False, allow_infinity=False
+    ),
+    response_times=st.lists(
+        st.floats(min_value=0.001, max_value=5.0), min_size=1, max_size=12
     ),
 )
-_start_intervals = st.none() | st.floats(
-    min_value=0.0, max_value=200.0, allow_nan=False, allow_infinity=False
+async def test_reactive_lane_is_serial_and_rests_after_each_response(
+    rest: float, response_times: list[float]
+) -> None:
+    clock = VirtualClock()
+    limiter = ReactivePaceLimiter(rest, clock=clock, sleep=clock.sleep)
+    spans: list[tuple[float, float]] = []
+
+    async def fetch(takes: float) -> None:
+        turn = await limiter.gate(_request())
+        started = clock.now
+        await clock.sleep(takes)
+        spans.append((started, clock.now))
+        turn.finish()
+
+    await clock.run(*(fetch(takes) for takes in response_times))
+    spans.sort()
+    assert len(spans) == len(response_times)
+    for (_, finished), (started, _) in zip(spans, spans[1:]):
+        assert started >= finished + rest, spans
+
+
+# --- The probe ---------------------------------------------------------------
+
+_ladders = st.one_of(
+    st.just(DEFAULT_ADAPTIVE_LADDER),
+    st.lists(_seconds, min_size=1, max_size=8, unique=True).map(
+        lambda xs: tuple(sorted(xs))
+    ),
 )
 _statuses = st.sampled_from([200, 404, 429, 503])
 _retry_afters = st.one_of(
     st.none(),
-    st.just(0.0),
+    st.sampled_from([0.0, -1.0, math.nan, math.inf]),
     st.floats(
         min_value=0.01, max_value=10.0, allow_nan=False, allow_infinity=False
     ),
     st.just(300.0),
 )
-_advances = st.floats(
-    min_value=0.0, max_value=120.0, allow_nan=False, allow_infinity=False
-)
-_steps = st.lists(st.tuples(_statuses, _retry_afters, _advances), max_size=40)
-
-
-# --- Script property ----------------------------------------------------------
-
-
-@given(ladder=_ladders, start_interval=_start_intervals, steps=_steps)
-def test_adaptive_ladder_laws(
-    ladder: tuple[float, ...],
-    start_interval: float | None,
-    steps: list[tuple[int, float | None, float]],
-) -> None:
-    clock = VirtualClock()
-    limiter = AdaptiveRateLimiter(
-        ladder, start_interval=start_interval, clock=clock
-    )
-
-    # start_interval selection
-    initial = limiter.current_interval
-    assert initial in ladder
-    if start_interval is not None:
-        assert initial >= start_interval or initial == ladder[-1], (
-            f"start_interval={start_interval} landed on {initial}, which is "
-            f"neither at least that slow nor the slowest rung {ladder[-1]}"
-        )
-    else:
-        assert initial == ladder[0]
-
-    previous_interval = initial
-    previous_resume_at: float | None = limiter._resume_at
-    last_step_at: float | None = None
-    last_step_interval = initial
-
-    for status_code, retry_after, advance in steps:
-        now = clock.now
-        limiter.record_response(status_code, retry_after=retry_after)
-
-        interval = limiter.current_interval
-        resume_at = limiter._resume_at
-
-        # ladder membership and bound
-        assert interval in ladder, f"{interval} is not a rung of {ladder}"
-        assert interval <= ladder[-1]
-
-        # monotone, one rung at a time
-        assert interval >= previous_interval, (
-            f"interval went faster: {previous_interval} -> {interval}"
-        )
-        assert ladder.index(interval) - ladder.index(previous_interval) <= 1, (
-            f"one record_response moved more than one rung: "
-            f"{previous_interval} -> {interval}"
-        )
-
-        # non-bump statuses never move the rung
-        if status_code != _TOO_MANY_REQUESTS and retry_after is None:
-            assert interval == previous_interval, (
-                f"HTTP {status_code} without Retry-After moved the rung "
-                f"{previous_interval} -> {interval}"
-            )
-
-        # at most one step-down per cooldown window
-        cooldown_end = (
-            -math.inf
-            if last_step_at is None
-            else last_step_at + max(last_step_interval, BUMP_COOLDOWN_FLOOR_S)
-        )
-        if interval != previous_interval:
-            assert now >= cooldown_end, (
-                f"stepped down at t={now} inside the cooldown that "
-                f"ends at t={cooldown_end} (previous step at "
-                f"t={last_step_at} to {last_step_interval})"
-            )
-            last_step_at = now
-            last_step_interval = interval
-            # a step-down holds the next request one new interval
-            assert resume_at is not None and resume_at >= now + interval, (
-                f"stepped down to {interval} at t={now} but the pause ends "
-                f"at t={resume_at}"
-            )
-        elif (
-            status_code == _TOO_MANY_REQUESTS
-            and retry_after is None
-            and now >= cooldown_end
-            and previous_interval != ladder[-1]
-        ):
-            # Liveness: every other law here bounds how far the rung may
-            # move, so without this one a limiter that never steps down at
-            # all satisfies the suite.
-            raise AssertionError(
-                f"HTTP 429 at t={now}, outside the cooldown ending at "
-                f"t={cooldown_end} and not yet at the slowest rung "
-                f"{ladder[-1]}, left the interval at {interval}"
-            )
-
-        # the pause only ever extends, and never points into the past
-        if resume_at is not None:
-            assert not math.isnan(resume_at)
-            if previous_resume_at is not None:
-                assert resume_at >= previous_resume_at, (
-                    f"pause shortened: {previous_resume_at} -> {resume_at}"
-                )
-            if resume_at != previous_resume_at:
-                assert resume_at >= now, (
-                    f"pause set to {resume_at}, before the clock at {now}"
-                )
-        else:
-            assert previous_resume_at is None, "pause vanished"
-
-        previous_interval = interval
-        previous_resume_at = resume_at
-        clock.advance(advance)
-
-
-# --- Gate property --------------------------------------------------------------
-
-
-async def _yield_loop(times: int = 10) -> None:
-    for _ in range(times):
-        await asyncio.sleep(0)
-
-
-_pause_steps = st.lists(
+_steps = st.lists(
     st.tuples(
-        st.floats(
-            min_value=0.0,
-            max_value=400.0,
-            allow_nan=False,
-            allow_infinity=False,
-        ),
-        st.none()
-        | st.floats(
-            min_value=0.0,
-            max_value=300.0,
-            allow_nan=False,
-            allow_infinity=False,
-        ),
+        _statuses,
+        _retry_afters,
+        st.none() | _waits,  # how long ago the request was sent
+        _waits,  # clock advance before the report
+        st.booleans(),  # start a request afterwards
     ),
-    max_size=8,
+    max_size=40,
 )
+
+
+def _usable(retry_after: float | None) -> bool:
+    return (
+        retry_after is not None
+        and math.isfinite(retry_after)
+        and retry_after > 0
+    )
 
 
 @given(
-    retry_after=st.floats(
-        min_value=0.01, max_value=300.0, allow_nan=False, allow_infinity=False
-    ),
-    steps=_pause_steps,
+    ladder=_ladders,
+    declared=st.none() | _seconds,
+    recover_after=st.none() | _seconds | st.just(300.0),
+    steps=_steps,
 )
-async def test_gate_resolves_only_once_the_clock_passes_resume_at(
-    retry_after: float, steps: list[tuple[float, float | None]]
+async def test_probe_ladder_laws(
+    ladder: tuple[float, ...],
+    declared: float | None,
+    recover_after: float | None,
+    steps: list[tuple[int, float | None, float | None, float, bool]],
 ) -> None:
-    """Each step advances the clock and may extend the pause first."""
     clock = VirtualClock()
-    limiter = AdaptiveRateLimiter(clock=clock, sleep=clock.sleep)
-    limiter.record_response(429, retry_after=retry_after)
-    resume_at = limiter._resume_at
-    # The step-down holds every gate one new interval, whichever is later.
-    assert resume_at is not None
-    assert resume_at == max(retry_after, limiter.current_interval)
+    limiter = AdaptiveRateLimiter(
+        declared,
+        ladder=ladder,
+        recover_after=recover_after,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    rungs = limiter._ladder
+    if declared is None:
+        assert rungs == ladder
+    else:
+        assert rungs[0] == declared
+        assert all(rung > declared for rung in rungs[1:])
+    assert limiter.current_interval == rungs[0]
 
-    task = asyncio.create_task(limiter.gate(_request()))
-    try:
-        await _yield_loop()
-        assert not task.done(), "gate resolved before the pause started"
-        done_at: float | None = None
-        for advance, extend in steps:
-            if extend is not None and not task.done():
-                limiter.record_response(503, retry_after=extend)
-                assert limiter._resume_at is not None
-                resume_at = max(resume_at, limiter._resume_at)
-            clock.advance(advance)
-            await _yield_loop()
-            if task.done():
-                assert task.exception() is None
-                if done_at is None:
-                    done_at = clock.now
-                    assert done_at >= resume_at, (
-                        f"gate resolved at t={done_at}, before the pause "
-                        f"ends at t={resume_at}"
-                    )
-            else:
-                assert clock.now < resume_at, (
-                    f"gate still blocked at t={clock.now}, past the "
-                    f"pause end at t={resume_at}"
-                )
-        # Finally push the clock past every pause: the gate must open.
-        clock.advance(resume_at - clock.now + 1.0)
-        await _yield_loop()
-        assert task.done(), (
-            f"gate still blocked at t={clock.now}, past the pause end "
-            f"at t={resume_at}"
+    # The oracle: the docstring's rules, restated.
+    rung = 0
+    pause_until = -math.inf
+    stepped_down_at = -math.inf
+    steady_since = 0.0
+
+    for status, retry_after, sent_ago, advance, gate in steps:
+        clock.advance(advance)
+        now = clock.now
+        sent_at = None if sent_ago is None else now - sent_ago
+        before = limiter._rung
+        limiter.record_response(
+            status, retry_after=retry_after, sent_at=sent_at
         )
-        assert task.exception() is None
-    finally:
-        if not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+
+        pushback = _usable(retry_after) or status == _TOO_MANY_REQUESTS
+        if _usable(retry_after):
+            assert retry_after is not None
+            pause_until = max(pause_until, now + retry_after)
+        stale = sent_at is not None and sent_at < stepped_down_at
+        if pushback and not stale:
+            steady_since = now
+            if rung + 1 < len(rungs):
+                rung += 1
+                stepped_down_at = now
+
+        assert limiter._rung == rung, "limiter and oracle disagree on the rung"
+        assert limiter._rung in (before, before + 1)
+        if not pushback or stale:
+            assert limiter._rung == before
+        assert limiter._pause_until == pause_until
+        assert limiter.current_interval in rungs
+        assert limiter.current_interval >= rungs[0]
+
+        if gate:
+            before = limiter._rung
+            await clock.run(limiter.gate(_request()))
+            # Recovery is judged as the request starts, and a pause is
+            # not quiet time.
+            started = clock.now
+            if (
+                rung > 0
+                and recover_after is not None
+                and started - max(steady_since, pause_until) >= recover_after
+            ):
+                rung -= 1
+                steady_since = started
+            assert limiter._rung == rung, "limiter and oracle disagree"
+            assert limiter._rung in (before, before - 1)
+            assert clock.now >= pause_until
+
+    report = limiter.report()
+    assert report.declared_interval == rungs[0]
+    assert report.settled_interval == rungs[rung]
+    assert report.slowest_interval >= report.settled_interval
+    assert report.step_downs - report.recoveries == rung
 
 
 # --- Regression: NaN Retry-After must not wedge the lane ---------------------
 
 
-async def test_nan_retry_after_does_not_block_gate_forever() -> None:
-    """``record_response(retry_after=nan)`` must not make ``gate`` unusable.
+async def test_nan_retry_after_does_not_block_the_lane_forever() -> None:
+    """``record_response(retry_after=nan)`` must not make the lane unusable.
 
-    A ``nan`` ``_resume_at`` would make the gate's ``wait <= 0`` test always
-    False, so the pause would never clear; ``record_response`` drops
-    non-finite values instead.
+    A ``nan`` pause would make every wait comparison False, so it would
+    never clear; ``record_response`` drops non-finite values instead.
     """
     limiter = AdaptiveRateLimiter()
     limiter.record_response(429, retry_after=float("nan"))

@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from pyrate_limiter import Duration, Rate
 
 from jkent.common.decorator_metadata import StepMetadata
 from jkent.common.decorators import entry, step
@@ -30,6 +29,7 @@ from jkent.data_types import (
     DEFAULT_PRIORITY,
     DEFAULT_RATE_LIMIT,
     BaseScraper,
+    CappedPace,
     HttpMethod,
     HTTPRequestParams,
     ParsedData,
@@ -96,7 +96,7 @@ def _field(request: Request, field: str) -> object:
 
 
 class _Scraper(BaseScraper[dict[str, Any]]):
-    named_rate_limits = {"downloads": [Rate(1, Duration.SECOND)]}
+    named_rate_limits = {"downloads": CappedPace(seconds=1)}
 
     def __init__(self, spelling: str, **fields: Any) -> None:
         super().__init__()
