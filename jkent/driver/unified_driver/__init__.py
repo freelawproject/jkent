@@ -16,9 +16,29 @@ from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreakerPolicy,
 )
 from jkent.driver.unified_driver.pool import WorkerPool
+from jkent.driver.unified_driver.rate_limiter import (
+    DEFAULT_ADAPTIVE_LADDER,
+    AdaptiveRateLimiter,
+    CappedPaceLimiter,
+    NoopRateLimiter,
+    ProbeReport,
+    RateLimiter,
+    RateLimiters,
+    ReactivePaceLimiter,
+    Turn,
+)
 
 __all__ = [
+    "AdaptiveRateLimiter",
+    "CappedPaceLimiter",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
+    "DEFAULT_ADAPTIVE_LADDER",
+    "NoopRateLimiter",
+    "ProbeReport",
+    "RateLimiter",
+    "RateLimiters",
+    "ReactivePaceLimiter",
+    "Turn",
     "WorkerPool",
 ]
