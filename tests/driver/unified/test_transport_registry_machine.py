@@ -46,6 +46,7 @@ from jkent.data_types import (
     Response,
 )
 from jkent.driver.unified_driver import (
+    HttpxTransport,
     QueuedRequest,
     Transport,
 )
@@ -53,6 +54,7 @@ from tests.driver.unified.test_transport_conformance import (
     FakeTransport,
     FakeWorkerHandle,
 )
+from tests.servers import StartedServer, start_app, status_app
 
 pytestmark = pytest.mark.generative
 
@@ -184,3 +186,47 @@ class FakeRegistryMachine(TransportRegistryMachine):
 
 def test_fake_transport_registry_machine() -> None:
     run_state_machine_as_test(FakeRegistryMachine)
+
+
+# --- Binding 2: real HttpxTransport over a live aiohttp server -------------
+
+
+class HttpxRegistryMachine(TransportRegistryMachine):
+    """The machine over a real ``HttpxTransport``.
+
+    The server runs on the machine's own loop — a fixture's loop is not
+    running while the machine drives its rules — so each Hypothesis example
+    stands one up in ``make_transport`` and tears it down in ``teardown``.
+    """
+
+    server: StartedServer
+
+    @override
+    def make_transport(self) -> HttpxTransport:
+        self.server = self.loop.run_until_complete(
+            start_app(status_app(200, b"<html>registry</html>"))
+        )
+        return HttpxTransport()
+
+    @override
+    def make_queued(self) -> QueuedRequest:
+        return QueuedRequest(
+            request=Request(
+                request=HTTPRequestParams(
+                    method=HttpMethod.GET, url=f"{self.server.base_url}/r"
+                ),
+                step="parse",
+            ),
+            request_id=1,
+        )
+
+    @override
+    def teardown(self) -> None:
+        try:
+            self.loop.run_until_complete(self.server.aclose())
+        finally:
+            super().teardown()
+
+
+def test_httpx_transport_registry_machine() -> None:
+    run_state_machine_as_test(HttpxRegistryMachine)

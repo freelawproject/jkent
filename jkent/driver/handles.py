@@ -40,7 +40,7 @@ class WorkerHandle(abc.ABC):
 class NoopHandle(WorkerHandle):
     """The handle for transports that hold no per-worker resource.
 
-    Shared by HTTP (httpx pools internally) and replay (reads from a
+    Shared by HTTP (httpx2 pools internally) and replay (reads from a
     source DB); both hand one of these back from ``acquire`` so the worker
     loop has a uniform handle to reset and close.
     """

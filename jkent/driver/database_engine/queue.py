@@ -469,7 +469,7 @@ class RequestQueueDB:
             ``HTTPRequestParams.params`` is *not* restored — it is folded
             into the stored URL on serialize (see ``serialize_url_and_body``),
             which is the single source of truth for the request target. The
-            httpx transport sends the URL as-is and never re-sends ``params``,
+            httpx2 transport sends the URL as-is and never re-sends ``params``,
             so the reconstructed request carries ``params=None`` with the
             query already in the URL. This is intentional: restoring ``params``
             would either drop the query (transport ignores ``params``) or

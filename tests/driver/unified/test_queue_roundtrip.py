@@ -218,12 +218,14 @@ def _permanents(draw: st.DrawFn) -> dict[str, Any]:
 @st.composite
 def _requests(draw: st.DrawFn) -> Request:
     """A ``Request`` varying every field the queue stores."""
+    data = draw(_data)
     http = HTTPRequestParams(
         method=draw(st.sampled_from(HttpMethod)),
         url=draw(_urls()),
         params=draw(_params),
-        data=draw(_data),
-        json=draw(st.none() | _json),
+        data=data,
+        # One body: data or json, never both.
+        json=draw(st.none() | _json) if data is None else None,
         headers=draw(st.none() | _str_dict),
         cookies=draw(st.none() | _str_dict),
         timeout=draw(_timeout),

@@ -147,6 +147,12 @@ class TestFormBody:
         wrapper = Wrapper()
         assert _params(data=wrapper).data is wrapper
 
+    @pytest.mark.parametrize("data", [{"a": "1"}, {}, b"raw"])
+    def test_data_and_json_together_are_refused(self, data: Any):
+        """httpx2 would send ``data`` and silently drop ``json``."""
+        with pytest.raises(ValidationError, match="one body"):
+            _params(data=data, json={"b": 2})
+
 
 class TestVerify:
     """``verify_json`` reads back as ``bool | str``."""

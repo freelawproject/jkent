@@ -139,14 +139,16 @@ class HTTPRequestParams:
     :param data: (optional) Dictionary, list of tuples, bytes, or file-like
         object to send in the body of the request.
     :param json: (optional) A JSON serializable Python object to send in the
-        body of the request.
+        body of the request. A request has one body: setting both ``data``
+        and ``json`` raises.
     :param headers: (optional) Dictionary of HTTP Headers to send with the request.
     :param cookies: (optional) Dict of cookies to send with the request,
         added to the session's cookies for its URL (a request cookie wins
         over a session cookie of the same name). Transports diverge on how
         long they last, and this is not currently fixable: the HTTP
-        transport sends them on this request only (not on its redirects),
-        while a browser transport adds them to the browser's cookie jar, so
+        transport sends them on this request and on its redirects to the
+        same host only (and, after an https request, over https only), while
+        a browser transport adds them to the browser's cookie jar, so
         every later request to that site from any worker sends them too,
         and the run saves them with the rest of the jar for the next run.
         A browser offers no per-request ``Cookie`` header (Playwright drops
@@ -172,6 +174,18 @@ class HTTPRequestParams:
     cookies: CookiesType = None
     timeout: TimeoutType = None
     verify: VerifyType = True
+
+    def __post_init__(self) -> None:
+        """Reject a request with two bodies.
+
+        Raises:
+            ValueError: If both ``data`` and ``json`` are set.
+        """
+        if self.data is not None and self.json is not None:
+            raise ValueError(
+                "HTTPRequestParams sets both data and json; a request has "
+                "one body"
+            )
 
 
 # Hex digits of a percent-escape, used when deciding whether a '%' starts

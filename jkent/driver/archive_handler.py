@@ -255,6 +255,26 @@ def _header(headers: Mapping[str, str] | None, name: str) -> str | None:
     return None
 
 
+def content_encoded(headers: Mapping[str, str] | None) -> bool:
+    """Whether the response body came with a ``Content-Encoding``.
+
+    Its ``Content-Length`` and ``ETag`` then describe the encoded bytes,
+    while the handler is handed decoded ones, so the handler cannot check
+    them; a transport that sees the encoded bytes checks them itself.
+
+    Args:
+        headers: The response headers, or ``None``.
+
+    Returns:
+        ``True`` for any coding other than ``identity``.
+    """
+    encoding = _header(headers, "content-encoding")
+    return encoding is not None and encoding.strip().lower() not in (
+        "",
+        "identity",
+    )
+
+
 def _etag_md5(headers: Mapping[str, str] | None) -> str | None:
     """The MD5 hex digest an ``ETag`` states, when it states one.
 
@@ -263,6 +283,9 @@ def _etag_md5(headers: Mapping[str, str] | None) -> str | None:
     otherwise: a weak validator (``W/"..."``) is explicitly not
     byte-for-byte, an S3 multipart ETag (``"<hex>-<parts>"``) is a digest of
     digests, and an inode-and-mtime ETag is about the file, not its bytes.
+    Ignored too under a ``Content-Encoding`` (:func:`content_encoded`): a
+    strong ETag is then the encoded bytes' MD5 — an S3 object stored
+    gzipped — not the decoded bytes'.
 
     Args:
         headers: The response headers, or ``None``.
@@ -271,7 +294,7 @@ def _etag_md5(headers: Mapping[str, str] | None) -> str | None:
         A 32-digit lowercase MD5 hex digest, or ``None``.
     """
     etag = _header(headers, "etag")
-    if etag is None:
+    if etag is None or content_encoded(headers):
         return None
     value = etag.strip()
     if value[:2].lower() == "w/":
@@ -285,9 +308,9 @@ def _stated_content_length(headers: Mapping[str, str] | None) -> int | None:
 
     ``None`` when the response didn't say (a chunked transfer has no
     ``Content-Length``), when the value isn't a number, or when a
-    ``Content-Encoding`` is in play — that header then counts compressed
-    bytes while the transport hands the handler decoded ones, and comparing
-    the two would fail every gzipped download.
+    ``Content-Encoding`` is in play (:func:`content_encoded`) — that header
+    then counts compressed bytes while the transport hands the handler
+    decoded ones, and comparing the two would fail every gzipped download.
 
     Args:
         headers: The response headers, or ``None``.
@@ -295,8 +318,7 @@ def _stated_content_length(headers: Mapping[str, str] | None) -> int | None:
     Returns:
         The promised byte count, or ``None`` if it can't be compared.
     """
-    encoding = _header(headers, "content-encoding")
-    if encoding and encoding.strip().lower() != "identity":
+    if content_encoded(headers):
         return None
     raw = _header(headers, "content-length")
     if raw is None:
@@ -340,9 +362,10 @@ def verify_download(
 
     Two independent checks, each skipped when this response says nothing
     about it: the stated ``Content-Length``, and an ``ETag`` that is the
-    body's MD5. A response carrying neither is accepted — the transport
-    already raises on a connection that breaks mid-body, and these cover
-    the quieter truncation it can't see.
+    body's MD5. Both are skipped for an encoded body
+    (:func:`content_encoded`). A response carrying neither is accepted —
+    the transport already raises on a connection that breaks mid-body, and
+    these cover the quieter truncation it can't see.
 
     A failure is transient because a truncated or corrupted transfer is
     worth another attempt.
