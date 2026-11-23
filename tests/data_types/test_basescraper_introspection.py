@@ -14,13 +14,13 @@ from datetime import date
 from typing import Any
 
 import pytest
-from pyrate_limiter import Duration, Rate
 from typing_extensions import override
 
 from jkent.common.decorators import entry, step
 from jkent.common.exceptions import ScraperConfigError
 from jkent.data_types import (
     BaseScraper,
+    CappedPace,
     HTTPCodeType,
     HttpMethod,
     HTTPRequestParams,
@@ -65,7 +65,7 @@ class FullyConfiguredScraper(BaseScraper[dict[str, Any]]):
     last_verified = "2025-06-15"
     oldest_record = date(2000, 1, 1)
     requires_auth = True
-    rate_limits = [Rate(10, Duration.SECOND)]
+    rate_limits = CappedPace(seconds=0.1)
 
     @entry(dict)
     def start(self) -> Generator[Request, None, None]:
@@ -232,8 +232,7 @@ class TestBaseScraperOverrides:
         assert FullyConfiguredScraper.requires_auth is True
 
     def test_rate_limits_override(self):
-        assert FullyConfiguredScraper.rate_limits is not None
-        assert len(FullyConfiguredScraper.rate_limits) == 1
+        assert FullyConfiguredScraper.rate_limits == CappedPace(seconds=0.1)
 
     def test_overrides_do_not_affect_base_class(self):
         """Subclass overrides should not leak into BaseScraper defaults."""

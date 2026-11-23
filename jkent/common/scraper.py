@@ -11,7 +11,7 @@ its class body — :class:`DriverRequirement`, :class:`ScraperStatus`,
 from __future__ import annotations
 
 import ssl
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
@@ -19,7 +19,6 @@ from typing import Any, ClassVar, Final, Generic, TypeVar, get_origin
 
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import JsonValue, TypeAdapter
-from pyrate_limiter import Rate
 
 from jkent.common.decorator_metadata import (
     EntryMetadata,
@@ -30,8 +29,8 @@ from jkent.common.decorator_metadata import (
 from jkent.common.exceptions import ScraperConfigError
 from jkent.common.rate_limits import (
     RESERVED_RATE_LIMIT_NAMES,
-    validate_named_rate_limits,
-    validate_rate_limits,
+    LaneDeclarations,
+    Pace,
 )
 from jkent.common.request import Request
 from jkent.common.response import Response
@@ -208,7 +207,9 @@ class BaseScraper(Generic[ScraperReturnType]):
             working.
         oldest_record: Earliest date for which records are available.
         requires_auth: Whether authentication is required.
-        rate_limits: pyrate_limiter Rate objects defining rate ceilings for this scraper.
+        rate_limits: The pace of the scraper's default lane, a
+            ``CappedPace``, a ``ReactivePace`` or an ``AdaptivePace``;
+            ``None`` for no limit.
         named_rate_limits: Extra rate-limit lanes by name, for requests that
             should be paced separately from the default (``Request(rate_limit=
             name)`` / ``@step(rate_limit=name)``). See
@@ -239,14 +240,14 @@ class BaseScraper(Generic[ScraperReturnType]):
 
     # Optional metadata
     requires_auth: ClassVar[bool] = False
-    rate_limits: ClassVar[Sequence[Rate] | None] = None
+    rate_limits: ClassVar[Pace | None] = None
 
     # Additional rate-limit lanes, by name. The framework supplies "default"
     # (= rate_limits) and "none" (unlimited); anything here is stored in the
     # run database as a small integer code, fixed by the lane list the run
     # recorded at start, so reordering these is safe and dropping a lane a
     # live run used is refused. Validated in __init_subclass__.
-    named_rate_limits: ClassVar[Mapping[str, Sequence[Rate]]] = {}
+    named_rate_limits: ClassVar[Mapping[str, Pace]] = {}
 
     # Baseline HTTP headers the httpx transport sends with every request.
     # A per-request header with the same name (matched case-insensitively,
@@ -347,12 +348,8 @@ class BaseScraper(Generic[ScraperReturnType]):
         super().__init_subclass__(**kwargs)
         # Only when the subclass declares (or re-declares) them: a scraper
         # that inherits its parent's rates was already checked with it.
-        if "rate_limits" in cls.__dict__:
-            validate_rate_limits(cls.rate_limits, owner=cls.__name__)
-        if "named_rate_limits" in cls.__dict__:
-            validate_named_rate_limits(
-                cls.named_rate_limits, owner=cls.__name__
-            )
+        if {"rate_limits", "named_rate_limits"} & cls.__dict__.keys():
+            LaneDeclarations.of(cls)
         cls._check_step_lanes()
 
     @classmethod
