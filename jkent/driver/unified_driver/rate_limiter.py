@@ -1,23 +1,32 @@
-"""Run-scoped request rate limiting.
+"""Run-scoped request pacing.
 
 A run holds one in-memory limiter per rate-limit *lane* (see
-:mod:`jkent.common.rate_limits`), each shared by every worker, so a
-configured rate is a *global* ceiling for that lane, not a per-worker one.
-Rate state is not durable — it lives in memory and resets on restart, which
-is fine: the limit is a courtesy to the remote server, not a correctness
+:mod:`jkent.common.rate_limits`), each shared by every worker, so a declared
+pace is a limit for the whole run on that lane, not a per-worker one. Pacing
+state is not durable — it lives in memory and resets on restart, which is
+fine: the pace is a courtesy to the remote server, not a correctness
 invariant.
 
-:class:`RateLimiter` is the interface: :meth:`~RateLimiter.gate` blocks a
-request until it may proceed, and :meth:`~RateLimiter.record_response` is
-the feedback channel the worker calls with classified HTTP failures so an
-implementation *may* adapt. The static implementations inherit the no-op
-default and ignore feedback; :class:`AdaptiveRateLimiter` descends a ladder
-of ever-slower rates on 429s and honors ``Retry-After`` as a global pause.
-:class:`RateLimiters` is the run's registry of lane -> limiter; the worker
-picks a request's limiter there once and sends both its gate and its
-feedback to that one. Only the ``default`` lane can be adaptive
-(:meth:`RateLimiters.for_table`), starting at the scraper's declared rate;
-named lanes are static and ignore feedback.
+:class:`RateLimiter` is the interface, and a request passes through it in
+three moments. A worker asks :meth:`~RateLimiter.ready_in` whether the lane
+can take a request now, and only claims work for lanes that can.
+:meth:`~RateLimiter.reserve` takes the lane's turn for the claimed request
+and returns a :class:`Turn`; :meth:`Turn.start` blocks out whatever gap is
+left and marks the moment the request is sent; :meth:`Turn.finish` ends the
+turn, sent or not. :meth:`~RateLimiter.gate` does all of that for a caller
+that already holds a request. :meth:`~RateLimiter.record_response` is the
+feedback channel the worker calls with classified HTTP failures.
+
+The implementations follow the two declared paces:
+:class:`CappedPaceLimiter` keeps a minimum gap between request starts and
+banks no credit, :class:`ReactivePaceLimiter` runs one request at a time
+and rests after each response, and :class:`NoopRateLimiter` never waits.
+:class:`AdaptiveRateLimiter` is the diagnostic probe: a capped pace that
+steps down a ladder of slower ones on 429s and ``Retry-After``, and climbs
+back after a quiet spell, never past the declared pace. It runs a lane
+declared as an :class:`~jkent.common.rate_limits.AdaptivePace`.
+
+:class:`RateLimiters` is the run's registry of lane -> limiter.
 """
 
 from __future__ import annotations
@@ -28,16 +37,20 @@ import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 
-from pyrate_limiter import Limiter, Rate
 from typing_extensions import override
 
 from jkent.common.rate_limits import (
     DEFAULT_RATE_LIMIT,
     NO_RATE_LIMIT,
+    AdaptivePace,
+    CappedPace,
+    Pace,
     RateLimitTable,
+    ReactivePace,
 )
 from jkent.contracts import require
 
@@ -49,23 +62,126 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class Turn:
+    """One request's turn in a lane, from its claim to its response.
+
+    Attributes:
+        limiter: The lane's limiter, which hears this request's feedback.
+        started: Whether :meth:`start` returned, so the request was sent.
+        started_at: When it was sent, on the limiter's clock; ``None``
+            before :meth:`start`, and for a lane that keeps no time.
+    """
+
+    __slots__ = ("_finished", "limiter", "started", "started_at")
+
+    def __init__(self, limiter: RateLimiter) -> None:
+        """Hold a turn :meth:`RateLimiter.reserve` just took.
+
+        Args:
+            limiter: The limiter the turn was taken on.
+        """
+        self.limiter = limiter
+        self.started = False
+        self.started_at: float | None = None
+        self._finished = False
+
+    async def start(self, request: Request) -> None:
+        """Block until ``request`` may be sent; it goes out on return.
+
+        Args:
+            request: The request about to be fetched.
+
+        Raises:
+            RuntimeError: If the turn was already started or finished.
+        """
+        if self.started or self._finished:
+            raise RuntimeError("a turn starts once, before it finishes")
+        self.started_at = await self.limiter._start(request)
+        self.started = True
+
+    def finish(self) -> None:
+        """End the turn: the response is in, or the request was never sent.
+
+        Safe to call more than once, so every exit path can call it.
+        """
+        if self._finished:
+            return
+        self._finished = True
+        self.limiter._finish(started=self.started)
+
+
 class RateLimiter(ABC):
-    """Gates request frequency for one lane; shared across all workers."""
+    """Paces one lane; shared across all workers."""
+
+    #: How long :meth:`gate` sleeps between looks at a lane that cannot say
+    #: when it will be free (a reactive lane with a request in flight).
+    BUSY_POLL_INTERVAL_S: ClassVar[float] = 0.05
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Bind the limiter's time source.
+
+        Args:
+            clock: Monotonic time source; injectable for tests.
+            sleep: How a wait waits, in ``clock`` seconds; injectable
+                alongside ``clock`` so a test's wait costs no wall time.
+        """
+        self._clock = clock
+        self._sleep = sleep
 
     @abstractmethod
-    async def gate(self, request: Request) -> None:
-        """Block until ``request`` may proceed.
+    def ready_in(self) -> float | None:
+        """How long until the lane can take another request.
 
-        Lane selection has already happened (:meth:`RateLimiters.for_request`)
-        by the time a limiter sees a request, so implementations gate
-        unconditionally; ``request`` is passed for what a limiter may want
-        to key on or log, not for any per-request opt-out. The worker awaits
-        this *before* it starts timing the request, so throttle wait stays
-        out of the duration the monitor sizes from. One instance serves all
-        workers; implementations coordinate concurrent callers internally so
-        the rate stays global to the run.
+        Returns:
+            ``0.0`` when a request claimed now could be sent now; the
+            seconds until that is true; or ``None`` when the lane is busy
+            and cannot say (it is waiting on a response).
         """
         ...
+
+    def reserve(self) -> Turn:
+        """Take the lane's turn for a request just claimed.
+
+        Call only when :meth:`ready_in` is zero, with no ``await`` between
+        the two. The caller owns the returned turn and must
+        :meth:`~Turn.finish` it on every exit.
+
+        Returns:
+            The turn.
+        """
+        self._reserve()
+        return Turn(self)
+
+    async def gate(self, request: Request) -> Turn:
+        """Wait for the lane, take a turn and start it.
+
+        For a caller that already holds ``request`` and must send it on this
+        lane however long that takes: a strictly serial worker, or a host
+        driving a limiter by hand. The caller still owns
+        :meth:`Turn.finish`.
+
+        Args:
+            request: The request about to be fetched.
+
+        Returns:
+            The started turn.
+        """
+        while (wait := self.ready_in()) != 0:
+            await self._sleep(
+                self.BUSY_POLL_INTERVAL_S if wait is None else wait
+            )
+        turn = self.reserve()
+        try:
+            await turn.start(request)
+        except BaseException:
+            turn.finish()
+            raise
+        return turn
 
     def record_response(
         self,
@@ -73,69 +189,244 @@ class RateLimiter(ABC):
         *,
         retry_after: float | None = None,
         url: str | None = None,
+        sent_at: float | None = None,
     ) -> None:
         """Feedback channel: the worker reports classified HTTP failures here.
 
         Called once per request whose resolve ended in a classified HTTP
         error (transient, persistent, or a failed speculation probe), with
         the observed status and the parsed, clamped ``Retry-After`` where
-        the server sent one. The worker reports to the limiter that gated
-        the request, so a lane hears only its own pushback. Successful
-        responses are not reported. Defaults to a no-op: static limiters
-        don't adapt.
+        the server sent one. ``sent_at`` is the request's
+        :attr:`Turn.started_at`, so a limiter that adapts can tell pushback
+        on its current pace from pushback on one it already left. The
+        worker reports to the limiter that paced the request, so a lane
+        hears only its own pushback. Successful responses are not reported.
+        Defaults to a no-op: static limiters don't adapt.
+        """
+        return None
+
+    def _reserve(self) -> None:
+        """Count a turn taken. Synchronous, so claiming is atomic."""
+        return None
+
+    async def _start(self, request: Request) -> float | None:
+        """Wait out the gap left before ``request`` may go.
+
+        Returns:
+            When it went, on the limiter's clock, if the lane keeps time.
+        """
+        return None
+
+    def _finish(self, *, started: bool) -> None:
+        """Hear that a turn ended.
+
+        Args:
+            started: Whether the request was sent.
         """
         return None
 
 
-class PyrateRateLimiter(RateLimiter):
-    """Thin in-memory wrapper over ``pyrate_limiter`` — the default limiter.
-
-    Holds one shared ``Limiter`` over an in-memory bucket for the whole run;
-    ``gate`` delegates to it. Configured with ``pyrate_limiter.Rate`` objects,
-    so arbitrary durations and multi-window limits are expressible. A lane
-    with no limit is a :class:`NoopRateLimiter`, not an empty rate list.
-    """
-
-    @require(
-        lambda rates: all(  # pyrefly: ignore[implicit-any-lambda]
-            r.limit > 0 and r.interval > 0 for r in rates
-        ),
-        "every configured rate has a positive limit and interval",
-    )
-    def __init__(self, rates: list[Rate]) -> None:
-        """Build the run-wide limiter over ``rates``.
-
-        Raises:
-            ValueError: for an empty ``rates``.
-        """
-        self._rates = list(rates)
-        if not self._rates:
-            raise ValueError(
-                "PyrateRateLimiter needs at least one Rate; use "
-                "NoopRateLimiter for no limit"
-            )
-        self._limiter = Limiter(self._rates)
-
-    async def gate(self, request: Request) -> None:
-        """Block until ``request`` may proceed."""
-        await self._limiter.try_acquire_async("request")
-
-
 class NoopRateLimiter(RateLimiter):
-    """A :class:`RateLimiter` that never throttles.
+    """A :class:`RateLimiter` that never waits.
 
     The ``none`` lane, every lane of a replay run, and the default lane of a
     scraper that declares no ``rate_limits``.
     """
 
-    async def gate(self, request: Request) -> None:
-        """Admit ``request`` immediately."""
-        return None
+    def ready_in(self) -> float | None:
+        """Always ready.
+
+        Returns:
+            ``0.0``.
+        """
+        return 0.0
+
+
+class _StartPacer(RateLimiter):
+    """Keeps a minimum gap between request starts, from one timestamp.
+
+    The state is when the lane last started a request, plus the turns
+    reserved but not yet started. Each reserved turn is expected to start
+    about when it was reserved, so the lane is next ready one interval after
+    the newest of them: workers claim for a lane no faster than it can send,
+    and a reserved request is not left holding a worker while it waits its
+    turn. :meth:`_start` is the enforcement: starters
+    queue on a FIFO lock, and the one at its head stamps the start from the
+    clock *after* it wakes, not from when it planned to. A wake delayed by a
+    blocked event loop pushes the next slot back instead of letting the next
+    request through early, and nothing is added to the wait, so the achieved
+    pace is the declared one or slightly slower.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        super().__init__(clock=clock, sleep=sleep)
+        self._last_start = float("-inf")
+        self._reserved = 0
+        # When the newest reserved turn is expected to start; meaningful
+        # only while a turn is reserved.
+        self._expected_start = float("-inf")
+        self._lock = asyncio.Lock()
+
+    @property
+    @abstractmethod
+    def current_interval(self) -> float:
+        """Seconds between request starts."""
+        ...
+
+    def _next_at(self) -> float:
+        """When the next request may start.
+
+        Returns:
+            The earliest start time, on the limiter's clock.
+        """
+        return self._last_start + self.current_interval
+
+    def ready_in(self) -> float | None:
+        """Seconds until a newly claimed request could start.
+
+        Returns:
+            The wait until the lane's next slot, which falls one interval
+            after the newest reserved turn when there is one.
+        """
+        return max(self._next_claim_at() - self._clock(), 0.0)
+
+    def _next_claim_at(self) -> float:
+        slot = self._next_at()
+        if self._reserved:
+            slot = max(slot, self._expected_start + self.current_interval)
+        return slot
+
+    @override
+    def _reserve(self) -> None:
+        self._expected_start = max(self._clock(), self._next_claim_at())
+        self._reserved += 1
+
+    @override
+    async def _start(self, request: Request) -> float | None:
+        async with self._lock:
+            # Re-read on every wake: feedback may move the slot while we
+            # sleep.
+            while (wait := self._next_at() - self._clock()) > 0:
+                await self._sleep(wait)
+            now = self._clock()
+            self._last_start = now
+            self._reserved -= 1
+            return now
+
+    @override
+    def _finish(self, *, started: bool) -> None:
+        # A turn that never started still holds its reservation.
+        if not started:
+            self._reserved -= 1
+
+
+class CappedPaceLimiter(_StartPacer):
+    """A :class:`~jkent.common.rate_limits.CappedPace` lane; static.
+
+    At least ``seconds`` between request starts, and no credit for time the
+    lane did not use: after any quiet spell, requests still go one per
+    interval (see :class:`_StartPacer`).
+    """
+
+    @require(
+        lambda seconds: seconds > 0 and math.isfinite(seconds),  # pyrefly: ignore[implicit-any-lambda]
+        "the gap is a positive, finite number of seconds",
+    )
+    def __init__(
+        self,
+        seconds: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Pace starts ``seconds`` apart.
+
+        Args:
+            seconds: The minimum gap between request starts.
+            clock: Monotonic time source; injectable for tests.
+            sleep: How a wait waits, in ``clock`` seconds.
+        """
+        super().__init__(clock=clock, sleep=sleep)
+        self._interval = seconds
+
+    @property
+    def current_interval(self) -> float:
+        """Seconds between request starts."""
+        return self._interval
+
+
+class ReactivePaceLimiter(RateLimiter):
+    """A :class:`~jkent.common.rate_limits.ReactivePace` lane; static.
+
+    One request at a time: a turn holds the lane from its claim until its
+    response is in, and the next may be claimed ``seconds`` after that. A
+    turn that ends without the request being sent frees the lane at once and
+    starts no rest.
+    """
+
+    @require(
+        lambda seconds: seconds >= 0 and math.isfinite(seconds),  # pyrefly: ignore[implicit-any-lambda]
+        "the rest is a non-negative, finite number of seconds",
+    )
+    def __init__(
+        self,
+        seconds: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Rest ``seconds`` after each response.
+
+        Args:
+            seconds: The rest between one response and the next request.
+            clock: Monotonic time source; injectable for tests.
+            sleep: How a wait waits, in ``clock`` seconds.
+        """
+        super().__init__(clock=clock, sleep=sleep)
+        self._rest = seconds
+        self._busy = False
+        self._last_finish = float("-inf")
+
+    def ready_in(self) -> float | None:
+        """Seconds of rest left, or ``None`` while a request is in flight.
+
+        Returns:
+            The wait, or ``None`` when it depends on a response.
+        """
+        if self._busy:
+            return None
+        return max(self._last_finish + self._rest - self._clock(), 0.0)
+
+    @override
+    def _reserve(self) -> None:
+        if self._busy:
+            raise RuntimeError(
+                "reactive lane reserved while a request is in flight; "
+                "check ready_in() first"
+            )
+        self._busy = True
+
+    @override
+    async def _start(self, request: Request) -> float | None:
+        # The reservation is exclusive and was only given once the rest was
+        # over, so there is nothing left to wait for.
+        return self._clock()
+
+    @override
+    def _finish(self, *, started: bool) -> None:
+        self._busy = False
+        if started:
+            self._last_finish = self._clock()
 
 
 #: Default descent ladder: seconds between requests, fastest rung first —
-#: 4/s down to one per minute. Descent is monotonic for the life of a run;
-#: a new run starts fresh at the top (or at the scraper's declared rate).
+#: 4/s down to one per minute. A probed lane with a declared pace opens
+#: there instead, and keeps only the rungs slower than it.
 DEFAULT_ADAPTIVE_LADDER: Final[tuple[float, ...]] = (
     0.25,
     1 / 3,
@@ -151,135 +442,195 @@ DEFAULT_ADAPTIVE_LADDER: Final[tuple[float, ...]] = (
     60.0,
 )
 
-#: The fastest permissible rung. A rung's bucket is one request per
-#: ``round(interval * 1000)`` ms, and ``Rate`` refuses a 0 ms interval.
-MIN_ADAPTIVE_INTERVAL_S: Final[float] = 0.001
-
-#: Minimum time after a step-down during which further bump signals are
-#: ignored. One throttling incident fans out to every in-flight worker as
-#: near-simultaneous 429s; without a cooldown a single incident would
-#: cascade several rungs instead of one.
-BUMP_COOLDOWN_FLOOR_S: Final[float] = 2.0
+#: How long a lane must go without counted pushback before
+#: :class:`AdaptiveRateLimiter` steps one rung back toward its declared
+#: pace.
+RECOVERY_WINDOW_S: Final[float] = 300.0
 
 
-class AdaptiveRateLimiter(RateLimiter):
-    """Even-paced limiter that steps down a ladder on server pushback.
+def _usable_retry_after(
+    retry_after: float | None, status_code: int, url: str | None
+) -> float | None:
+    """Drop a ``Retry-After`` that asks for no real wait.
 
-    Each rung is one request per ``interval`` seconds — deliberately even
-    pacing, never an N-per-window burst — enforced by a fresh
-    ``pyrate_limiter`` bucket per rung. Feedback via
-    :meth:`record_response`:
+    Returns:
+        ``retry_after`` if it is a finite, positive wait, else ``None``.
+    """
+    if retry_after is not None and not math.isfinite(retry_after):
+        # The transport clamps what it parses, so this is belt and braces:
+        # a NaN pause would never expire and every request on the lane
+        # would sleep on it (or raise) for the rest of the run.
+        logger.warning(
+            "Ignoring non-finite Retry-After %r on HTTP %d%s",
+            retry_after,
+            status_code,
+            f" from {url}" if url else "",
+        )
+        return None
+    if retry_after is not None and retry_after <= 0:
+        # "Retry-After: 0", or a date already past (clock skew): the server
+        # asks for no wait, which is not pushback.
+        return None
+    return retry_after
 
-    - HTTP 429 steps one rung slower. A step-down also pauses every
-      worker for one new interval, so the first request after it is
-      spaced at the new pace.
-    - ``Retry-After`` (whatever the status) pauses *all* workers until the
-      given time, and also steps one rung slower — the header is a
-      statement about the client's overall rate, not about one request.
-      Values arrive parsed and clamped by the transport
+
+@dataclass(frozen=True)
+class ProbeReport:
+    """What an :class:`AdaptiveRateLimiter` learned over a run.
+
+    Attributes:
+        declared_interval: Seconds between requests the lane opened at.
+        settled_interval: Seconds between requests it ended at.
+        slowest_interval: The slowest it went.
+        step_downs: Times it stepped one rung slower.
+        recoveries: Times it stepped one rung back.
+        pushback: 429s and ``Retry-After`` responses that counted.
+        stale_pushback: Ones ignored because their request was sent before
+            the last step-down.
+    """
+
+    declared_interval: float
+    settled_interval: float
+    slowest_interval: float
+    step_downs: int
+    recoveries: int
+    pushback: int
+    stale_pushback: int
+
+    def summary(self) -> str:
+        """The report as one log line.
+
+        Returns:
+            A sentence naming the declared and settled paces and the
+            pushback behind the difference.
+        """
+        return (
+            f"declared 1 request per {self.declared_interval:.3g}s, settled "
+            f"at 1 per {self.settled_interval:.3g}s (slowest 1 per "
+            f"{self.slowest_interval:.3g}s); {self.pushback} pushback "
+            f"response(s) counted, {self.stale_pushback} stale, "
+            f"{self.step_downs} step-down(s), {self.recoveries} recovery(ies)"
+        )
+
+
+class AdaptiveRateLimiter(_StartPacer):
+    """The diagnostic probe: a capped pace that follows server pushback.
+
+    The ladder opens at the declared pace, followed by the ``ladder`` rungs
+    slower than it; with no declared pace it is ``ladder`` as given.
+    Feedback via :meth:`record_response`:
+
+    - HTTP 429 steps one rung slower. The next request goes one new
+      interval after the last one started.
+    - ``Retry-After`` (whatever the status) holds every request until then,
+      and also steps one rung slower — the header is a statement about the
+      client's overall rate, not about one request. Values arrive parsed
+      and clamped by the transport
       (:func:`~jkent.driver.unified_driver.transport.parse_retry_after`),
       so a hostile header slows the run, never stalls it.
+    - Pushback on a request sent before the last step-down is stale: it
+      reports on a pace already left, so it moves no rung (a
+      ``Retry-After`` on it still pauses). One throttling incident answers
+      every request in flight with a 429; this is what keeps it to one
+      rung however long those requests take. It needs ``sent_at``; a
+      report without one counts.
+    - After ``recover_after`` seconds with no counted pushback, not
+      counting time spent paused, the next request to start steps the lane
+      one rung faster, never past the declared pace.
 
-    Descent is monotonic for the life of the run and each step-down is
-    announced with a warning. A cooldown of ``max(new interval,
-    BUMP_COOLDOWN_FLOOR_S)`` after each step absorbs the burst of duplicate
-    429s that one throttling incident produces across the worker pool.
+    Step-downs are warnings, and the one onto the slowest rung is an error:
+    the lane can slow no further, and a site that keeps pushing back there
+    needs a person to look at it. :meth:`report` says where the lane ended
+    up.
     """
 
     @require(
+        lambda declared: (  # pyrefly: ignore[implicit-any-lambda]
+            declared is None or (declared > 0 and math.isfinite(declared))
+        ),
+        "the declared pace is None or a positive, finite number of seconds",
+    )
+    @require(
         lambda ladder: (  # pyrefly: ignore[implicit-any-lambda]
             len(tuple(ladder)) > 0
-            and all(interval >= MIN_ADAPTIVE_INTERVAL_S for interval in ladder)
+            and all(interval > 0 for interval in ladder)
             and all(a < b for a, b in zip(ladder, tuple(ladder)[1:]))
         ),
-        "the ladder is a non-empty, strictly ascending sequence of intervals "
-        "of at least MIN_ADAPTIVE_INTERVAL_S",
+        "the ladder is a non-empty, strictly ascending sequence of positive "
+        "intervals",
+    )
+    @require(
+        lambda recover_after: (  # pyrefly: ignore[implicit-any-lambda]
+            recover_after is None or recover_after > 0
+        ),
+        "recover_after is None (never recover) or positive",
     )
     def __init__(
         self,
-        ladder: Sequence[float] = DEFAULT_ADAPTIVE_LADDER,
+        declared: float | None = None,
         *,
-        start_interval: float | None = None,
+        ladder: Sequence[float] = DEFAULT_ADAPTIVE_LADDER,
+        recover_after: float | None = RECOVERY_WINDOW_S,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        """Initialize at the fastest permissible rung.
+        """Start at the declared pace, the top of the ladder.
 
         Args:
+            declared: The lane's declared gap in seconds; it opens the
+                ladder and caps recovery. ``None`` uses ``ladder`` as is.
             ladder: Seconds between requests per rung, strictly ascending
-                (slower rungs last), none under
-                :data:`MIN_ADAPTIVE_INTERVAL_S`.
-            start_interval: Start at the first rung at least this slow —
-                the way to honor a scraper's declared courtesy rate instead
-                of opening at the ladder's fastest. Slower than every rung
-                means starting at the slowest. ``None`` starts at the top.
+                (slower rungs last).
+            recover_after: Seconds without counted pushback before one
+                step back up; ``None`` never recovers.
             clock: Monotonic time source; injectable for tests.
-            sleep: How a Retry-After pause waits, in ``clock`` seconds;
-                injectable alongside ``clock`` so a test's pause costs no
-                wall time.
+            sleep: How a wait waits, in ``clock`` seconds.
         """
-        self._ladder = tuple(ladder)
-        self._clock = clock
-        self._sleep = sleep
+        super().__init__(clock=clock, sleep=sleep)
+        if declared is not None:
+            self._ladder = (declared, *(i for i in ladder if i > declared))
+        else:
+            self._ladder = tuple(ladder)
         self._rung = 0
-        if start_interval is not None:
-            self._rung = next(
-                (
-                    i
-                    for i, interval in enumerate(self._ladder)
-                    if interval >= start_interval
-                ),
-                len(self._ladder) - 1,
-            )
-        self._limiter = self._bucket_for(self._ladder[self._rung])
-        self._cooldown_until = float("-inf")
-        self._resume_at: float | None = None
-
-    @staticmethod
-    def _bucket_for(interval: float) -> Limiter:
-        # One request per interval: even pacing, no burst window. Same
-        # construction as PyrateRateLimiter so the two share semantics.
-        return Limiter([Rate(1, round(interval * 1000))])
+        self._slowest_rung = 0
+        self._recover_after = recover_after
+        self._pause_until = float("-inf")
+        self._stepped_down_at = float("-inf")
+        self._steady_since = clock()
+        self._step_downs = 0
+        self._recoveries = 0
+        self._pushback = 0
+        self._stale_pushback = 0
 
     @property
     def current_interval(self) -> float:
-        """Seconds between requests at the current rung."""
+        """Seconds between request starts at the current rung."""
         return self._ladder[self._rung]
 
-    async def gate(self, request: Request) -> None:
-        """Block until ``request`` may proceed."""
-        while True:
-            await self._wait_out_pause()
-            # Snapshot the bucket: a step-down swaps in a new one while we
-            # wait on this one. A slot taken on a replaced (faster) bucket
-            # does not count — go back through the pause the step-down set
-            # and take one at the new pace.
-            limiter = self._limiter
-            await limiter.try_acquire_async("request")
-            if limiter is not self._limiter:
-                continue
-            # A pause can also open with no swap at all: record_response
-            # sets it whatever _step_down does, and _step_down is a no-op
-            # inside its cooldown and at the slowest rung. Re-read it, or a
-            # waiter parked here sends straight through a Retry-After.
-            resume_at = self._resume_at
-            if resume_at is None or resume_at <= self._clock():
-                return
+    @override
+    def _next_at(self) -> float:
+        return max(super()._next_at(), self._pause_until)
 
-    async def _wait_out_pause(self) -> None:
-        # Looped because record_response may extend the pause while we
-        # sleep.
-        while True:
-            resume_at = self._resume_at
-            if resume_at is None:
-                return
-            wait = resume_at - self._clock()
-            if wait <= 0:
-                # Pause expired; clear it unless a newer one replaced it.
-                if self._resume_at == resume_at:
-                    self._resume_at = None
-                return
-            await self._sleep(wait)
+    @override
+    async def _start(self, request: Request) -> float | None:
+        self._recover()
+        return await super()._start(request)
+
+    def report(self) -> ProbeReport:
+        """What the probe has seen so far.
+
+        Returns:
+            The declared and current paces, and the pushback between them.
+        """
+        return ProbeReport(
+            declared_interval=self._ladder[0],
+            settled_interval=self.current_interval,
+            slowest_interval=self._ladder[self._slowest_rung],
+            step_downs=self._step_downs,
+            recoveries=self._recoveries,
+            pushback=self._pushback,
+            stale_pushback=self._stale_pushback,
+        )
 
     @override
     def record_response(
@@ -288,26 +639,14 @@ class AdaptiveRateLimiter(RateLimiter):
         *,
         retry_after: float | None = None,
         url: str | None = None,
+        sent_at: float | None = None,
     ) -> None:
-        """Step down on 429; pause globally (and step down) on Retry-After."""
-        if retry_after is not None and not math.isfinite(retry_after):
-            # The transport clamps what it parses, so this is belt and
-            # braces: a NaN pause would never expire and every gate on the
-            # lane would sleep on it (or raise) for the rest of the run.
-            logger.warning(
-                "Ignoring non-finite Retry-After %r on HTTP %d%s",
-                retry_after,
-                status_code,
-                f" from {url}" if url else "",
-            )
-            retry_after = None
-        if retry_after is not None and retry_after <= 0:
-            # "Retry-After: 0", or a date already past (clock skew): the
-            # server asks for no wait, which is not pushback.
-            retry_after = None
+        """Step down on fresh 429s and Retry-Afters; pause on Retry-After."""
+        retry_after = _usable_retry_after(retry_after, status_code, url)
+        now = self._clock()
         if retry_after is not None:
-            resume_at = self._clock() + retry_after
-            if self._extend_pause(resume_at):
+            if now + retry_after > self._pause_until:
+                self._pause_until = now + retry_after
                 logger.warning(
                     "Rate limiter pausing all requests for %.1fs "
                     "(Retry-After on HTTP %d%s)",
@@ -315,84 +654,84 @@ class AdaptiveRateLimiter(RateLimiter):
                     status_code,
                     f" from {url}" if url else "",
                 )
-            self._step_down(
-                trigger=f"Retry-After on HTTP {status_code}", url=url
-            )
+            trigger = f"Retry-After on HTTP {status_code}"
         elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
-            self._step_down(trigger="HTTP 429", url=url)
-
-    def _extend_pause(self, resume_at: float) -> bool:
-        """Pause every gate until ``resume_at``.
-
-        Pauses only ever extend — a shorter one must not cut an earlier,
-        longer one short.
-
-        Args:
-            resume_at: When gating resumes, on the limiter's clock.
-
-        Returns:
-            Whether this call extended the pause.
-        """
-        if self._resume_at is None or resume_at > self._resume_at:
-            self._resume_at = resume_at
-            return True
-        return False
-
-    def _step_down(self, *, trigger: str, url: str | None) -> None:
-        now = self._clock()
-        if now < self._cooldown_until:
+            trigger = "HTTP 429"
+        else:
             return
+        if sent_at is not None and sent_at < self._stepped_down_at:
+            self._stale_pushback += 1
+            logger.debug(
+                "Ignoring %s%s: sent before the last step-down",
+                trigger,
+                f" on {url}" if url else "",
+            )
+            return
+        self._pushback += 1
+        self._steady_since = now
+        self._step_down(now, trigger=trigger, url=url)
+
+    def _step_down(self, now: float, *, trigger: str, url: str | None) -> None:
         if self._rung + 1 >= len(self._ladder):
-            # Already at the slowest rung. Debug, not warning: a throttling
-            # site can repeat this on every request, and the descent that
-            # got us here was already announced.
+            # Already announced, as an error, on the way down.
             logger.debug(
                 "Rate limiter already at slowest rung (1 per %.3gs); "
                 "ignoring %s",
-                self._ladder[self._rung],
+                self.current_interval,
                 trigger,
             )
             return
-        old = self._ladder[self._rung]
+        old = self.current_interval
         self._rung += 1
-        new = self._ladder[self._rung]
-        self._limiter = self._bucket_for(new)
-        # The fresh bucket is empty, so its first taker would go out at
-        # once, unspaced from the last send: hold every arrival one new
-        # interval first.
-        self._extend_pause(now + new)
-        self._cooldown_until = now + max(new, BUMP_COOLDOWN_FLOOR_S)
-        logger.warning(
+        self._slowest_rung = max(self._slowest_rung, self._rung)
+        self._step_downs += 1
+        self._stepped_down_at = now
+        slowest = self._rung + 1 == len(self._ladder)
+        logger.log(
+            logging.ERROR if slowest else logging.WARNING,
             "Rate limit stepped down: 1 request per %.3gs -> 1 per %.3gs "
-            "(trigger: %s%s)",
+            "(trigger: %s%s)%s",
             old,
-            new,
+            self.current_interval,
             trigger,
             f" on {url}" if url else "",
+            "; this is the slowest rung" if slowest else "",
+        )
+
+    def _recover(self) -> None:
+        if self._rung == 0 or self._recover_after is None:
+            return
+        now = self._clock()
+        # Time spent paused is not time the server put up with us.
+        quiet_since = max(self._steady_since, self._pause_until)
+        if now - quiet_since < self._recover_after:
+            return
+        old = self.current_interval
+        self._rung -= 1
+        self._recoveries += 1
+        self._steady_since = now
+        logger.info(
+            "Rate limit recovered: 1 request per %.3gs -> 1 per %.3gs "
+            "(%.0fs without pushback)",
+            old,
+            self.current_interval,
+            self._recover_after,
         )
 
 
-def adaptive_ladder(
-    rates: Sequence[Rate], base: Sequence[float] = DEFAULT_ADAPTIVE_LADDER
-) -> tuple[float, ...]:
-    """``base`` cut to start at the even pace ``rates`` declare.
-
-    A declaration of several ``Rate`` s paces at the slowest one they imply
-    (``max(interval / limit)``), rounded up to whole milliseconds; the
-    ladder opens there and keeps only the ``base`` rungs slower than it.
-
-    Args:
-        rates: The lane's declared rates; empty returns ``base`` unchanged.
-        base: The descent ladder to cut.
+def _limiter_for(pace: Pace) -> RateLimiter:
+    """The limiter a declared pace asks for.
 
     Returns:
-        The ladder, opening at the declared pace.
+        A capped, reactive or adaptive limiter at the pace's ``seconds``.
     """
-    if not rates:
-        return tuple(base)
-    declared_ms = max(math.ceil(r.interval / r.limit) for r in rates)
-    declared = max(declared_ms / 1000, MIN_ADAPTIVE_INTERVAL_S)
-    return (declared, *(i for i in base if i > declared))
+    match pace:
+        case CappedPace():
+            return CappedPaceLimiter(pace.seconds)
+        case ReactivePace():
+            return ReactivePaceLimiter(pace.seconds)
+        case AdaptivePace():
+            return AdaptiveRateLimiter(pace.seconds)
 
 
 class RateLimiters(Mapping[str, RateLimiter]):
@@ -403,6 +742,11 @@ class RateLimiters(Mapping[str, RateLimiter]):
     :meth:`for_table`; :meth:`unlimited` is the null object (every lane a
     :class:`NoopRateLimiter`) for replay and for hosts that construct
     collaborators by hand.
+
+    Attributes:
+        claim_lock: Held by a worker from reading :meth:`ready_lanes` until
+            it has reserved a turn for the request it claimed, so two
+            workers never claim for the same open slot.
     """
 
     @require(
@@ -419,13 +763,14 @@ class RateLimiters(Mapping[str, RateLimiter]):
                 and ``none`` framework lanes.
         """
         self._limiters: dict[str, RateLimiter] = dict(limiters)
+        self.claim_lock = asyncio.Lock()
 
     @classmethod
     def unlimited(cls) -> RateLimiters:
-        """Build the null object: both framework lanes, neither throttling.
+        """Build the null object: both framework lanes, neither waiting.
 
         Returns:
-            Limiters in which every lane admits immediately.
+            Limiters in which every lane is always ready.
         """
         return cls(
             {
@@ -439,41 +784,29 @@ class RateLimiters(Mapping[str, RateLimiter]):
         cls,
         table: RateLimitTable,
         *,
-        adaptive: bool = False,
         rate_limited: bool = True,
     ) -> RateLimiters:
         """One limiter per lane of ``table``.
 
         Args:
-            table: The scraper's lanes and the rates behind them.
-            adaptive: Make the ``default`` lane an
-                :class:`AdaptiveRateLimiter` whose ladder starts at the
-                lane's declared rate (:func:`adaptive_ladder`), so it never
-                paces faster than the scraper asked. Named lanes are
-                unaffected.
+            table: The scraper's lanes and the pace behind each.
             rate_limited: Off for replay: every lane is a
-                :class:`NoopRateLimiter`, ``adaptive`` or not.
+                :class:`NoopRateLimiter`, whatever it declares.
 
         Returns:
             One limiter per lane of ``table``.
         """
         limiters: dict[str, RateLimiter] = {}
         for name in table.names:
-            rates = table.rates.get(name)
-            if not rate_limited:
-                limiters[name] = NoopRateLimiter()
-            elif name == DEFAULT_RATE_LIMIT and adaptive:
-                limiters[name] = AdaptiveRateLimiter(
-                    adaptive_ladder(rates or ())
-                )
-            elif not rates:
+            pace = table.paces.get(name)
+            if pace is None or not rate_limited:
                 limiters[name] = NoopRateLimiter()
             else:
-                limiters[name] = PyrateRateLimiter(list(rates))
+                limiters[name] = _limiter_for(pace)
         return cls(limiters)
 
     def for_request(self, request: Request) -> RateLimiter:
-        """The limiter gating ``request`` (``rate_limit`` None = default).
+        """The limiter pacing ``request`` (``rate_limit`` None = default).
 
         Args:
             request: The request about to be fetched.
@@ -494,6 +827,45 @@ class RateLimiters(Mapping[str, RateLimiter]):
                 f"Request names rate limit {name!r}, but this run's lanes "
                 f"are {list(self._limiters)}"
             ) from None
+
+    def ready_lanes(self) -> list[str]:
+        """The lanes that can take a request now.
+
+        Returns:
+            Their names, in lane order.
+        """
+        return [
+            name
+            for name, limiter in self._limiters.items()
+            if limiter.ready_in() == 0
+        ]
+
+    def next_ready_in(self) -> float | None:
+        """How long until a lane that is not ready becomes so.
+
+        Returns:
+            The shortest wait any waiting lane reports; ``None`` when
+            none can say (each is waiting on a response), or none is
+            waiting.
+        """
+        waits = [
+            wait
+            for limiter in self._limiters.values()
+            if (wait := limiter.ready_in())
+        ]
+        return min(waits, default=None)
+
+    def probe_reports(self) -> dict[str, ProbeReport]:
+        """What each probed lane learned.
+
+        Returns:
+            A report per lane running an :class:`AdaptiveRateLimiter`.
+        """
+        return {
+            name: limiter.report()
+            for name, limiter in self._limiters.items()
+            if isinstance(limiter, AdaptiveRateLimiter)
+        }
 
     def __getitem__(self, name: str) -> RateLimiter:
         """Look up a lane by name.

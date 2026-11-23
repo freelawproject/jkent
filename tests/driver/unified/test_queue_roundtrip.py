@@ -48,7 +48,6 @@ from urllib.parse import parse_qsl, urlparse
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
-from pyrate_limiter import Duration, Rate
 
 from jkent.common.exceptions import ScraperConfigError
 from jkent.common.rate_limits import (
@@ -61,6 +60,7 @@ from jkent.common.selectors import CSS, XPath
 from jkent.common.via import ViaFormSubmit, ViaLink
 from jkent.data_types import (
     BaseScraper,
+    CappedPace,
     HttpMethod,
     HTTPRequestParams,
     Request,
@@ -79,7 +79,7 @@ _LANE = "slow"
 
 
 class _LaneScraper(BaseScraper[Any]):
-    named_rate_limits = {_LANE: [Rate(1, Duration.SECOND)]}
+    named_rate_limits = {_LANE: CappedPace(seconds=1)}
 
 
 _TABLE = RateLimitTable.for_scraper(_LaneScraper)

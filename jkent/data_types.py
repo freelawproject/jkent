@@ -40,7 +40,11 @@ from jkent.common.parser import JKentParser
 from jkent.common.rate_limits import (
     DEFAULT_RATE_LIMIT,
     NO_RATE_LIMIT,
+    AdaptivePace,
+    CappedPace,
+    Pace,
     RateLimitTable,
+    ReactivePace,
 )
 from jkent.common.request import (
     ARCHIVE_DEFAULT_PRIORITY,
@@ -126,7 +130,11 @@ __all__ = [
     "PersistentException",
     "PersistentHTTPResponseException",
     "QueryParams",
+    "AdaptivePace",
+    "CappedPace",
+    "Pace",
     "RateLimitTable",
+    "ReactivePace",
     "Request",
     "RequestData",
     "RequestFailedHalt",

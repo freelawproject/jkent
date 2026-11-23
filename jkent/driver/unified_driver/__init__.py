@@ -19,10 +19,13 @@ from jkent.driver.unified_driver.pool import WorkerPool
 from jkent.driver.unified_driver.rate_limiter import (
     DEFAULT_ADAPTIVE_LADDER,
     AdaptiveRateLimiter,
+    CappedPaceLimiter,
     NoopRateLimiter,
-    PyrateRateLimiter,
+    ProbeReport,
     RateLimiter,
     RateLimiters,
+    ReactivePaceLimiter,
+    Turn,
 )
 from jkent.driver.unified_driver.transport import (
     MAX_RETRY_AFTER_S,
@@ -41,6 +44,7 @@ __all__ = [
     "AdaptiveRateLimiter",
     "ArchiveStream",
     "AwaitCondition",
+    "CappedPaceLimiter",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
     "DEFAULT_ADAPTIVE_LADDER",
@@ -48,7 +52,6 @@ __all__ = [
     "FileArchiveStream",
     "NoopHandle",
     "NoopRateLimiter",
-    "PyrateRateLimiter",
     "QueuedRequest",
     "RateLimiter",
     "RateLimiters",
@@ -56,5 +59,10 @@ __all__ = [
     "parse_retry_after",
     "Transport",
     "WorkerHandle",
+    "ProbeReport",
+    "RateLimiter",
+    "RateLimiters",
+    "ReactivePaceLimiter",
+    "Turn",
     "WorkerPool",
 ]
