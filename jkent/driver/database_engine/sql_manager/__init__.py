@@ -23,6 +23,7 @@ from jkent.driver.database_engine.sql_manager._incidental_requests import (
     IncidentalRequestStorageMixin,
 )
 from jkent.driver.database_engine.sql_manager._requests import (
+    IllegalTransitionError,
     RequestQueueMixin,
     RetryState,
 )
@@ -95,6 +96,7 @@ __all__ = [
     "CompressedPayload",
     "DequeuedRow",
     "FinalRunStatus",
+    "IllegalTransitionError",
     "IncidentalCapture",
     "IncidentalRequestRecord",
     "IncidentalStorageRecord",

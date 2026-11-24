@@ -12,10 +12,12 @@ from jkent.data_types import HttpMethod
 from jkent.driver.database_engine.enums import RequestStatus, RequestType
 from jkent.driver.database_engine.models import Request
 from jkent.driver.database_engine.sql_manager import (
+    IllegalTransitionError,
     InsertResult,
     RequestInsert,
     SQLManager,
 )
+from jkent.driver.database_engine.sql_manager._requests import transition
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -134,6 +136,7 @@ class TestRequestOperations:
         """Test marking a request as failed."""
         request_id = await insert_request()
 
+        await sql_manager.dequeue_next_request()
         await sql_manager.mark_request_failed(request_id, "Test error")
 
         async with sql_manager.session_factory() as session:
@@ -364,3 +367,94 @@ async def test_two_managers_on_one_file_dequeue_fifo(
     while (row := await sql_manager.dequeue_next_request()) is not None:
         dequeued.append(row.id)
     assert dequeued == order
+
+
+# Every per-request writer, called on a row it does not own. Each moves a row
+# out of IN_PROGRESS only (RequestStatus.transitions), so any other status —
+# or no row at all — must raise and leave the row exactly as it was.
+_WRITERS: dict[str, Callable[[SQLManager, int], Awaitable[object]]] = {
+    "complete": lambda db, rid: db.mark_request_completed(rid),
+    "fail": lambda db, rid: db.mark_request_failed(rid, "boom"),
+    "fail_and_file": lambda db, rid: db.fail_request(
+        rid, RuntimeError("boom")
+    ),
+    "retry": lambda db, rid: db.schedule_retry(rid, 1.0, 1.0, "boom"),
+    "restamp": lambda db, rid: db.restamp_request_start(rid),
+}
+
+
+@pytest.mark.parametrize("writer", sorted(_WRITERS))
+@pytest.mark.parametrize(
+    "status",
+    [
+        RequestStatus.PENDING,
+        RequestStatus.COMPLETED,
+        RequestStatus.FAILED,
+        RequestStatus.STUBBED,
+    ],
+)
+async def test_a_writer_refuses_a_row_it_does_not_own(
+    sql_manager: SQLManager,
+    insert_request: InsertRequest,
+    writer: str,
+    status: RequestStatus,
+) -> None:
+    """Only an IN_PROGRESS row moves; any other status raises, untouched."""
+    request_id = await insert_request()
+    async with sql_manager.session_factory() as session:
+        await session.execute(
+            sa.update(Request)
+            .where(Request.id == request_id)
+            .values(status=status)
+        )
+        await session.commit()
+
+    async def snapshot() -> tuple[object, ...]:
+        async with sql_manager.session_factory() as session:
+            row = (
+                await session.execute(
+                    sa.select(Request).where(Request.id == request_id)
+                )
+            ).scalar_one()
+            return (
+                row.status,
+                row.started_at,
+                row.completed_at,
+                row.last_error,
+                row.retry_count,
+            )
+
+    before = await snapshot()
+    with pytest.raises(IllegalTransitionError) as raised:
+        await _WRITERS[writer](sql_manager, request_id)
+
+    assert raised.value.actual == status
+    assert await snapshot() == before
+    assert await sql_manager.count_errors() == 0
+
+
+@pytest.mark.parametrize("writer", sorted(_WRITERS))
+async def test_a_writer_refuses_a_missing_row(
+    sql_manager: SQLManager, writer: str
+) -> None:
+    """A write to a row that does not exist raises rather than no-ops."""
+    with pytest.raises(IllegalTransitionError) as raised:
+        await _WRITERS[writer](sql_manager, 999)
+
+    assert raised.value.actual is None
+    assert await sql_manager.count_errors() == 0
+
+
+async def test_transition_refuses_a_move_outside_the_table(
+    sql_manager: SQLManager, insert_request: InsertRequest
+) -> None:
+    """A move not in RequestStatus.transitions is a caller bug."""
+    request_id = await insert_request()
+    async with sql_manager.session_factory() as session:
+        with pytest.raises(ValueError, match="not a request transition"):
+            await transition(
+                session,
+                request_id,
+                RequestStatus.COMPLETED,
+                RequestStatus.PENDING,
+            )

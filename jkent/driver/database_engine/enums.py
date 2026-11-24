@@ -121,11 +121,35 @@ class RequestStatus(CodedEnum):
         """
         return _PARKED
 
+    @classmethod
+    def transitions(cls) -> frozenset[tuple[RequestStatus, RequestStatus]]:
+        """Every ``(from, to)`` move jkent's per-request writers may make.
+
+        ``PENDING → IN_PROGRESS`` is the dequeue; from ``IN_PROGRESS`` a
+        claimed row completes, fails, or goes back to ``PENDING`` for a
+        retry. Nothing leaves ``COMPLETED`` or ``FAILED``, and nothing fails
+        a row a worker never claimed. ``restore_queue``'s startup reset of
+        ``IN_PROGRESS`` rows is the retry move applied in bulk. ``STUBBED``
+        is replay's, written and cleared outside these writers.
+
+        Returns:
+            The allowed transitions.
+        """
+        return _TRANSITIONS
+
 
 _ACTIVE = frozenset({RequestStatus.PENDING, RequestStatus.IN_PROGRESS})
 _TERMINAL = frozenset({RequestStatus.COMPLETED, RequestStatus.FAILED})
 _DEQUEUABLE = frozenset({RequestStatus.PENDING})
 _PARKED = frozenset({RequestStatus.STUBBED})
+_TRANSITIONS = frozenset(
+    {
+        (RequestStatus.PENDING, RequestStatus.IN_PROGRESS),
+        (RequestStatus.IN_PROGRESS, RequestStatus.COMPLETED),
+        (RequestStatus.IN_PROGRESS, RequestStatus.FAILED),
+        (RequestStatus.IN_PROGRESS, RequestStatus.PENDING),
+    }
+)
 
 
 class RequestType(CodedEnum):

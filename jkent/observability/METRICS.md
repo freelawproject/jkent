@@ -117,7 +117,7 @@ suddenly it's worth looking into (something weird is happening!).
 
 | Metric | Type | Unit | Attrs | Emitted from |
 |---|---|---|---|---|
-| `jkent.worker.active` | gauge | 1 | `scraper`, `run_inst_id` | `RunGauges.worker_active` (`gauges.py`), called by `WorkerPool` at spawn/retire |
+| `jkent.worker.active` | gauge | 1 | `scraper`, `run_inst_id` | `RunGauges.worker_active` (`gauges.py`), passed by the host as `WorkerPool(on_change=)`, called at spawn/retire |
 | `jkent.queue.pending` | gauge | 1 | `scraper`, `run_inst_id` | `RunGauges` sampler (`gauges.py`), every 5 s while `run()` is active |
 
 `worker.active` is the live worker count. This is largely included as a quick reference

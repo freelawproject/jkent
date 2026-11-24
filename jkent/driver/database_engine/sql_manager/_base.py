@@ -107,7 +107,9 @@ class SQLManagerBase:
 
     @classmethod
     @asynccontextmanager
-    async def open(cls, db_path: Path) -> AsyncIterator[Self]:
+    async def open(
+        cls, db_path: Path, *, read_only: bool = False
+    ) -> AsyncIterator[Self]:
         """Open an existing database and create a SQLManager.
 
         A run creates its database with
@@ -116,6 +118,8 @@ class SQLManagerBase:
 
         Args:
             db_path: Path to the SQLite database file.
+            read_only: Open without creating tables or writing anything;
+                mutating methods then fail at SQLite.
 
         Yields:
             SQLManager instance.
@@ -125,19 +129,23 @@ class SQLManagerBase:
                 file — SQLite opens that as an empty database, and a run
                 database is never 0 bytes (WAL mode writes the header on
                 creation). Nothing is created or written at the path.
+            NotARunDatabaseError: If ``read_only`` and the file lacks the
+                run-database schema.
 
         Example::
 
             async with SQLManager.open(db_path) as manager:
                 params = await manager.get_seed_params()
-        """
+        """  # noqa: DOC502 -- NotARunDatabaseError raised by init_database
         if not db_path.exists():
             raise FileNotFoundError(f"run database does not exist: {db_path}")
         if db_path.stat().st_size == 0:
             raise FileNotFoundError(
                 f"run database is empty (0 bytes): {db_path}"
             )
-        engine, session_factory = await init_database(db_path)
+        engine, session_factory = await init_database(
+            db_path, read_only=read_only
+        )
         try:
             yield cls(engine, session_factory)
         finally:

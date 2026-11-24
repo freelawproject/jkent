@@ -1,4 +1,4 @@
-"""ResponseStorageDB - request lifecycle and response/result storage.
+"""ResponseStorage - request lifecycle and response/result storage.
 
 Marks requests completed/failed, handles retry backoff, and stores responses /
 archived files / results. Owned by the unified driver. All methods are pure DB
@@ -84,7 +84,7 @@ def serialize_result(
     )
 
 
-class ResponseStorageDB:
+class ResponseStorage:
     """Request lifecycle management and response/result/file storage.
 
     Provides methods for marking requests completed/failed, handling retries,
@@ -187,7 +187,9 @@ class ResponseStorageDB:
     async def mark_request_failed(
         self, request_id: int, error_message: str
     ) -> None:
-        """Mark a request as failed in the database.
+        """Move a request IN_PROGRESS -> FAILED.
+
+        See :meth:`SQLManager.mark_request_failed`.
 
         Args:
             request_id: The database ID of the request.
