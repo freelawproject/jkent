@@ -305,14 +305,13 @@ async def test_recompress_reports_skipped_rows(
     assert remaining == 4
 
 
-async def test_recompress_stops_when_a_page_cannot_be_rewritten(
+async def test_recompress_walks_past_rows_that_cannot_be_rewritten(
     sql_manager: SQLManager, comp: Any
 ) -> None:
     """A page that produces no write ends the pass instead of spinning.
 
-    Pages are "the next rows still off the dictionary", so the writes are
-    what advance the walk. Rows that can never be rewritten stay in the
-    predicate and would be handed back unchanged forever.
+    Rows that can never be rewritten stay in the off-dictionary predicate;
+    the id cursor is what keeps the walk from handing them back forever.
     """
     await _insert_responses(sql_manager, comp, "stuck", 30)
     dict_id = await sql_manager.train_compression_dict("stuck")
@@ -332,6 +331,27 @@ async def test_recompress_stops_when_a_page_cannot_be_rewritten(
     # Still off the dictionary, and still reported: this is the shape
     # ``Compactor.for_step`` logs as a step that cannot converge.
     assert await sql_manager.count_off_dictionary("stuck", dict_id) == 3
+
+
+async def test_recompress_reaches_rows_behind_a_page_of_bad_ones(
+    sql_manager: SQLManager, comp: Any
+) -> None:
+    """Good rows behind more than a page of unrewritable ones still move.
+
+    Before the id cursor, a page made up entirely of rows that failed to
+    decompress ended the walk, stranding every good row behind it.
+    """
+    await _insert_responses(sql_manager, comp, "stuck", 12, garbage=True)
+    await _insert_responses(sql_manager, comp, "stuck", 30)
+    dict_id = await sql_manager.train_compression_dict("stuck")
+
+    stats = await sql_manager.recompress_responses(
+        "stuck", dict_id=dict_id, chunk_size=5
+    )
+
+    assert stats.recompressed_count == 30
+    assert stats.skipped_count == 12
+    assert await sql_manager.count_off_dictionary("stuck", dict_id) == 12
 
 
 def test_decompress_samples_byte_cap(comp: Any) -> None:

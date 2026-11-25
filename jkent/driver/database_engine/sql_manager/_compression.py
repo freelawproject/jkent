@@ -518,6 +518,7 @@ class CompressionMixin(SQLManagerBase):
         step: str,
         target_dict_id: int,
         chunk_size: int,
+        after_id: int,
     ) -> list[_OffDictionaryRow]:
         """One page of ``step``'s rows not yet on ``target_dict_id``.
 
@@ -528,6 +529,7 @@ class CompressionMixin(SQLManagerBase):
             step: The step whose rows to read.
             target_dict_id: The dictionary the rows should end up on.
             chunk_size: Most rows to return.
+            after_id: Only rows with a greater request id are returned.
 
         Returns:
             The page, ordered by request id.
@@ -541,7 +543,10 @@ class CompressionMixin(SQLManagerBase):
                     Request.response_created_at,
                     Request.content_size_compressed,
                 )
-                .where(*_off_dictionary(step, target_dict_id))
+                .where(
+                    *_off_dictionary(step, target_dict_id),
+                    Request.id > after_id,
+                )
                 .order_by(Request.id)
                 .limit(chunk_size)
             )
@@ -608,9 +613,15 @@ class CompressionMixin(SQLManagerBase):
         total_compressed = 0
         skipped_count = 0
 
+        # The walk is keyed on request id, so a row no pass can rewrite (its
+        # body fails to decompress) is left behind the cursor rather than
+        # handed back on every page. A row a concurrent writer changed is
+        # the exception: the cursor stops short of it, so the next page
+        # re-reads it and recompresses the newer content.
+        after_id = 0
         while True:
             rows = await self._read_off_dictionary_page(
-                step, target_dict_id, chunk_size
+                step, target_dict_id, chunk_size, after_id
             )
             if not rows:
                 break
@@ -640,6 +651,7 @@ class CompressionMixin(SQLManagerBase):
             # not ``=``: a NULL stamp must still match itself. Counts/totals
             # reflect only rows actually written.
             page_written = 0
+            first_raced_id: int | None = None
             if updates:
                 async with self._write_session() as session:
                     for update in updates:
@@ -674,6 +686,8 @@ class CompressionMixin(SQLManagerBase):
                         )
                         if written == 0:
                             skipped_count += 1
+                            if first_raced_id is None:
+                                first_raced_id = update.request_id
                             logger.warning(
                                 "recompress_responses: request %s changed "
                                 "concurrently; skipping to avoid overwriting "
@@ -687,16 +701,24 @@ class CompressionMixin(SQLManagerBase):
                         total_compressed += update.new_size
                     await session.commit()
 
-            # If we get here, something went wrong and we should take a look
-            if page_written == 0:
+            next_after_id = (
+                rows[-1].request_id
+                if first_raced_id is None
+                else first_raced_id - 1
+            )
+            # Nothing written and the cursor did not move: the next read
+            # would return this same page. Only a writer racing every
+            # page's first row gets here.
+            if page_written == 0 and next_after_id == after_id:
                 logger.error(
                     "recompress_responses: step '%s' stopped short of "
-                    "dictionary %s; none of a %d-row page could be rewritten",
+                    "dictionary %s; request %s changed under every attempt",
                     step,
                     target_dict_id,
-                    len(rows),
+                    first_raced_id,
                 )
                 break
+            after_id = next_after_id
 
         obs.instruments().compaction_duration.record(
             (time.monotonic_ns() - compaction_started) / NS_PER_SECOND,

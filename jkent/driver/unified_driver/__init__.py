@@ -15,6 +15,14 @@ from jkent.driver.unified_driver.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerPolicy,
 )
+from jkent.driver.unified_driver.compaction import Compactor, Compactors
+from jkent.driver.unified_driver.persistence import (
+    ErrorBudget,
+    ErrorSink,
+    RequestQueue,
+    ResponseStorage,
+    RowOnlyErrorSink,
+)
 from jkent.driver.unified_driver.pool import WorkerPool
 from jkent.driver.unified_driver.rate_limiter import (
     DEFAULT_ADAPTIVE_LADDER,
@@ -50,8 +58,12 @@ __all__ = [
     "CappedPaceLimiter",
     "CircuitBreaker",
     "CircuitBreakerPolicy",
+    "Compactor",
+    "Compactors",
     "DEFAULT_ADAPTIVE_LADDER",
     "MAX_RETRY_AFTER_S",
+    "ErrorBudget",
+    "ErrorSink",
     "FileArchiveStream",
     "HttpxTransport",
     "NoopHandle",
@@ -59,6 +71,9 @@ __all__ = [
     "QueuedRequest",
     "RateLimiter",
     "RateLimiters",
+    "RequestQueue",
+    "ResponseStorage",
+    "RowOnlyErrorSink",
     "StatelessTransport",
     "parse_retry_after",
     "Transport",

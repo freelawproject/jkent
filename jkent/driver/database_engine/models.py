@@ -790,7 +790,7 @@ class RunMetadata(Base):
             "symmetrically — 0.05 spreads each wait across +/-5% of nominal. "
             "Recorded so a corpus says how spread out its retries were; the "
             "drawn value itself is not stored anywhere, it is folded into "
-            "``requests.started_at``. See ``ResponseStorageDB.handle_retry``."
+            "``requests.started_at``. See ``ResponseStorage.handle_retry``."
         )
     )
     num_workers: Mapped[int] = mapped_column(

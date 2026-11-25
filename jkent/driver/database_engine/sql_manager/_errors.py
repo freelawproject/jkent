@@ -91,17 +91,18 @@ class ErrorsMixin(SQLManagerBase):
         exc: Exception,
         request_url: str | None = None,
     ) -> int:
-        """Mark ``request_id`` FAILED and store ``exc`` against it, atomically.
+        """Move ``request_id`` IN_PROGRESS -> FAILED and file ``exc``, atomically.
 
         One transaction for both, so a FAILED row always has its ``errors``
-        row and neither lands without the other.
+        row and neither lands without the other. See :func:`transition` for
+        what raises; nothing is filed when it does.
 
         Returns:
             The database ID of the stored error.
         """
         error = build_error(exc, request_id, request_url)
         async with self._write_session() as session:
-            await session.execute(mark_failed(request_id, error_message(exc)))
+            await mark_failed(session, request_id, error_message(exc))
             session.add(error)
             await session.flush()
             error_id = error.id
